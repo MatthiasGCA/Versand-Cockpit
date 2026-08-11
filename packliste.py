@@ -59,8 +59,21 @@ from reportlab.graphics.shapes import Drawing
 # KONFIGURATION
 # ----------------------------------------------------------------------------
 
-VERSION = "2026-07-20b"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+VERSION = "2026-08-11a"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
 # Aenderung am selben Tag (erste = a, dann b, c ...; neuer Tag beginnt wieder bei a).
+# 2026-08-11a: Fehlende PLZ bei abweichender Lieferadresse behoben (Rechnung
+#   1699130, Amazon "Jan Glöer": Rechnungsadresse AT-1020 Wien, Lieferadresse
+#   24404 Maasholm/Deutschland). extrahiere_adresse() bestimmte das Land bisher
+#   IMMER aus Liefer- UND Rechnungsadresse zusammen (fuer den Fall 1695459, bei
+#   dem nur die Rechnungsadresse das "AT-"-Kuerzel trug). Das riss hier den
+#   umgekehrten Fall mit: eine oesterreichische Rechnungsadresse liess eine
+#   voellig normale DEUTSCHE Lieferadresse faelschlich als "AT" gelten -> es
+#   wurde nur noch nach einer 4-stelligen PLZ gesucht, die echte 5-stellige PLZ
+#   passte auf kein Muster mehr und blieb leer (keine post_zuordnung.csv-
+#   Zuordnung, keine PLZ auf der Sammeldruck-Pickliste). Jetzt wird das Land
+#   zuerst NUR aus der Lieferadresse bestimmt; nur wenn die Lieferadresse WEDER
+#   ein AT-Signal NOCH eine gueltige 5-stellige PLZ enthaelt, wird zusaetzlich
+#   die Rechnungsadresse herangezogen (deckt weiterhin Fall 1695459 ab).
 # 2026-07-20b: Erstellungsdatum + Uhrzeit werden als Fuss auf jeder Seite der
 #   Pickliste abgedruckt. Ausserdem Fehltrigger der Gewichtsartikel-Erkennung
 #   behoben: Artikel wie 'AutoPR-11' (Modellnummer 11 == '11kg' im Text = fuer
@@ -532,7 +545,12 @@ def extrahiere_adresse(words):
     # Land wurde faelschlich als DE erkannt, die 4-stellige PLZ passte dann
     # nicht auf die DE-Regel (5-stellig) und blieb leer (keine Zuordnung,
     # kein Druck). Daher zusaetzlich lefts (Rechnungsadresse) auswerten.
-    land = _land_aus_zeilen(deliv + lefts)
+    land = _land_aus_zeilen(deliv)
+    if land != "AT" and not any(re.search(r"\b\d{5}\b", l) for l in deliv):
+        # Lieferadresse liefert weder ein AT-Signal noch eine gueltige
+        # 5-stellige PLZ -> evtl. fehlt nur das AT-Praefix in der separaten
+        # Lieferadresse (Fall 1695459) -> zusaetzlich Rechnungsadresse pruefen.
+        land = _land_aus_zeilen(deliv + lefts)
     if land == "AT":
         # Oesterreich: 4-stellige PLZ ('AT-8020', 'A-8020' oder '8020 Ort'); die
         # Zeile 'ÖSTERREICH' steht meist darunter und ist nicht die PLZ-Zeile.

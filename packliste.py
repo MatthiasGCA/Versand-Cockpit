@@ -59,8 +59,20 @@ from reportlab.graphics.shapes import Drawing
 # KONFIGURATION
 # ----------------------------------------------------------------------------
 
-VERSION = "2026-08-11a"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+VERSION = "2026-08-20a"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
 # Aenderung am selben Tag (erste = a, dann b, c ...; neuer Tag beginnt wieder bei a).
+# 2026-08-20a: Falsche PLZ bei Amazon-Business-Lieferadressen mit angehaengter
+#   PO-Referenz behoben (Rechnung 1700723, "VDS Getriebe"/Wolfern: Namenszeile
+#   "GmbHPO126-0287 VDS Getriebe" verschmilzt Firmenname und Bestellreferenz
+#   ohne Trennzeichen). Der Oesterreich-Zweig in extrahiere_adresse() suchte die
+#   PLZ-Zeile bisher VORWAERTS durch die Lieferadresse; die Bestellreferenz
+#   "0287" erfuellte dabei zufaellig das Muster "4 Ziffern + Leerzeichen + Text"
+#   und wurde als PLZ genommen (post_zuordnung.csv bekam "0287" statt der
+#   echten PLZ "4493" -> Deutsche-Post-Zuordnung per PLZ+Hausnummer scheiterte).
+#   Jetzt wird wie im DE-Zweig direkt darunter RUECKWAERTS gesucht (PLZ+Ort
+#   steht so gut wie immer als letzte inhaltliche Zeile), das findet nun
+#   zuverlaessig die echte PLZ-Zeile statt einer zufaellig passenden Ziffernfolge
+#   weiter oben im Adressblock.
 # 2026-08-11a: Fehlende PLZ bei abweichender Lieferadresse behoben (Rechnung
 #   1699130, Amazon "Jan Glöer": Rechnungsadresse AT-1020 Wien, Lieferadresse
 #   24404 Maasholm/Deutschland). extrahiere_adresse() bestimmte das Land bisher
@@ -554,7 +566,13 @@ def extrahiere_adresse(words):
     if land == "AT":
         # Oesterreich: 4-stellige PLZ ('AT-8020', 'A-8020' oder '8020 Ort'); die
         # Zeile 'ÖSTERREICH' steht meist darunter und ist nicht die PLZ-Zeile.
-        plzline = next((l for l in deliv
+        # Rueckwaerts durchsuchen (wie der DE-Zweig unten) statt vorwaerts: bei
+        # Amazon-Business-Bestellungen mit angehaengter PO-Referenz in der
+        # Namenszeile (z.B. "GmbHPO126-0287 VDS Getriebe") passt "0287" bereits
+        # auf das Muster "4 Ziffern + Leerzeichen + Text" und wurde faelschlich
+        # als PLZ genommen, bevor die echte PLZ-Zeile ueberhaupt geprueft wurde
+        # (Rechnung 1700723, VDS Getriebe/Wolfern: PLZ "0287" statt "4493").
+        plzline = next((l for l in reversed(deliv)
                         if re.search(r"\b(?:AT|A)-?\s?\d{4}\b", l)
                         or re.search(r"\b\d{4}\b\s+\S", l)), "")
     else:

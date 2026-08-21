@@ -49,9 +49,43 @@ try:
 except Exception:
     _HAS_REPORTLAB = False
 # ============================ KONFIGURATION ============================
-VERSION = "2026-08-21b"          # im Fenstertitel sichtbar -> Deployment pruefbar
+VERSION = "2026-08-21c"          # im Fenstertitel sichtbar -> Deployment pruefbar
 # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je Aenderung am selben Tag (erste
 # Aenderung des Tages = a, dann b, c ...; ein neuer Tag beginnt wieder bei a).
+# 2026-08-21c: Nachbesserung zu 2026-08-21a/b nach erneuter Pruefung:
+#   1) Sammeldruck-Teilerfolg wurde als voller Erfolg gemeldet (gruen, bei per
+#      EAN bestaetigtem Sammeldruck sogar als grosses gruenes "GEDRUCKT"-
+#      Overlay), wenn einer von mehreren Versendern erfolgreich war, ein
+#      anderer aber nicht (drucke_sammel()-modus wurde nur bei KOMPLETTEM
+#      Fehlschlag "fehler", nicht schon bei teilweisem). Jetzt "fehler"
+#      sobald irgendein Versender fehlschlug - die EAN-Bestaetigungsstelle war
+#      bereits korrekt auf "st == 'gedruckt'" verdrahtet und zeigt dadurch
+#      automatisch keine gruene Bestaetigung mehr bei einem Teilerfolg.
+#   2) DRUCK_TIMEOUT_SEKUNDEN von 20 auf 8 gesenkt: _sende_an_drucker() (neu
+#      seit 2026-08-21a) laeuft SYNCHRON im Tkinter-Hauptthread (direkt im
+#      <Return>-Handler des Scan-Eingabefelds) - jede Sekunde Wartezeit hier
+#      friert das GESAMTE Cockpit ein (Uhr, Countdown, naechster Scan an JEDER
+#      Station), nicht nur die aktuelle Bestellung. Ein Sammeldruck mit
+#      mehreren ausgefallenen Versendern wartet zusaetzlich mehrfach
+#      hintereinander - bei 20s theoretisch bis zu 40-60s Totalausfall der
+#      Oberflaeche. 8s begrenzt das Risiko spuerbar, ohne einen echten
+#      Spooler-Haenger vorschnell abzubrechen. Fuer wirklich nicht-
+#      blockierendes Drucken waere ein Hintergrund-Thread noetig (groessere
+#      Architektur-Aenderung, bewusst noch nicht umgesetzt).
+#   3) drucke() und drucke_sammel() fangen jetzt OSError beim Lesen einer
+#      Label-Datei ab (_reader()). Grund: die Race-Condition-Absicherung
+#      VERSCHWINDEN_TOLERANZ (2026-08-21a) laesst eine geraede verschwindende
+#      Datei bewusst noch bis zu ~2 Polls im Index stehen - wird sie GENAU in
+#      diesem kurzen Fenster gescannt, schlug das Oeffnen der (bereits
+#      verschobenen) Datei bisher mit einem rohen "[Errno 2] ..."-Text bis in
+#      die Meldezeile durch. Jetzt eine klare "Drucken fehlgeschlagen"-
+#      Meldung statt der Python-Fehlermeldung; bei drucke_sammel() betrifft
+#      das nur den einzelnen betroffenen Versender, die anderen im selben
+#      Sammeldruck laufen unbeeinflusst weiter.
+#   4) Tagesmengen-Anzeige: Emoji "📦" (ausserhalb der Basic Multilingual
+#      Plane, anders als die uebrigen Symbole ★/⚠/✓ im Cockpit) durch "Σ"
+#      ersetzt - vermeidet ein moegliches Darstellungsproblem auf aelteren
+#      Tcl/Tk-Versionen.
 # 2026-08-21b: Tagesmenge in der Kopfzeile ergaenzt - Summe der heute
 #   gedruckten Labels ueber ALLE Versender (DHL + DPD + Deutsche Post
 #   zusammen) auf einen Blick, mit Aufschluesselung je Versender in Klammern.
@@ -264,11 +298,20 @@ AUTO_ENTER_BEI_TIPPPAUSE = False
 DEADLINE_WARN_MIN = 30           # Countdown wird rot, wenn weniger Minuten offen
 TESTMODUS = False                # True = Treffer als PDF in "test_ausgabe" statt Druck
 # Max. Wartezeit auf SumatraPDF (Sekunden), bevor ein Druckauftrag als
-# fehlgeschlagen gilt (haengender Prozess soll das Cockpit nicht dauerhaft
-# blockieren). SumatraPDF bekommt "-exit-when-done" und beendet sich normal
-# in Sekundenbruchteilen; 20s ist grosszuegig fuer einen langsamen Drucker-
-# Spooler-Start, faengt aber einen echten Hänger noch ab.
-DRUCK_TIMEOUT_SEKUNDEN = 20
+# fehlgeschlagen gilt. WICHTIG: _sende_an_drucker() laeuft synchron im
+# Tkinter-Hauptthread (direkt im <Return>-Handler des Scan-Eingabefelds) -
+# jede Sekunde hier friert das GESAMTE Cockpit fuer ALLE Packplaetze ein
+# (Uhr, Countdown, naechster Scan), nicht nur die aktuelle Station. Ein
+# Sammeldruck mit mehreren ausgefallenen Versendern wartet zusaetzlich MEHRFACH
+# hintereinander. Urspruenglich auf 20s gesetzt ("grosszuegig fuer einen
+# langsamen Spooler-Start") - das war zu hoch angesetzt: SumatraPDF gibt bei
+# einem ungueltigen Druckernamen oder fehlendem Sumatra sofort (Bruchteile
+# einer Sekunde) einen Fehler zurueck, ein echter Haenger (z.B. eine
+# Treiber-Dialogbox) ist der seltene Rand- statt der Normalfall. Deutlich
+# kuerzer gesetzt, um das Einfrier-Risiko zu begrenzen; fuer wirklich
+# nicht-blockierendes Drucken waere ein Hintergrund-Thread noetig (groessere
+# Umbau-Aenderung, absichtlich noch nicht umgesetzt).
+DRUCK_TIMEOUT_SEKUNDEN = 8
 # --- Duplikat-Erkennung (Inhalt) ---------------------------------------------
 # Mindestlaenge des extrahierten Seitentextes, ab der ein Inhalts-Hash als
 # verlaesslich gilt (verhindert Fehlalarm bei fast leeren Seiten). Kuerzer ->
@@ -1072,8 +1115,19 @@ def _sende_an_drucker(pfad, drucker):
 def drucke(z, treffer, nr, station=None):
     """Gibt True bei erfolgreichem Druck zurueck, sonst False."""
     writer = PdfWriter()
-    for pdf_pfad, idx, _ in treffer:
-        writer.add_page(_reader(z, pdf_pfad).pages[idx])
+    try:
+        for pdf_pfad, idx, _ in treffer:
+            writer.add_page(_reader(z, pdf_pfad).pages[idx])
+    except OSError as e:
+        # Die Datei stand noch im Index, ist aber gerade in dem kurzen Fenster
+        # verschwunden, das VERSCHWINDEN_TOLERANZ absichtlich offen laesst
+        # (Absicherung gegen die Race Condition vom 2026-08-21b) - z.B. wird
+        # sie in genau diesem Moment archiviert/verschoben. Ohne dieses
+        # Abfangen wuerde ein roher "[Errno 2] ..."-Text bis in die Melde-
+        # zeile durchschlagen (generischer except-Handler in scan_ausfuehren).
+        print(f"Drucken fehlgeschlagen (Label-Datei kurzzeitig nicht "
+              f"verfuegbar, {nr}): {e}")
+        return False
     if TESTMODUS:
         os.makedirs("test_ausgabe", exist_ok=True)
         with open(os.path.join("test_ausgabe", f"Rechnung_{nr}.pdf"), "wb") as f:
@@ -1167,17 +1221,28 @@ def drucke_sammel(z, code, ordner, station=None):
     versender_ok = {}
     for versender, seiten in nach_versender.items():
         writer = PdfWriter()
-        erste = _reader(z, seiten[0][0]).pages[seiten[0][1]]
         try:
-            bseite, hseite = float(erste.mediabox.width), float(erste.mediabox.height)
-        except Exception:
-            bseite, hseite = 283.0, 425.0
-        deck = deckblatt_seite(bseite, hseite, code, g["art"], g["bez"],
-                               len(gefunden), versender)
-        if deck is not None:
-            writer.add_page(deck)
-        for (pfad, idx) in seiten:
-            writer.add_page(_reader(z, pfad).pages[idx])
+            erste = _reader(z, seiten[0][0]).pages[seiten[0][1]]
+            try:
+                bseite, hseite = float(erste.mediabox.width), float(erste.mediabox.height)
+            except Exception:
+                bseite, hseite = 283.0, 425.0
+            deck = deckblatt_seite(bseite, hseite, code, g["art"], g["bez"],
+                                   len(gefunden), versender)
+            if deck is not None:
+                writer.add_page(deck)
+            for (pfad, idx) in seiten:
+                writer.add_page(_reader(z, pfad).pages[idx])
+        except OSError as e:
+            # s.o. (drucke()): Label-Datei kurzzeitig verschwunden (Race-
+            # Condition-Toleranzfenster). Nur DIESEN Versender als fehlgeschlagen
+            # werten, die anderen im selben Sammeldruck laufen unbeeinflusst
+            # weiter - statt die gesamte Funktion mit einer rohen Exception
+            # abzubrechen.
+            print(f"Drucken fehlgeschlagen (Label-Datei kurzzeitig nicht "
+                  f"verfuegbar, Sammelcode {code}/{versender}): {e}")
+            versender_ok[versender] = False
+            continue
         versender_ok[versender] = _drucke_pdf(
             writer, drucker_von(versender, station),
             f"sammel_{code}_{versender}".replace(" ", "_"))
@@ -1203,7 +1268,14 @@ def drucke_sammel(z, code, ordner, station=None):
     if fehlend:
         teile.append(f"{len(fehlend)} OHNE LABEL")
     deck_hint = "" if _HAS_REPORTLAB else " - OHNE Deckblatt (reportlab fehlt)"
-    modus = "fehler" if druckfehler and not ok_liste else "gedruckt"
+    # "fehler" schon bei TEILWEISEM Fehlschlag (nicht erst wenn ALLES
+    # fehlschlug): scheitert z.B. nur der DPD-Drucker, waren die anderen
+    # Versender trotzdem erfolgreich (ok_liste nicht leer) - vorher blieb
+    # modus dann "gedruckt" (gruen), obwohl druckfehler nicht leer war, und
+    # die Fehlermeldung ging in der gruenen Erfolgsmeldung unter (bei einer
+    # per EAN bestaetigten Sammeldruck-Bestellung sogar als grosses gruenes
+    # "GEDRUCKT"-Overlay, siehe Aufrufer).
+    modus = "fehler" if druckfehler else "gedruckt"
     return (modus, f"Sammeldruck {code} ({g['art']}): "
             + ", ".join(teile) + deck_hint)
 def finde_treffer(z, rn, ordner):
@@ -2047,7 +2119,7 @@ def starte_cockpit():
         aufschluesselung = " · ".join(
             f"{v} {n}" for v, n in sorted(gedruckt_pv.items()) if n > 0)
         tagesmenge_lbl.configure(
-            text=f"📦 Heute gesamt: {heute_summe}"
+            text=f"Σ Heute gesamt: {heute_summe}"
                  + (f"   ({aufschluesselung})" if aufschluesselung else ""))
         # Tagesrekord nur neu berechnen, wenn heute etwas dazukam
         if heute_summe != z.highscore_sig:

@@ -66,7 +66,7 @@ echo === CSVs in den Netzwerkordner kopieren ===
 set "KOPIER_FEHLER=0"
 if not exist "%NETZWERK%\" (
   echo.
-  echo *** WARNUNG: Netzwerkordner "%NETZWERK%" nicht erreichbar - CSVs NICHT kopiert! ***
+  echo *** WARNUNG: Netzwerkordner "%NETZWERK%" nicht erreichbar - CSVs NICHT kopiert^! ***
   echo *** scan_druck.py arbeitet bis zum naechsten erfolgreichen Lauf mit den ALTEN   ***
   echo *** Daten weiter. Bitte Netzwerkfreigabe pruefen und diese Bat-Datei danach     ***
   echo *** erneut ausfuehren.                                                          ***
@@ -83,13 +83,13 @@ if not exist "%NETZWERK%\" (
   REM selbst wenn ein copy wirklich fehlschlug.
   if "!KOPIER_FEHLER!"=="1" (
     echo.
-    echo *** WARNUNG: mindestens eine CSV konnte NICHT kopiert werden - siehe oben! ***
+    echo *** WARNUNG: mindestens eine CSV konnte NICHT kopiert werden - siehe oben^! ***
   )
 )
 
 echo.
 if "!KOPIER_FEHLER!"=="1" (
-  echo === FERTIG MIT WARNUNG - CSVs NICHT vollstaendig aktualisiert, siehe oben! ===
+  echo === FERTIG MIT WARNUNG - CSVs NICHT vollstaendig aktualisiert, siehe oben^! ===
 ) else (
   echo === Fertig ===
 )

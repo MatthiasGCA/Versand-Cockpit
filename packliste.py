@@ -59,8 +59,31 @@ from reportlab.graphics.shapes import Drawing
 # KONFIGURATION
 # ----------------------------------------------------------------------------
 
-VERSION = "2026-08-20a"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+VERSION = "2026-08-21a"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
 # Aenderung am selben Tag (erste = a, dann b, c ...; neuer Tag beginnt wieder bei a).
+# 2026-08-21a: Projektweite Fehlerpruefung, drei Punkte behoben:
+#   1) _land_aus_zeilen() verlangte bei "AT-1234" zwingend den Bindestrich,
+#      waehrend _plz() ihn schon immer optional behandelte - "AT 1234"
+#      (Leerzeichen statt Bindestrich) ohne das Wort "ÖSTERREICH" im Text
+#      wurde dadurch weiterhin faelschlich als "DE" erkannt (derselbe
+#      Ausfall wie bei Rechnung 1699130). Bindestrich bei "AT" jetzt auch
+#      hier optional; bei der einbuchstabigen Form "A-" bleibt er Pflicht,
+#      um ein einzelnes "A" nicht faelschlich als Oesterreich-Kuerzel zu werten.
+#   2) Die PLZ-Zeilensuche (AT- wie DE-Zweig) verlangt jetzt zusaetzlich, dass
+#      die Ziffernfolge am ZEILENANFANG steht (vorher: irgendwo in der Zeile).
+#      Ohne diese Verankerung haette z.B. eine Telefonzeile im Adressfenster
+#      ("Tel. 0664 1234567") die PLZ-Suche erneut in die Irre fuehren koennen -
+#      strukturell derselbe Fehlertyp wie der Fix vom 2026-08-20a, nur von der
+#      anderen Seite.
+#   3) Eine Position mit weder erkannter Artikelnr NOCH Bezeichnung, aber
+#      vorhandenem Betrag, wurde bisher lautlos als "Versand" durchgewunken -
+#      die Vollstaendigkeitspruefung verlangte dafuer nur den (ja vorhandenen)
+#      Betrag, und der Betrag stimmte auch in der Summenkontrolle. Ein echter
+#      Artikel, dessen Artikelnr/Bezeichnung im PDF nicht extrahiert werden
+#      konnte, fiel dadurch OHNE JEDE WARNUNG aus Pickliste, EAN-Liste und
+#      Sammeldruck heraus. Dieser Fall wird jetzt IMMER als "Artikelnr/
+#      Bezeichnung nicht erkannt" markiert und erscheint als sichtbare
+#      "Pruefung NICHT bestanden"-Warnung auf der gedruckten Packuebersicht.
 # 2026-08-20a: Falsche PLZ bei Amazon-Business-Lieferadressen mit angehaengter
 #   PO-Referenz behoben (Rechnung 1700723, "VDS Getriebe"/Wolfern: Namenszeile
 #   "GmbHPO126-0287 VDS Getriebe" verschmilzt Firmenname und Bestellreferenz
@@ -188,9 +211,16 @@ def _plz(s, land="DE"):
 def _land_aus_zeilen(zeilen):
     """'AT' wenn eine Adresszeile auf Oesterreich deutet, sonst 'DE'.
     Erkannt werden 'ÖSTERREICH'/'AUSTRIA' sowie das ISO-Praefix vor der PLZ
-    ('AT-8020', 'A-8020')."""
+    ('AT-8020', 'AT 8020', 'A-8020'). Bindestrich bei 'AT' OPTIONAL (anders
+    als frueher zwingend) - passte sonst nicht zu _plz(), die 'AT-' und
+    'AT ' gleich behandelt: eine Lieferadresse mit Leerzeichen statt
+    Bindestrich ('AT 1020 Wien') und ohne das Wort 'ÖSTERREICH' wurde hier
+    faelschlich als 'DE' erkannt (derselbe Ausfall wie bei Rechnung
+    1699130). Bei der einbuchstabigen Form 'A-8020' bleibt der Bindestrich
+    Pflicht, um ein einzelnes 'A' (z.B. Gebaeudebezeichnung) nicht faelschlich
+    als Oesterreich-Kuerzel zu werten."""
     txt = " ".join(zeilen or []).upper().replace("Ö", "OE")
-    if re.search(r"OESTERREICH|AUSTRIA|\b(?:AT|A)-\s?\d{4}\b", txt):
+    if re.search(r"OESTERREICH|AUSTRIA|\bAT-?\s?\d{4}\b|\bA-\s?\d{4}\b", txt):
         return "AT"
     return "DE"
 
@@ -572,11 +602,18 @@ def extrahiere_adresse(words):
         # auf das Muster "4 Ziffern + Leerzeichen + Text" und wurde faelschlich
         # als PLZ genommen, bevor die echte PLZ-Zeile ueberhaupt geprueft wurde
         # (Rechnung 1700723, VDS Getriebe/Wolfern: PLZ "0287" statt "4493").
+        # Das reine Ziffernmuster ist zusaetzlich auf den ZEILENANFANG verankert
+        # (re.match statt re.search): eine PLZ+Ort-Zeile faengt in der Praxis
+        # immer mit der PLZ an, waehrend z.B. eine Telefonzeile ("Tel. 0664
+        # 1234567") mittendrin eine zufaellig passende 4er-Ziffernfolge haben
+        # kann, ohne PLZ+Ort zu sein - das Präfix-Muster (AT-/A- vorneweg)
+        # bleibt bewusst ungeankert, da das Kuerzel selbst schon eindeutig ist.
         plzline = next((l for l in reversed(deliv)
                         if re.search(r"\b(?:AT|A)-?\s?\d{4}\b", l)
-                        or re.search(r"\b\d{4}\b\s+\S", l)), "")
+                        or re.match(r"\s*\d{4}\b\s+\S", l)), "")
     else:
-        plzline = next((l for l in reversed(deliv) if re.search(r"\b\d{5}\b", l)), "")
+        plzline = next((l for l in reversed(deliv)
+                        if re.match(r"\s*\d{5}\b", l)), "")
     idx = deliv.index(plzline) if plzline in deliv else len(deliv) - 1
     street = deliv[idx - 1] if idx - 1 >= 1 else (deliv[1] if len(deliv) > 1 else "")
     return name, street, _hausnr(street), _plz(plzline, land)
@@ -671,6 +708,17 @@ def parse_pdf(path):
             fehlt = []
             if p["gp"] is None:
                 fehlt.append("Betrag")
+            if not p["art"] and not (p["bez"] or "").strip():
+                # Weder Artikelnr noch Bezeichnung erkannt: kann eine echte
+                # Versandkostenzeile mit abweichendem Layout sein, ODER eine
+                # Position, deren Artikelnr/Bezeichnung aus dem PDF nicht
+                # extrahiert werden konnte - aus den Daten allein NICHT
+                # unterscheidbar. Bisher lief das lautlos als "Versand"
+                # durch (Betrag stimmte ja in der Summe), wodurch ein echter
+                # Artikel unbemerkt aus Pickliste/EAN-Liste/Sammeldruck
+                # herausfallen konnte, obwohl die Sicherheitspruefung
+                # gruen blieb. Jetzt IMMER zur manuellen Pruefung markieren.
+                fehlt.append("Artikelnr/Bezeichnung nicht erkannt - Original pruefen")
         else:
             fehlt = []
             if not p["art"]:

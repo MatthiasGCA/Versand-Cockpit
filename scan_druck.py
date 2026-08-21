@@ -49,9 +49,31 @@ try:
 except Exception:
     _HAS_REPORTLAB = False
 # ============================ KONFIGURATION ============================
-VERSION = "2026-07-30a"          # im Fenstertitel sichtbar -> Deployment pruefbar
+VERSION = "2026-08-21a"          # im Fenstertitel sichtbar -> Deployment pruefbar
 # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je Aenderung am selben Tag (erste
 # Aenderung des Tages = a, dann b, c ...; ein neuer Tag beginnt wieder bei a).
+# 2026-08-21a: Projektweite Fehlerpruefung, zwei Kernprobleme behoben:
+#   1) Druck-Erfolg wird jetzt tatsaechlich geprueft. Bisher wurde SumatraPDF
+#      per subprocess.Popen() nur GESTARTET, nie auf Erfolg geprueft - ein
+#      falscher/offline Druckername oder ein SumatraPDF-Fehler blieb unbemerkt,
+#      die Bestellung galt im Cockpit trotzdem als "gedruckt" (drucke()/
+#      _drucke_pdf() ueber die neue _sende_an_drucker(), die per
+#      subprocess.run()+Timeout wartet und den Exit-Code prueft). Alle vier
+#      Druck-Aufrufstellen (Normalfall, Mehrfach-Scan-Sicherung, EAN-
+#      Verifikation, Sammeldruck, Nachdruck) markieren eine Bestellung/einen
+#      Sammelcode jetzt nur noch bei tatsaechlichem Druckerfolg als gedruckt;
+#      bei Fehlschlag erscheint eine rote "FEHLER beim Drucken"-Meldung und
+#      NICHTS wird geloggt/gezaehlt. Ein Papierstau NACH erfolgreicher
+#      Uebergabe an den Windows-Spooler bleibt weiterhin unerkennbar.
+#   2) Race Condition in der Duplikat-Erkennung vom 2026-07-30a behoben: fuer
+#      NEU erscheinende Dateien gab es schon eine Settle-Wartezeit gegen
+#      Fehlalarme, fuer VERSCHWINDENDE Dateien nicht - ein einzelner
+#      transienter Aussetzer des Netzwerk-Listings (UNC-Haenger, AV-Scan)
+#      loeschte sofort den Inhalts-Hash einer Datei; taucht im selben Moment
+#      eine zweite, inhaltsgleiche Kopie auf, fand der Duplikat-Abgleich dann
+#      keinen Treffer mehr -> moeglicher Doppeldruck trotz der Absicherung.
+#      Eine Datei muss jetzt VERSCHWINDEN_TOLERANZ (2) aufeinanderfolgende
+#      Polls fehlen, bevor sie als wirklich entfernt gilt (Zustand.fehlend_seit).
 # 2026-07-30a: Zwei Absicherungen gegen Fehlbedienung beim Datei-Handling im
 #   Netzwerkordner (ausgeloest durch einen doppelten DPD-Download UND eine
 #   Nachsendung mit wiederverwendeter Rechnungsnummer):
@@ -234,6 +256,12 @@ SCAN_PAUSE_MS = 120              # Tipp-Pause, ab der ein Scan als beendet gilt
 AUTO_ENTER_BEI_TIPPPAUSE = False
 DEADLINE_WARN_MIN = 30           # Countdown wird rot, wenn weniger Minuten offen
 TESTMODUS = False                # True = Treffer als PDF in "test_ausgabe" statt Druck
+# Max. Wartezeit auf SumatraPDF (Sekunden), bevor ein Druckauftrag als
+# fehlgeschlagen gilt (haengender Prozess soll das Cockpit nicht dauerhaft
+# blockieren). SumatraPDF bekommt "-exit-when-done" und beendet sich normal
+# in Sekundenbruchteilen; 20s ist grosszuegig fuer einen langsamen Drucker-
+# Spooler-Start, faengt aber einen echten Hänger noch ab.
+DRUCK_TIMEOUT_SEKUNDEN = 20
 # --- Duplikat-Erkennung (Inhalt) ---------------------------------------------
 # Mindestlaenge des extrahierten Seitentextes, ab der ein Inhalts-Hash als
 # verlaesslich gilt (verhindert Fehlalarm bei fast leeren Seiten). Kuerzer ->
@@ -286,6 +314,21 @@ class Zustand:
         # verwendeter Rechnungsnummer). Diese Dateien werden NICHT automatisch
         # archiviert, bis der Fall manuell geklaert ist.
         self.verdaechtig = defaultdict(list)
+        # fehlend_seit: pfad -> Anzahl aufeinanderfolgender Polls, in denen eine
+        # bisher bekannte Datei im Ordner-Listing NICHT mehr auftauchte. Fuer
+        # NEU erscheinende Dateien gibt es die SETTLE_SEKUNDEN-Wartezeit gegen
+        # Fehlalarme; fuer VERSCHWINDENDE Dateien gab es das bisher nicht -> ein
+        # einzelner transienter Aussetzer des Netzwerk-Listings (UNC-Haenger,
+        # AV-Scan) loeschte sofort den Inhalts-Hash der Datei (_entferne_datei).
+        # Taucht im selben Moment ein zweiter, inhaltsgleicher Download auf,
+        # fand der Duplikat-Abgleich dann keinen Hash-Treffer mehr -> doppelter
+        # Druck trotz der Absicherung vom 2026-07-30a. Jetzt muss eine Datei
+        # VERSCHWINDEN_TOLERANZ aufeinanderfolgende Polls fehlen, bevor sie
+        # wirklich als entfernt gilt.
+        self.fehlend_seit = {}
+VERSCHWINDEN_TOLERANZ = 2         # so viele Polls darf eine Datei aus dem
+                                   # Listing fehlen, bevor sie als geloescht/
+                                   # verschoben gilt (siehe Zustand.fehlend_seit)
 # ----------------- Deutsche-Post-Zuordnung (Adresse -> Rechnungsnummer) --------
 POST_LOOKUP = {}            # "PLZ|Hausnr" -> [(Rechnungsnummer, Name), ...]
 POST_BY_PLZ = {}            # "PLZ" -> [(Rechnungsnummer, Name, Hausnr), ...]
@@ -692,6 +735,7 @@ def _entferne_datei(z, pfad):
     z.datei_sig.pop(pfad, None)
     z.reader_cache.pop(pfad, None)
     z.post_unzuordenbar.pop(pfad, None)
+    z.fehlend_seit.pop(pfad, None)
     for nr in nrs:
         if nr in z.index:
             z.index[nr] = [t for t in z.index[nr] if t[0] != pfad]
@@ -761,8 +805,20 @@ def aktualisiere_index(z, ordner):
         geaendert = False
         for pfad in list(z.datei_nrs):
             if pfad not in aktuelle:
+                # Nicht sofort entfernen - ein einzelner Poll, in dem eine
+                # Datei transient im Netzwerk-Listing fehlt (UNC-Haenger,
+                # AV-Scan), darf nicht sofort den Inhalts-Hash loeschen (siehe
+                # Zustand.fehlend_seit). Erst nach VERSCHWINDEN_TOLERANZ
+                # aufeinanderfolgenden Fehlversuchen gilt die Datei als
+                # wirklich geloescht/verschoben.
+                bisher = z.fehlend_seit.get(pfad, 0) + 1
+                if bisher < VERSCHWINDEN_TOLERANZ:
+                    z.fehlend_seit[pfad] = bisher
+                    continue
                 _entferne_datei(z, pfad)
                 geaendert = True
+            else:
+                z.fehlend_seit.pop(pfad, None)
         for pfad in aktuelle:
             try:
                 st = os.stat(pfad)
@@ -965,7 +1021,49 @@ def _reader(z, pfad):
         with z.lock:
             z.reader_cache[pfad] = r
     return r
+def _sende_an_drucker(pfad, drucker):
+    """Schickt eine fertige PDF-Datei an den Drucker. Gibt True bei Erfolg
+    zurueck, False bei jedem erkennbaren Fehlschlag (Aufrufer darf dann NICHT
+    als gedruckt gelten). Frueher wurde SumatraPDF per Popen() nur GESTARTET,
+    ohne je das Ergebnis zu pruefen - ein falscher/offline Druckername, ein
+    fehlendes SumatraPDF oder ein sofortiger SumatraPDF-Fehler blieb dadurch
+    unbemerkt: die Bestellung galt im Cockpit trotzdem als "gedruckt", obwohl
+    physisch nichts herauskam. Jetzt wird auf das Prozessende gewartet
+    ("-exit-when-done") und der Exit-Code geprueft; ein Timeout (haengender
+    Prozess) gilt ebenfalls als Fehlschlag statt das Cockpit zu blockieren.
+    Ein Papierstau NACH erfolgreicher Uebergabe an den Spooler bleibt weiterhin
+    unerkennbar (das kann nur der Windows-Druckertreiber selbst feststellen) -
+    das deckt diese Absicherung bewusst nicht ab."""
+    if SUMATRA_EXE and os.path.exists(SUMATRA_EXE):
+        cmd = [SUMATRA_EXE, "-silent", "-exit-when-done"]
+        cmd += (["-print-to", drucker] if drucker else ["-print-to-default"])
+        if SUMATRA_PRINT_SETTINGS:
+            cmd += ["-print-settings", SUMATRA_PRINT_SETTINGS]
+        cmd.append(pfad)
+        try:
+            ergebnis = subprocess.run(cmd, timeout=DRUCK_TIMEOUT_SEKUNDEN)
+        except subprocess.TimeoutExpired:
+            print(f"Drucken fehlgeschlagen (SumatraPDF haengt/Timeout): {pfad}")
+            return False
+        except Exception as e:
+            print(f"Drucken fehlgeschlagen (SumatraPDF-Start): {e}")
+            return False
+        if ergebnis.returncode != 0:
+            print(f"Drucken fehlgeschlagen (SumatraPDF Exit-Code "
+                  f"{ergebnis.returncode}, Drucker: {drucker or 'Standard'}): {pfad}")
+            return False
+        return True
+    if drucker:
+        print(f"Hinweis: ohne SumatraPDF nur Standarddrucker moeglich "
+              f"(gewuenscht war: {drucker}).")
+    try:
+        os.startfile(pfad, "print")  # type: ignore[attr-defined]
+        return True
+    except Exception as e:
+        print(f"Drucken fehlgeschlagen: {e}")
+        return False
 def drucke(z, treffer, nr, station=None):
+    """Gibt True bei erfolgreichem Druck zurueck, sonst False."""
     writer = PdfWriter()
     for pdf_pfad, idx, _ in treffer:
         writer.add_page(_reader(z, pdf_pfad).pages[idx])
@@ -973,52 +1071,26 @@ def drucke(z, treffer, nr, station=None):
         os.makedirs("test_ausgabe", exist_ok=True)
         with open(os.path.join("test_ausgabe", f"Rechnung_{nr}.pdf"), "wb") as f:
             writer.write(f)
-        return
+        return True
     tmp = os.path.join(tempfile.gettempdir(), f"versandschein_{nr}.pdf")
     with open(tmp, "wb") as f:
         writer.write(f)
     # Drucker richtet sich nach dem Versender der Sendung (Post -> eigener Drucker)
     versender = treffer[0][2] if treffer else None
     drucker = drucker_von(versender, station)
-    if SUMATRA_EXE and os.path.exists(SUMATRA_EXE):
-        cmd = [SUMATRA_EXE, "-silent", "-exit-when-done"]
-        cmd += (["-print-to", drucker] if drucker else ["-print-to-default"])
-        if SUMATRA_PRINT_SETTINGS:
-            cmd += ["-print-settings", SUMATRA_PRINT_SETTINGS]
-        cmd.append(tmp)
-        subprocess.Popen(cmd)
-    else:
-        if drucker:
-            print(f"Hinweis: ohne SumatraPDF nur Standarddrucker moeglich "
-                  f"(gewuenscht war: {drucker}).")
-        try:
-            os.startfile(tmp, "print")  # type: ignore[attr-defined]
-        except Exception as e:
-            print(f"Drucken fehlgeschlagen: {e}")
+    return _sende_an_drucker(tmp, drucker)
 def _drucke_pdf(writer, drucker, name):
-    """Einen fertigen PdfWriter an einen (optionalen) Drucker schicken."""
+    """Einen fertigen PdfWriter an einen (optionalen) Drucker schicken.
+    Gibt True bei erfolgreichem Druck zurueck, sonst False."""
     if TESTMODUS:
         os.makedirs("test_ausgabe", exist_ok=True)
         with open(os.path.join("test_ausgabe", f"{name}.pdf"), "wb") as f:
             writer.write(f)
-        return
+        return True
     tmp = os.path.join(tempfile.gettempdir(), f"{name}.pdf")
     with open(tmp, "wb") as f:
         writer.write(f)
-    if SUMATRA_EXE and os.path.exists(SUMATRA_EXE):
-        cmd = [SUMATRA_EXE, "-silent", "-exit-when-done"]
-        cmd += (["-print-to", drucker] if drucker else ["-print-to-default"])
-        if SUMATRA_PRINT_SETTINGS:
-            cmd += ["-print-settings", SUMATRA_PRINT_SETTINGS]
-        cmd.append(tmp)
-        subprocess.Popen(cmd)
-    else:
-        if drucker:
-            print(f"Hinweis: ohne SumatraPDF nur Standarddrucker (gewuenscht: {drucker}).")
-        try:
-            os.startfile(tmp, "print")  # type: ignore[attr-defined]
-        except Exception as e:
-            print(f"Drucken fehlgeschlagen: {e}")
+    return _sende_an_drucker(tmp, drucker)
 def deckblatt_seite(breite, hoehe, code, art, bez, anzahl, versender):
     """Deckblatt in Label-Groesse als PdfReader-Seite (oder None ohne reportlab)."""
     if not _HAS_REPORTLAB:
@@ -1081,6 +1153,11 @@ def drucke_sammel(z, code, ordner, station=None):
     for _rnr, tr in gefunden:
         for (pfad, idx, vers) in tr:
             nach_versender[vers].append((pfad, idx))
+    # Erfolg je Versender einzeln merken: schlaegt der Druckauftrag fuer einen
+    # Versender fehl (falscher/offline Drucker), duerfen dessen Rechnungen NICHT
+    # als gedruckt gelten - frueher wurden hier ALLE `gefunden`-Rechnungen
+    # unbedingt markiert, unabhaengig vom tatsaechlichen Druckergebnis.
+    versender_ok = {}
     for versender, seiten in nach_versender.items():
         writer = PdfWriter()
         erste = _reader(z, seiten[0][0]).pages[seiten[0][1]]
@@ -1094,11 +1171,15 @@ def drucke_sammel(z, code, ordner, station=None):
             writer.add_page(deck)
         for (pfad, idx) in seiten:
             writer.add_page(_reader(z, pfad).pages[idx])
-        _drucke_pdf(writer, drucker_von(versender, station),
-                    f"sammel_{code}_{versender}".replace(" ", "_"))
-    # je Rechnung als gedruckt markieren + Statistik
+        versender_ok[versender] = _drucke_pdf(
+            writer, drucker_von(versender, station),
+            f"sammel_{code}_{versender}".replace(" ", "_"))
+    # je Rechnung als gedruckt markieren + Statistik - nur wenn der Druckauftrag
+    # fuer ihren Versender tatsaechlich erfolgreich war.
     jetzt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    for rnr, tr in gefunden:
+    ok_liste = [(rnr, tr) for rnr, tr in gefunden if versender_ok.get(tr[0][2])]
+    druckfehler = sorted({vers for vers, ok in versender_ok.items() if not ok})
+    for rnr, tr in ok_liste:
         with z.lock:
             z.gedruckt[rnr] = jetzt
             z.gedruckt_heute_pv[tr[0][2]] += len(tr)
@@ -1106,13 +1187,17 @@ def drucke_sammel(z, code, ordner, station=None):
         log_statistik(STATISTIK_DATEI, tr[0][2], rnr, len(tr))
     with z.lock:
         _recompute(z)
-    teile = [f"{len(gefunden)} Label gedruckt"]
+    teile = [f"{len(ok_liste)} Label gedruckt"]
+    if druckfehler:
+        teile.append(f"FEHLER beim Drucken ({', '.join(druckfehler)}) - "
+                      f"NICHT als gedruckt markiert")
     if schon:
         teile.append(f"{len(schon)} schon vorher")
     if fehlend:
         teile.append(f"{len(fehlend)} OHNE LABEL")
     deck_hint = "" if _HAS_REPORTLAB else " - OHNE Deckblatt (reportlab fehlt)"
-    return ("gedruckt", f"Sammeldruck {code} ({g['art']}): "
+    modus = "fehler" if druckfehler and not ok_liste else "gedruckt"
+    return (modus, f"Sammeldruck {code} ({g['art']}): "
             + ", ".join(teile) + deck_hint)
 def finde_treffer(z, rn, ordner):
     """Treffer fuer eine Rechnungsnummer: erst der Live-Index, dann das
@@ -1208,7 +1293,11 @@ def verarbeite_scan(z, eingabe, ordner, erneut_callback=None):
             with z.lock:
                 z.aktive_sammel_verifikation.pop(station, None)
             st, msg = drucke_sammel(z, code, ordner, station)
-            info = {"modus": "sam_ean_fertig", "code": code, "bez": bez}
+            # info nur bei tatsaechlichem Druckerfolg setzen - sonst wuerde
+            # zeige_warnung() unten faelschlich die gruene "fertig"-Bestaetigung
+            # zeigen, obwohl der Druck laut drucke_sammel() fehlgeschlagen ist.
+            info = {"modus": "sam_ean_fertig", "code": code, "bez": bez} \
+                if st == "gedruckt" else None
             return (st, f"{msg}  [EAN bestätigt: {bez}]", info)
         if re.fullmatch(r"\d{8}|\d{12,14}", eingabe_digits_vor):
             info = {"modus": "sam_ean_falsch", "code": code, "bez": bez,
@@ -1260,7 +1349,18 @@ def verarbeite_scan(z, eingabe, ordner, erneut_callback=None):
             bez = ctx["namen"].get(eingabe_digits, "")
             if ctx["ist"] >= ctx["soll"]:
                 # vollstaendig geprueft -> JETZT drucken
-                drucke(z, ctx["treffer"], rn_ctx, station)
+                if not drucke(z, ctx["treffer"], rn_ctx, station):
+                    # Druck fehlgeschlagen: NICHT als gedruckt markieren. Der
+                    # EAN-Verifikationskontext bleibt bewusst NICHT stehen (die
+                    # naechste Bedingung wuerde ohnehin nie wieder True werden,
+                    # da "rest" schon leer ist) - Bestellung muss neu gescannt
+                    # und die EANs erneut bestaetigt werden.
+                    with z.lock:
+                        z.aktive_verifikation.pop(station, None)
+                    return ("fehler",
+                            f"{_tag(station)}FEHLER beim Drucken von {rn_ctx} "
+                            f"({ctx['versender']}) - bitte Drucker pruefen und "
+                            f"Rechnung erneut scannen", None)
                 with z.lock:
                     z.gedruckt[rn_ctx] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     z.gedruckt_heute_pv[ctx["versender"]] += ctx["pakete"]
@@ -1339,7 +1439,12 @@ def verarbeite_scan(z, eingabe, ordner, erneut_callback=None):
     if bereits:
         if erneut_callback is None or not erneut_callback(rn):
             return ("abbruch", f"{rn} bereits gedruckt - nicht erneut gedruckt", None)
-        drucke(z, treffer, rn, station)      # Reprint zaehlt NICHT mit
+        if not drucke(z, treffer, rn, station):      # Reprint zaehlt NICHT mit
+            # Verdacht-Markierung bewusst STEHEN LASSEN - der Fall ist nicht
+            # geklaert, wenn der Nachdruck gar nicht erst herauskam.
+            return ("fehler",
+                    f"{_tag(station)}FEHLER beim erneuten Drucken von {rn} "
+                    f"({versender}) - bitte Drucker pruefen", None)
         with z.lock:
             z.scan_fortschritt.pop(rn, None)
             z.letzter_scan_ts.pop(rn, None)
@@ -1419,7 +1524,14 @@ def verarbeite_scan(z, eingabe, ordner, erneut_callback=None):
             z.letzter_scan_ts.pop(rn, None)
         fertig_info = {"modus": "fertig", "rn": rn, "ist": soll, "soll": soll,
                        "menge": menge, "versender": versender}
-    drucke(z, treffer, rn, station)
+    if not drucke(z, treffer, rn, station):
+        # Weder als gedruckt markieren noch loggen/zaehlen - scan_fortschritt
+        # ist zu diesem Zeitpunkt schon zurueckgesetzt (oben, vor dem Druck),
+        # ein erneuter vollstaendiger Scan der Bestellung startet die
+        # Mehrfach-Scan-Sicherung sauber neu.
+        return ("fehler",
+                f"{_tag(station)}FEHLER beim Drucken von {rn} ({versender}) - "
+                f"bitte Drucker pruefen und erneut scannen", None)
     with z.lock:
         z.gedruckt[rn] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         z.gedruckt_heute_pv[versender] += pakete
@@ -1772,7 +1884,7 @@ def starte_cockpit():
         farben = {"gedruckt": "#00E676", "erneut": "#FFD54F",
                   "unbekannt": ROT, "kurz": ROT, "abbruch": MUTED,
                   "archiviert": WARN_GELB,
-                  "teil": WARN_GELB, "fehlt": ROT,
+                  "teil": WARN_GELB, "fehlt": ROT, "fehler": ROT,
                   "ean_start": "#29B6F6", "ean_teil": "#29B6F6", "ean_falsch": ROT,
                   "sam_ean_start": "#29B6F6", "sam_ean_falsch": ROT}
         meld_lbl.configure(text=meldung, fg=farben.get(status, FG))

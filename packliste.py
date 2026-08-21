@@ -59,8 +59,30 @@ from reportlab.graphics.shapes import Drawing
 # KONFIGURATION
 # ----------------------------------------------------------------------------
 
-VERSION = "2026-08-21a"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+VERSION = "2026-08-21b"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
 # Aenderung am selben Tag (erste = a, dann b, c ...; neuer Tag beginnt wieder bei a).
+# 2026-08-21b: NACHBESSERUNG zu 2026-08-21a - nach dem Deployment fielen zwei
+#   Regressionen auf (Rechnungslauf 21.08., u.a. fast alle Deutsche-Post-
+#   Briefmarken nicht zuordenbar + "Prüfung NICHT bestanden" auf fast jeder
+#   Packuebersicht-Seite):
+#   1) Die Zeilenanfang-Verankerung der PLZ-Suche (Punkt 2 unten) brach bei
+#      Lieferadressen mit explizitem Laenderpraefix VOR der PLZ, z.B.
+#      "DE-97262 Hausen b. Würzburg" (Rechnung 1700861, Michael Caesar) -
+#      genau wie "AT-8020" beim oesterreichischen Pendant, nur dass das bisher
+#      niemand fuer Deutschland selbst erwartet hatte. Die Zeile beginnt dann
+#      mit Buchstaben statt einer Ziffer und wurde nicht mehr gefunden -> PLZ
+#      blieb leer, Post-Zuordnung per PLZ+Hausnummer schlug reihenweise fehl.
+#      Jetzt zusaetzlich ein optionales kurzes Grossbuchstaben-Praefix (+
+#      Trenner) vor der PLZ zugelassen; der urspruengliche Fall 1700723
+#      ("GmbHPO126-0287 VDS Getriebe") bleibt weiterhin ausgeschlossen, da
+#      "Gmb..." nach dem ersten Grossbuchstaben auf Kleinbuchstaben trifft.
+#   2) Die neue Markierung "Artikelnr/Bezeichnung nicht erkannt" (Punkt 3
+#      unten) wieder entfernt: "weder Artikelnr noch Bezeichnung, nur ein
+#      Betrag" ist in diesem Amicron-Layout die NORMALE Form der Versand-
+#      kosten-Zeile (oft ganz ohne das Wort "Versandkosten" im PDF-Text) und
+#      steht auf so gut wie jeder Rechnung - die Warnung schlug dadurch
+#      praktisch immer an und machte die Pruefung durch die Flut an
+#      Falschmeldungen wertlos, statt echte Faelle sichtbar zu machen.
 # 2026-08-21a: Projektweite Fehlerpruefung, drei Punkte behoben:
 #   1) _land_aus_zeilen() verlangte bei "AT-1234" zwingend den Bindestrich,
 #      waehrend _plz() ihn schon immer optional behandelte - "AT 1234"
@@ -612,8 +634,19 @@ def extrahiere_adresse(words):
                         if re.search(r"\b(?:AT|A)-?\s?\d{4}\b", l)
                         or re.match(r"\s*\d{4}\b\s+\S", l)), "")
     else:
+        # 2026-08-21 NACHBESSERUNG: Die Verankerung auf den Zeilenanfang (s.o.)
+        # brach bei Lieferadressen mit explizitem Laenderpraefix vor der PLZ
+        # (z.B. "DE-97262 Hausen b. Würzburg", Rechnung 1700861/Michael Caesar,
+        # analog zu "AT-8020" beim oesterreichischen Pendant) - die Zeile
+        # beginnt dort mit Buchstaben, nicht mit der Ziffer, also NICHT mehr
+        # gematcht -> PLZ blieb leer, Deutsche-Post-Zuordnung schlug fehl (fast
+        # alle Briefmarken einer Sitzung nicht zuordenbar). Optionales, kurzes
+        # GROSSBUCHSTABEN-Praefix (+ Trenner) vor der PLZ jetzt zugelassen -
+        # "GmbHPO126-0287 VDS Getriebe" (der urspruengliche Fall 1700723) bleibt
+        # weiterhin ausgeschlossen, da "Gmb..." nach dem ersten Grossbuchstaben
+        # "G" auf Kleinbuchstaben "m" trifft und daher nicht passt.
         plzline = next((l for l in reversed(deliv)
-                        if re.match(r"\s*\d{5}\b", l)), "")
+                        if re.match(r"\s*(?:[A-Z]{1,3}-?\s?)?\d{5}\b", l)), "")
     idx = deliv.index(plzline) if plzline in deliv else len(deliv) - 1
     street = deliv[idx - 1] if idx - 1 >= 1 else (deliv[1] if len(deliv) > 1 else "")
     return name, street, _hausnr(street), _plz(plzline, land)
@@ -705,20 +738,21 @@ def parse_pdf(path):
             # Versand braucht nur den Betrag (Menge ist stets 1 und geht nicht in
             # die Summe ein). So warnt eine im Quell-PDF verschmolzene Versand-Menge
             # nicht unnoetig.
+            # 2026-08-21 GETESTET UND WIEDER ENTFERNT: Ein zusaetzliches Flaggen
+            # von Positionen ohne Artikelnr UND Bezeichnung wurde kurzzeitig
+            # eingebaut (Sorge: ein echter Artikel koennte so unbemerkt als
+            # Versand durchrutschen). In der Praxis ist "weder Artikelnr noch
+            # Bezeichnung, nur ein Betrag" aber genau die NORMALE Form der
+            # Versandkosten-Zeile in diesem Amicron-Layout (steht auf so gut wie
+            # JEDER Rechnung, oft komplett ohne das Wort "Versandkosten" im PDF-
+            # Text) - die Warnung schlug dadurch bei praktisch jeder einzelnen
+            # Rechnung an und machte die Pruefung durch die Flut an Falsch-
+            # meldungen wertlos. Aus den Daten allein ist der echte Versand-Fall
+            # nicht von einem tatsaechlich verlorenen Artikel unterscheidbar -
+            # deshalb bewusst wieder auf das reine Betrag-Erfordernis zurueck.
             fehlt = []
             if p["gp"] is None:
                 fehlt.append("Betrag")
-            if not p["art"] and not (p["bez"] or "").strip():
-                # Weder Artikelnr noch Bezeichnung erkannt: kann eine echte
-                # Versandkostenzeile mit abweichendem Layout sein, ODER eine
-                # Position, deren Artikelnr/Bezeichnung aus dem PDF nicht
-                # extrahiert werden konnte - aus den Daten allein NICHT
-                # unterscheidbar. Bisher lief das lautlos als "Versand"
-                # durch (Betrag stimmte ja in der Summe), wodurch ein echter
-                # Artikel unbemerkt aus Pickliste/EAN-Liste/Sammeldruck
-                # herausfallen konnte, obwohl die Sicherheitspruefung
-                # gruen blieb. Jetzt IMMER zur manuellen Pruefung markieren.
-                fehlt.append("Artikelnr/Bezeichnung nicht erkannt - Original pruefen")
         else:
             fehlt = []
             if not p["art"]:

@@ -49,9 +49,16 @@ try:
 except Exception:
     _HAS_REPORTLAB = False
 # ============================ KONFIGURATION ============================
-VERSION = "2026-08-21a"          # im Fenstertitel sichtbar -> Deployment pruefbar
+VERSION = "2026-08-21b"          # im Fenstertitel sichtbar -> Deployment pruefbar
 # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je Aenderung am selben Tag (erste
 # Aenderung des Tages = a, dann b, c ...; ein neuer Tag beginnt wieder bei a).
+# 2026-08-21b: Tagesmenge in der Kopfzeile ergaenzt - Summe der heute
+#   gedruckten Labels ueber ALLE Versender (DHL + DPD + Deutsche Post
+#   zusammen) auf einen Blick, mit Aufschluesselung je Versender in Klammern.
+#   Steht ueber dem Tagesrekord, wird bei jedem aktualisiere_anzeige()-Lauf
+#   aus z.gedruckt_heute_pv neu berechnet (bleibt korrekt auch nach dem
+#   Archivieren einzelner Dateien, da dieser Zaehler dafuer extra separat
+#   gefuehrt wird).
 # 2026-08-21a: Projektweite Fehlerpruefung, zwei Kernprobleme behoben:
 #   1) Druck-Erfolg wird jetzt tatsaechlich geprueft. Bisher wurde SumatraPDF
 #      per subprocess.Popen() nur GESTARTET, nie auf Erfolg geprueft - ein
@@ -1631,6 +1638,12 @@ def starte_cockpit():
     kopf_rechts.pack(side="right", padx=(16, 0))
     status_lbl = tk.Label(kopf_rechts, font=f_status, fg=FG, bg=BG, anchor="e")
     status_lbl.pack(anchor="e")
+    # Tagesmenge: Summe der heute gedruckten Labels ueber ALLE Versender
+    # (DHL + DPD + Deutsche Post zusammen) - auf einen Blick, ohne die
+    # einzelnen Kacheln von Hand zusammenzaehlen zu muessen.
+    tagesmenge_lbl = tk.Label(kopf_rechts, font=f_high, fg="#4FC3F7", bg=BG,
+                              justify="right", anchor="e")
+    tagesmenge_lbl.pack(anchor="e", pady=(2, 0))
     # Tagesrekord: hoechste Zahl versendeter Bestellungen an einem einzelnen Tag
     highscore_lbl = tk.Label(kopf_rechts, font=f_high, fg=GOLD, bg=BG,
                              justify="right", anchor="e")
@@ -2029,8 +2042,14 @@ def starte_cockpit():
                         text=f"OHNE Zuordnung ({len(unzuordenbar)}) - Adresse pruefen:\n{namen}{mehr}")
                 else:
                     w["warn"].configure(text="")
-        # ---- Tagesrekord nur neu berechnen, wenn heute etwas dazukam ----
+        # ---- Tagesmenge (Summe ueber alle Versender) + Tagesrekord ----
         heute_summe = sum(gedruckt_pv.values())
+        aufschluesselung = " · ".join(
+            f"{v} {n}" for v, n in sorted(gedruckt_pv.items()) if n > 0)
+        tagesmenge_lbl.configure(
+            text=f"📦 Heute gesamt: {heute_summe}"
+                 + (f"   ({aufschluesselung})" if aufschluesselung else ""))
+        # Tagesrekord nur neu berechnen, wenn heute etwas dazukam
         if heute_summe != z.highscore_sig:
             z.highscore_sig = heute_summe
             highscore_lbl.configure(text=highscore_text(STATISTIK_DATEI))

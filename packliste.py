@@ -59,8 +59,21 @@ from reportlab.graphics.shapes import Drawing
 # KONFIGURATION
 # ----------------------------------------------------------------------------
 
-VERSION = "2026-08-21c"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+VERSION = "2026-08-21d"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
 # Aenderung am selben Tag (erste = a, dann b, c ...; neuer Tag beginnt wieder bei a).
+# 2026-08-21d: Die beiden in 2026-08-21c offen gelassenen Einschraenkungen auf
+#   Wunsch nachgezogen:
+#   1) Sammelliste (Teil A) zeigt jetzt fuer Gewichts-, Packungs- UND Set-
+#      Artikel dieselbe tatsaechliche Stueckzahl/Einheit wie die Packuebersicht
+#      (Teil B), statt der rohen Bestellmenge. Neue gemeinsame Funktion
+#      effektive_menge() buendelt die Multiplikator-Logik (bisher nur inline in
+#      pack_anzeige()); die Aggregation in der Sammelliste nutzt sie jetzt
+#      ebenso wie pack_anzeige(). Hervorhebung (rot/fett) folgt konsistent mit.
+#   2) order_scananzahl() (-> mengen_zuordnung.csv, Mehrfach-Scan-Sicherung in
+#      scan_druck.py) zaehlt jetzt auch bei Set-Artikeln nach der tatsaechlichen
+#      Stueckzahl (Set-Groesse x Menge), nicht mehr nur bei Gewichtsartikeln.
+#      Packungsartikel zaehlen dort bewusst WEITERHIN nach der rohen
+#      Bestellmenge (unveraendert, nicht Teil dieser Anfrage).
 # 2026-08-21c: Set-Artikel ("N-Fach-Artikel") auf der Packuebersicht wie
 #   Gewichts-/Packungsartikel behandelt. Neue explizite Markierung im PDF
 #   ("<N>-Fach-Artikel" als eigene Zeile im selben Bereich wie "Lagerort:",
@@ -949,32 +962,39 @@ def _fach_token_re(n):
     return re.compile(rf"(?<!\d){n}\s*x\b", re.IGNORECASE)
 
 
-def pack_anzeige(p):
-    """Anzeige (bez, mengentext, hervorheben) fuer die PACKUEBERSICHT.
-    Gewichtsartikel: kg-Token im Text durch 'GESAMTMENGE' ersetzen, Menge =
-    Stueckgewicht x bestellte Menge, Einheit kg. Packungsartikel (<Zahl>/<N> mit
-    '<N> Stück' im Text): '<N> Stück' -> 'GESAMTMENGE', Menge = N x bestellte
-    Menge in Stück. Set-Artikel ('<N>-Fach-Artikel' im PDF, z.B. '2x
-    Flaschenkappe' als 2er-Set verkauft): '<N>x' -> 'GESAMTMENGE', Menge = N x
-    bestellte Menge in Stück - die Set-Groesse N kommt hier NICHT aus einer
-    Ableitung, sondern direkt aus der expliziten '<N>-Fach-Artikel'-Markierung
-    im PDF (siehe FACH_ARTIKEL_RE/parse_block). Alle drei Faelle immer
-    hervorgehoben. Sonst unveraendert (Hervorhebung wie bisher bei Menge > 1)."""
+def effektive_menge(p):
+    """(menge, einh, bez, immer_hervorheben) - die TATSAECHLICH zu verpackende
+    Menge/Einheit/Bezeichnung einer Position, nach Gewichts-/Packungs-/Set-
+    Artikel-Multiplikator (Mengen-Token in der Bezeichnung durch 'GESAMTMENGE'
+    ersetzt). Bei einem normalen Artikel unveraendert (menge/einh/bez wie im
+    PDF, immer_hervorheben=False). Gemeinsame Grundlage fuer die Packuebersicht
+    (pack_anzeige, s.u.) UND die aggregierte Sammelliste (Teil A) - beide
+    sollen dieselbe tatsaechliche Stueckzahl/Einheit zeigen, nicht nur die
+    Packuebersicht."""
     qty = p["menge"] if p["menge"] is not None else 1
     gw = artikel_gewicht(p["art"], p["bez"])
     if gw is not None:
         bez = GEWICHT_RE.sub("GESAMTMENGE", p["bez"], count=1)
-        return (bez, mengentext(gw * qty, "kg"), True)
+        return (gw * qty, "kg", bez, True)
     pk = artikel_packung(p["art"], p["bez"])
     if pk is not None:
         bez = _pack_token_re(pk).sub("GESAMTMENGE", p["bez"], count=1)
-        return (bez, mengentext(pk * qty, "Stück"), True)
+        return (pk * qty, "Stück", bez, True)
     fach = p.get("fach")
     if fach is not None and fach > 1:
         bez = _fach_token_re(fach).sub("GESAMTMENGE", p["bez"], count=1)
-        return (bez, mengentext(fach * qty, "Stück"), True)
-    return (p["bez"], mengentext(p["menge"], p["einh"]),
-            (p["menge"] or 0) > 1.0000001)
+        return (fach * qty, "Stück", bez, True)
+    return (p["menge"], p["einh"], p["bez"], False)
+
+
+def pack_anzeige(p):
+    """Anzeige (bez, mengentext, hervorheben) fuer die PACKUEBERSICHT - siehe
+    effektive_menge() fuer die Multiplikator-Logik (Gewichts-/Packungs-/Set-
+    Artikel). Bei einem normalen Artikel bleibt die bisherige Menge>1-
+    Hervorhebung bestehen."""
+    menge, einh, bez, immer_hv = effektive_menge(p)
+    hv = immer_hv or (menge or 0) > 1.0000001
+    return (bez, mengentext(menge, einh), hv)
 
 
 def scan_bedarf(eff):
@@ -993,14 +1013,28 @@ def scan_bedarf(eff):
 
 def order_scananzahl(r):
     """Noetige Scans fuer eine ganze Bestellung = Summe der Positions-Scans,
-    gedeckelt auf 5 (mind. 1). Gewichtsartikel zaehlen nach kg (Gewicht x Menge)."""
+    gedeckelt auf 5 (mind. 1). Gewichts- UND Set-Artikel (N-Fach-Artikel)
+    zaehlen nach ihrer TATSAECHLICHEN Stueckzahl (Gewicht x Menge bzw.
+    Set-Groesse x Menge) statt der rohen Bestellmenge - sonst wuerde die
+    Mehrfach-Scan-Sicherung z.B. bei einem als '1x' bestellten 2er-Set-Artikel
+    nur 1 statt 2 Scans verlangen und ein vergessenes zweites Teil nicht
+    abfangen (2026-08-21c nachgezogen, analog zur bereits bestehenden
+    Gewichtsartikel-Behandlung). Packungsartikel (Artikelnr '<Zahl>/<N>')
+    zaehlen bewusst WEITERHIN nach der rohen Bestellmenge - unveraendertes,
+    bereits bestehendes Verhalten, nicht Teil dieser Anfrage."""
     total = 0
     for p in r["positionen"]:
         if ist_versand(p["art"], p["bez"]):
             continue
-        gw = artikel_gewicht(p["art"], p["bez"])
         qty = p["menge"] if p["menge"] is not None else 1
-        eff = (gw * qty) if gw is not None else qty
+        gw = artikel_gewicht(p["art"], p["bez"])
+        fach = p.get("fach")
+        if gw is not None:
+            eff = gw * qty
+        elif fach is not None and fach > 1:
+            eff = fach * qty
+        else:
+            eff = qty
         total += scan_bedarf(eff)
     return max(1, min(5, total))
 
@@ -1101,6 +1135,11 @@ def baue_pdf(rechnungen, pdf_pfad, gruppen):
     # ja mitverpackt werden. Die Spalte "Lagerort" zeigt, wo der Artikel liegt.
     # Dadurch sind Kommissionierliste (Teil A) und Packuebersicht (Teil B)
     # konsistent, und jeder Artikel steht genau einmal (kein Doppel-Picken).
+    # Menge/Einheit/Bezeichnung kommen ueber effektive_menge() - bis 2026-08-21c
+    # wurde hier IMMER die rohe Bestellmenge summiert, auch bei Gewichts-/
+    # Packungs-/Set-Artikeln (die Packuebersicht zeigte schon die tatsaechliche
+    # Stueckzahl, die Sammelliste oben auf der Seite aber nur die rohe Menge -
+    # bewusst nachgeruestet, damit beide Teile konsistent dieselbe Menge zeigen).
     kat_artikel = {k: {} for k in kategorien}
     for r in rechnungen:
         kat = kat_von(r)
@@ -1108,10 +1147,12 @@ def baue_pdf(rechnungen, pdf_pfad, gruppen):
             if ist_versand(p["art"], p["bez"]):
                 continue
             key = p["art"] or p["bez"]
+            eff_menge, eff_einh, eff_bez, immer_hv = effektive_menge(p)
             eintrag = kat_artikel[kat].setdefault(
-                key, {"art": p["art"], "bez": p["bez"], "einh": p["einh"],
-                      "lager": set(), "menge": 0.0})
-            eintrag["menge"] += (p["menge"] or 0)
+                key, {"art": p["art"], "bez": eff_bez, "einh": eff_einh,
+                      "lager": set(), "menge": 0.0, "immer_hv": False})
+            eintrag["menge"] += (eff_menge or 0)
+            eintrag["immer_hv"] = eintrag["immer_hv"] or immer_hv
             for lo in p["lagerorte"]:
                 eintrag["lager"].add(lo)
 
@@ -1129,7 +1170,7 @@ def baue_pdf(rechnungen, pdf_pfad, gruppen):
         for key in sorted(artikel, key=lambda k: _artikel_sortkey(artikel[k]["art"] or k)):
             a = artikel[key]
             lager = ", ".join(sorted(a["lager"])) if a["lager"] else "-"
-            hv = (a["menge"] or 0) > 1.0000001
+            hv = a.get("immer_hv") or (a["menge"] or 0) > 1.0000001
             data.append([
                 Paragraph(lager, st_cell),
                 Paragraph(a["art"] or "-", st_cell),

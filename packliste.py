@@ -59,8 +59,20 @@ from reportlab.graphics.shapes import Drawing
 # KONFIGURATION
 # ----------------------------------------------------------------------------
 
-VERSION = "2026-08-21b"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+VERSION = "2026-08-21c"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
 # Aenderung am selben Tag (erste = a, dann b, c ...; neuer Tag beginnt wieder bei a).
+# 2026-08-21c: Set-Artikel ("N-Fach-Artikel") auf der Packuebersicht wie
+#   Gewichts-/Packungsartikel behandelt. Neue explizite Markierung im PDF
+#   ("<N>-Fach-Artikel" als eigene Zeile im selben Bereich wie "Lagerort:",
+#   z.B. "2-Fach-Artikel" bei einem Artikel "2x Flaschenkappe") -> N wird in
+#   parse_block() erfasst (neues Feld "fach"), pack_anzeige() ersetzt das
+#   "<N>x"-Mengen-Praefix in der Bezeichnung durch "GESAMTMENGE" und zeigt in
+#   der Menge-Spalte die tatsaechlich zu verpackende Stueckzahl (N x bestellte
+#   Menge), analog zu den bestehenden Gewichts-/Packungsartikeln. Bewusst NUR
+#   auf der Packuebersicht (Teil B) - die aggregierte Sammelliste (Teil A)
+#   zeigt bei Gewichts-/Packungsartikeln schon bisher die rohe Bestellmenge
+#   ohne Multiplikator (bekannte, bisher nicht angefragte Einschraenkung) und
+#   bleibt fuer Set-Artikel aus Konsistenzgruenden gleich behandelt.
 # 2026-08-21b: NACHBESSERUNG zu 2026-08-21a - nach dem Deployment fielen zwei
 #   Regressionen auf (Rechnungslauf 21.08., u.a. fast alle Deutsche-Post-
 #   Briefmarken nicht zuordenbar + "Prüfung NICHT bestanden" auf fast jeder
@@ -289,6 +301,19 @@ def _lagerort_wert(txt):
     return " ".join(after.split())
 
 
+# "<N>-Fach-Artikel" (z.B. "2-Fach-Artikel", "5-Fach-Artikel"): steht wie die
+# Lagerort-Zeile als eigene Zeile im Positionsblock und markiert einen im Set
+# verkauften Artikel - N = Anzahl der im Set/in der Verpackungseinheit
+# enthaltenen Einzelteile. Bewusst eine EXPLIZITE Markierung statt einer
+# Ableitung aus der Bezeichnung (wie bei Gewichts-/Packungsartikeln): die
+# Bezeichnung selbst enthaelt haeufig ein "<N>x "-Praefix (z.B. "2x
+# Flaschenkappe", "12x campcooga Schraubkartusche"), das aber NICHT immer
+# bedeutet, dass N Einzelteile zu verpacken sind (z.B. ein Karton mit 12
+# Kartuschen wird ggf. als EIN Stueck gepackt) - ohne expliziten Marker waere
+# das nicht zuverlaessig unterscheidbar.
+FACH_ARTIKEL_RE = re.compile(r"(\d+)-Fach-Artikel", re.IGNORECASE)
+
+
 # ----------------------------------------------------------------------------
 # KATEGORIE-ZUORDNUNG (allein aus dem Lagerort)
 # ----------------------------------------------------------------------------
@@ -502,6 +527,7 @@ def parse_block(words):
     art = einh = ean = ""
     menge = ep = gp = None
     bez_parts, lagerorte = [], []
+    fach = None
 
     # Menge / Einzelpreis / G-Preis aus der Hauptzeile (rechts verankert).
     if main:
@@ -552,6 +578,13 @@ def parse_block(words):
                 lagerorte.append(wert)
             i += 1
             continue
+        m_fach = FACH_ARTIKEL_RE.search(txt)
+        if m_fach:
+            # "<N>-Fach-Artikel"-Zeile: wie Lagerort NICHT in die Bezeichnung
+            # einfliessen lassen, sondern als Set-Groesse merken.
+            fach = int(m_fach.group(1))
+            i += 1
+            continue
         links = [w for w in sorted(ln, key=lambda w: w["x0"])
                  if w["x0"] < ART_MAX and w["text"] != "."]
         if links and not art_done:                          # erste Positionszeile
@@ -579,6 +612,7 @@ def parse_block(words):
         "ep": ep,
         "gp": gp,
         "lagerorte": lagerorte,
+        "fach": fach,
     }
 
 
@@ -909,13 +943,23 @@ def artikel_packung(art, bez):
     return None
 
 
+def _fach_token_re(n):
+    """Regex fuer ein '<n>x'-Mengen-Token am Anfang der Bezeichnung eines
+    Set-Artikels (z.B. '2x' in '2x Flaschenkappe')."""
+    return re.compile(rf"(?<!\d){n}\s*x\b", re.IGNORECASE)
+
+
 def pack_anzeige(p):
     """Anzeige (bez, mengentext, hervorheben) fuer die PACKUEBERSICHT.
     Gewichtsartikel: kg-Token im Text durch 'GESAMTMENGE' ersetzen, Menge =
     Stueckgewicht x bestellte Menge, Einheit kg. Packungsartikel (<Zahl>/<N> mit
     '<N> Stück' im Text): '<N> Stück' -> 'GESAMTMENGE', Menge = N x bestellte
-    Menge in Stück. Beide immer hervorgehoben. Sonst unveraendert (Hervorhebung
-    wie bisher bei Menge > 1)."""
+    Menge in Stück. Set-Artikel ('<N>-Fach-Artikel' im PDF, z.B. '2x
+    Flaschenkappe' als 2er-Set verkauft): '<N>x' -> 'GESAMTMENGE', Menge = N x
+    bestellte Menge in Stück - die Set-Groesse N kommt hier NICHT aus einer
+    Ableitung, sondern direkt aus der expliziten '<N>-Fach-Artikel'-Markierung
+    im PDF (siehe FACH_ARTIKEL_RE/parse_block). Alle drei Faelle immer
+    hervorgehoben. Sonst unveraendert (Hervorhebung wie bisher bei Menge > 1)."""
     qty = p["menge"] if p["menge"] is not None else 1
     gw = artikel_gewicht(p["art"], p["bez"])
     if gw is not None:
@@ -925,6 +969,10 @@ def pack_anzeige(p):
     if pk is not None:
         bez = _pack_token_re(pk).sub("GESAMTMENGE", p["bez"], count=1)
         return (bez, mengentext(pk * qty, "Stück"), True)
+    fach = p.get("fach")
+    if fach is not None and fach > 1:
+        bez = _fach_token_re(fach).sub("GESAMTMENGE", p["bez"], count=1)
+        return (bez, mengentext(fach * qty, "Stück"), True)
     return (p["bez"], mengentext(p["menge"], p["einh"]),
             (p["menge"] or 0) > 1.0000001)
 

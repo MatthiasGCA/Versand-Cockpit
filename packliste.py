@@ -59,8 +59,21 @@ from reportlab.graphics.shapes import Drawing
 # KONFIGURATION
 # ----------------------------------------------------------------------------
 
-VERSION = "2026-08-21g"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+VERSION = "2026-08-21h"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
 # Aenderung am selben Tag (erste = a, dann b, c ...; neuer Tag beginnt wieder bei a).
+# 2026-08-21h: Sammeldruck-Deckblatt zeigt jetzt die ECHTE Packmenge statt
+#   hartcodiert "1 Stück". Hintergrund (auf Wunsch behoben): Beim Sammeldruck
+#   sieht der Packer haeufig NUR das gedruckte Deckblatt, nicht die Pickliste
+#   selbst - bei einem Gewichts-/Packungs-/Set-Artikel (z.B. "3 Bestellungen
+#   à 1 Stück" bei einem 3-Fach-Artikel) war das bisher schlicht falsch.
+#   finde_sammelgruppen() berechnet die Menge je Bestellung jetzt ueber
+#   effektive_menge() (neues Feld "menge_je_text", z.B. "3 Stück"), die
+#   Bezeichnung hat das Mengen-Token dabei ebenfalls durch "GESAMTMENGE"
+#   ersetzt. Neue CSV-Spalte "MengeJeBestellung" (ans Ende angehaengt, siehe
+#   schreibe_sammel_csv/_lade_bestehende_sammelgruppen) transportiert das nach
+#   scan_druck.py, das es sowohl auf dem live gedruckten Deckblatt
+#   (deckblatt_seite()) als auch in der Sammeldruck-Vorschau auf der
+#   Pickliste selbst (gruppe_block()) anzeigt.
 # 2026-08-21g: Bei erneuter projektweiter Pruefung gefundener, von den
 #   heutigen Aenderungen UNABHAENGIGER Bug in extrahiere_adresse() behoben:
 #   Bei einer Lieferadresse mit nur 2 Zeilen (Name + "PLZ Ort", keine eigene
@@ -425,7 +438,16 @@ def finde_sammelgruppen(rechnungen, min_anzahl=SAMMEL_MIN):
     """Bestellungen, die genau EINEN Artikel mit Menge 1 enthalten (Versand-
     zeilen zaehlen nicht), nach Artikelnummer gruppieren. Gruppen ab
     `min_anzahl` Bestellungen bekommen einen Sammel-Barcode 'SAM-n'.
-    Rueckgabe: Liste von dicts {code, art, bez, einh, rnr:[...]}.
+    Rueckgabe: Liste von dicts {code, art, bez, einh, menge_je_text, rnr:[...]}.
+
+    "bez" und "menge_je_text" kommen ueber effektive_menge() - bei einem
+    Gewichts-/Packungs-/Set-Artikel (2026-08-21h) steht hier NICHT mehr
+    hartcodiert "1 Stück", sondern die tatsaechlich je Bestellung zu
+    verpackende Menge (z.B. "3 Stück" bei einem 3-Fach-Artikel), und die
+    Bezeichnung hat das Mengen-Token durch "GESAMTMENGE" ersetzt. Der Packer
+    sieht bei einem Sammeldruck haeufig NUR das gedruckte Deckblatt (nicht die
+    Pickliste selbst) - das muss deshalb exakt und eindeutig die reale
+    Packmenge zeigen, siehe drucke_sammel()/deckblatt_seite() in scan_druck.py.
 
     ACHTUNG: die hier vergebenen Codes sind nur VORLAEUFIG (reine
     Aufzaehlung "SAM-1, SAM-2, ..." innerhalb DIESES Laufs) - main() ruft
@@ -442,8 +464,10 @@ def finde_sammelgruppen(rechnungen, min_anzahl=SAMMEL_MIN):
             continue
         if not p["art"]:
             continue
+        eff_menge, eff_einh, eff_bez, _ = effektive_menge(p)
         g = nach_artikel.setdefault(
-            p["art"], {"art": p["art"], "bez": p["bez"], "einh": p["einh"],
+            p["art"], {"art": p["art"], "bez": eff_bez, "einh": p["einh"],
+                       "menge_je_text": mengentext(eff_menge, eff_einh),
                        "ean": "", "rnr": []})
         if not g["ean"] and p.get("ean"):
             g["ean"] = p["ean"]
@@ -460,7 +484,9 @@ def _lade_bestehende_sammelgruppen(csv_pfad):
     """sammel_zuordnung.csv -> Liste noch 'frischer' Gruppen aus einem
     frueheren Lauf (aeltere als BRUECKEN_CSV_MERGE_TAGE werden verworfen,
     siehe dort). Format je Zeile:
-        Code;Artikelnr;Bezeichnung;Menge;Rechnungsnummern;EAN;Rechnungsdatum"""
+        Code;Artikelnr;Bezeichnung;Menge;Rechnungsnummern;EAN;Rechnungsdatum;
+        MengeJeBestellung (letzte Spalte seit 2026-08-21h, siehe
+        finde_sammelgruppen/schreibe_sammel_csv)."""
     gruppen = []
     for t in _lies_bestehende_zeilen(csv_pfad, 5):
         datum = t[6] if len(t) > 6 else ""
@@ -472,6 +498,9 @@ def _lade_bestehende_sammelgruppen(csv_pfad):
         gruppen.append({
             "code": t[0], "art": t[1], "bez": t[2],
             "ean": t[5] if len(t) > 5 else "", "rnr": rnr, "datum": datum,
+            # Aeltere Zeilen (vor 2026-08-21h) haben diese Spalte noch nicht ->
+            # Fallback auf die bis dahin einzig moegliche Annahme "1 Stück".
+            "menge_je_text": t[7] if len(t) > 7 and t[7] else "1 Stück",
         })
     return gruppen
 
@@ -1295,7 +1324,8 @@ def baue_pdf(rechnungen, pdf_pfad, gruppen):
         n = len(gruppe_rechnungen)
         titel = Paragraph(
             f"<b>Sammeldruck {g['code']}</b> &middot; Artikel <b>{g['art']}</b> &ndash; "
-            f"{g['bez']} &middot; {n} Bestellungen à 1 Stück", st_kopf)
+            f"{g['bez']} &middot; {n} Bestellungen à {g.get('menge_je_text') or '1 Stück'}",
+            st_kopf)
         try:
             bc = code128.Code128(g["code"], barHeight=18 * mm, barWidth=0.5 * mm)
         except Exception:
@@ -1518,15 +1548,19 @@ def schreibe_csv(rechnungen, csv_pfad):
 
 def schreibe_sammel_csv(gruppen, csv_pfad):
     """Bruecke fuer den Sammeldruck in scan_druck.py.
-    Format: Code;Artikelnr;Bezeichnung;Menge;Rechnungsnummern;EAN;Rechnungsdatum
-    (Rechnungsnummern kommasepariert). Die EAN-Spalte ist nur gefuellt, wenn
-    der Artikel tatsaechlich eine EAN traegt - scan_druck.py verlangt dann vor
-    dem Sammeldruck zusaetzlich zum Sammelcode die Bestaetigungs-EAN des
-    Artikels. 'Rechnungsdatum' = Datum, an dem der Code ERSTELLT wurde (fuer
-    die Verfallsfrist beim Zusammenfuehren mit einem spaeteren Lauf, siehe
-    merge_sammelgruppen/BRUECKEN_CSV_MERGE_TAGE). Beide Spalten bewusst ans
-    ENDE angehaengt, damit eine aeltere scan_druck.py-Version die Datei
-    weiter unveraendert lesen kann.
+    Format: Code;Artikelnr;Bezeichnung;Menge;Rechnungsnummern;EAN;Rechnungsdatum;
+    MengeJeBestellung (Rechnungsnummern kommasepariert). Die EAN-Spalte ist nur
+    gefuellt, wenn der Artikel tatsaechlich eine EAN traegt - scan_druck.py
+    verlangt dann vor dem Sammeldruck zusaetzlich zum Sammelcode die
+    Bestaetigungs-EAN des Artikels. 'Rechnungsdatum' = Datum, an dem der Code
+    ERSTELLT wurde (fuer die Verfallsfrist beim Zusammenfuehren mit einem
+    spaeteren Lauf, siehe merge_sammelgruppen/BRUECKEN_CSV_MERGE_TAGE).
+    'MengeJeBestellung' (seit 2026-08-21h) = die tatsaechlich JE Bestellung zu
+    verpackende Menge als fertiger Text (z.B. "3 Stück" bei einem
+    3-Fach-Artikel, sonst "1 Stück") - kommt aus finde_sammelgruppen() ueber
+    effektive_menge(). Alle Spalten ab 'EAN' bewusst ans ENDE angehaengt, damit
+    eine aeltere scan_druck.py-Version die Datei weiter lesen kann (faellt dann
+    nur auf die alte, hartcodierte "1 Stück"-Annahme zurueck).
 
     `gruppen` ist hier bereits das GEMERGTE Gesamtergebnis aus
     merge_sammelgruppen() (alte, noch frische Gruppen + neue Gruppen dieses
@@ -1534,10 +1568,12 @@ def schreibe_sammel_csv(gruppen, csv_pfad):
     with open(csv_pfad, "w", encoding="utf-8-sig", newline="") as f:
         w = csv.writer(f, delimiter=";", lineterminator="\n")
         w.writerow(["Code", "Artikelnr", "Bezeichnung", "Menge",
-                     "Rechnungsnummern", "EAN", "Rechnungsdatum"])
+                     "Rechnungsnummern", "EAN", "Rechnungsdatum",
+                     "MengeJeBestellung"])
         for g in gruppen:
             w.writerow([g["code"], g["art"], g["bez"], len(g["rnr"]),
-                        ",".join(g["rnr"]), g.get("ean", ""), g.get("datum", "")])
+                        ",".join(g["rnr"]), g.get("ean", ""), g.get("datum", ""),
+                        g.get("menge_je_text") or "1 Stück"])
 
 
 def schreibe_mengen_csv(rechnungen, csv_pfad):

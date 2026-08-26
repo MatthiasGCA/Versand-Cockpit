@@ -49,9 +49,23 @@ try:
 except Exception:
     _HAS_REPORTLAB = False
 # ============================ KONFIGURATION ============================
-VERSION = "2026-08-21c"          # im Fenstertitel sichtbar -> Deployment pruefbar
+VERSION = "2026-08-21d"          # im Fenstertitel sichtbar -> Deployment pruefbar
 # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je Aenderung am selben Tag (erste
 # Aenderung des Tages = a, dann b, c ...; ein neuer Tag beginnt wieder bei a).
+# 2026-08-21d: Zwei auf Wunsch nachgezogene Aenderungen:
+#   1) Sammeldruck-Deckblatt (deckblatt_seite()) zeigt jetzt die ECHTE
+#      Packmenge je Bestellung (neuer Parameter menge_je, aus SAMMEL_LOOKUP/
+#      sammel_zuordnung.csv, siehe packliste.py 2026-08-21h) statt hart-
+#      codiert "1 Stueck" - der Packer sieht beim Sammeldruck haeufig NUR
+#      dieses Deckblatt, nicht die Pickliste selbst, es muss deshalb exakt
+#      die reale Packmenge zeigen.
+#   2) EAN-Verifikation auf MAX_SCANS gedeckelt: lade_ean_zuordnung() summierte
+#      "soll" bisher unbegrenzt ueber alle EAN-Positionen einer Bestellung
+#      (jede Position war zwar schon einzeln durch packliste.py auf 5
+#      gedeckelt, die Summe mehrerer EAN-Positionen aber nicht) - jetzt wird
+#      wie beim Mengen-Pfad (order_scananzahl) nie mehr als MAX_SCANS
+#      verlangt, auch wenn die tatsaechliche Stueckzahl (z.B. bei einem
+#      Set-Artikel) hoeher ist.
 # 2026-08-21c: Nachbesserung zu 2026-08-21a/b nach erneuter Pruefung:
 #   1) Sammeldruck-Teilerfolg wurde als voller Erfolg gemeldet (gruen, bei per
 #      EAN bestaetigtem Sammeldruck sogar als grosses gruenes "GEDRUCKT"-
@@ -475,14 +489,20 @@ def lade_post_zuordnung(pfad):
     _POST_CSV_SIG = sig
     return True                     # Zuordnung wurde neu eingelesen
 # ----------------- Sammeldruck-Zuordnung (Sammelcode -> Bestellungen) ---------
-SAMMEL_LOOKUP = {}          # "SAM-n" -> {"art","bez","menge","rnr":[...]}
+SAMMEL_LOOKUP = {}          # "SAM-n" -> {"art","bez","menge","rnr":[...],"menge_je"}
 _SAMMEL_CSV_SIG = None
 def lade_sammel_zuordnung(pfad):
-    """sammel_zuordnung.csv -> {Code: {art, bez, menge, rnr:[...], ean}}.
+    """sammel_zuordnung.csv -> {Code: {art, bez, menge, rnr:[...], ean, menge_je}}.
     Format: Code;Artikelnr;Bezeichnung;Menge;Rechnungsnummern(kommasepariert)
-    [;EAN]. Die EAN-Spalte ist optional (aeltere packliste.py-Version ohne
-    EAN-Spalte) - fehlt sie oder ist sie leer, wird fuer diesen Sammelcode
-    KEINE EAN-Bestaetigung verlangt (alte Logik: direkter Druck)."""
+    [;EAN[;Rechnungsdatum[;MengeJeBestellung]]]. EAN/Rechnungsdatum/
+    MengeJeBestellung sind optional (aeltere packliste.py-Version ohne diese
+    Spalten) - fehlt EAN oder ist leer, wird fuer diesen Sammelcode KEINE
+    EAN-Bestaetigung verlangt (alte Logik: direkter Druck). Fehlt
+    MengeJeBestellung (Spalte seit 2026-08-21h - z.B. "3 Stück" bei einem
+    3-Fach-Artikel), gilt die alte Annahme "1 Stück" (deckblatt_seite() in
+    scan_druck.py zeigt das direkt auf dem gedruckten Deckblatt, das der
+    Packer beim Sammeldruck oft OHNE die Pickliste selbst in der Hand hat -
+    muss deshalb exakt stimmen)."""
     global SAMMEL_LOOKUP, _SAMMEL_CSV_SIG
     try:
         st = os.stat(pfad)
@@ -502,9 +522,11 @@ def lade_sammel_zuordnung(pfad):
                     continue
                 code, art, bez, menge, rnrs = t[0], t[1], t[2], t[3], t[4]
                 ean = re.sub(r"\D", "", t[5]) if len(t) > 5 else ""
+                menge_je = (t[7].strip() if len(t) > 7 and t[7].strip() else "1 Stück")
                 rnr = [r.strip() for r in rnrs.split(",") if r.strip()]
                 lookup[code.strip().upper()] = {
-                    "art": art, "bez": bez, "menge": menge, "rnr": rnr, "ean": ean}
+                    "art": art, "bez": bez, "menge": menge, "rnr": rnr, "ean": ean,
+                    "menge_je": menge_je}
     except Exception:
         return
     SAMMEL_LOOKUP, _SAMMEL_CSV_SIG = lookup, sig
@@ -615,6 +637,16 @@ def lade_ean_zuordnung(pfad):
                 eintrag["soll"] += anzahl
     except Exception:
         return
+    # Gesamt-Soll je Bestellung auf MAX_SCANS deckeln - analog zu
+    # order_scananzahl() (mengen_zuordnung.csv), die ihre Summe schon immer
+    # deckelt. packliste.py deckelt zwar bereits JE POSITION (scan_bedarf()
+    # -> max. 5 je Zeile), aber die Summe MEHRERER EAN-Positionen einer
+    # Bestellung konnte trotzdem ueber MAX_SCANS liegen (z.B. zwei
+    # verschiedene EAN-Artikel mit je 5 -> 10 gesamt) - explizit gewuenscht:
+    # nie mehr als MAX_SCANS Scans verlangen, egal wie hoch die tatsaechliche
+    # Stueckzahl (z.B. bei einem Set-Artikel) ist.
+    for eintrag in lookup.values():
+        eintrag["soll"] = min(MAX_SCANS, eintrag["soll"])
     EAN_LOOKUP, _EAN_CSV_SIG = lookup, sig
 def hat_ean_pflicht(rn):
     """True, wenn fuer rn mindestens eine EAN-Position vorliegt (und EAN-Scan an)."""
@@ -1152,8 +1184,14 @@ def _drucke_pdf(writer, drucker, name):
     with open(tmp, "wb") as f:
         writer.write(f)
     return _sende_an_drucker(tmp, drucker)
-def deckblatt_seite(breite, hoehe, code, art, bez, anzahl, versender):
-    """Deckblatt in Label-Groesse als PdfReader-Seite (oder None ohne reportlab)."""
+def deckblatt_seite(breite, hoehe, code, art, bez, anzahl, versender, menge_je="1 Stück"):
+    """Deckblatt in Label-Groesse als PdfReader-Seite (oder None ohne reportlab).
+    menge_je = die TATSAECHLICH je Bestellung zu verpackende Menge als Text
+    (z.B. "3 Stück" bei einem 3-Fach-Artikel, kommt aus sammel_zuordnung.csv/
+    SAMMEL_LOOKUP - siehe lade_sammel_zuordnung). Das ist das einzige Blatt,
+    das der Packer beim Sammeldruck haeufig in der Hand haelt (die Pickliste
+    selbst sieht er oft nicht) - muss deshalb exakt die reale Packmenge
+    zeigen, nicht die frueher hartcodierte Annahme "1 Stueck"."""
     if not _HAS_REPORTLAB:
         return None
     buf = io.BytesIO()
@@ -1177,7 +1215,7 @@ def deckblatt_seite(breite, hoehe, code, art, bez, anzahl, versender):
     zeile(f"Artikel {art}", hoehe * 0.085)
     zeile(bez, hoehe * 0.038, bold=False)
     y[0] -= hoehe * 0.015
-    zeile(f"{anzahl} x 1 Stueck", hoehe * 0.06)
+    zeile(f"{anzahl} x {menge_je}", hoehe * 0.06)
     c.setFont("Helvetica", max(7.0, hoehe * 0.028))
     c.drawCentredString(cx, m + hoehe * 0.04, f"{versender}  -  {code}")
     c.showPage()
@@ -1228,7 +1266,8 @@ def drucke_sammel(z, code, ordner, station=None):
             except Exception:
                 bseite, hseite = 283.0, 425.0
             deck = deckblatt_seite(bseite, hseite, code, g["art"], g["bez"],
-                                   len(gefunden), versender)
+                                   len(gefunden), versender,
+                                   g.get("menge_je", "1 Stück"))
             if deck is not None:
                 writer.add_page(deck)
             for (pfad, idx) in seiten:

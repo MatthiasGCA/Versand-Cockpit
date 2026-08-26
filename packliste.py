@@ -59,8 +59,23 @@ from reportlab.graphics.shapes import Drawing
 # KONFIGURATION
 # ----------------------------------------------------------------------------
 
-VERSION = "2026-08-21e"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+VERSION = "2026-08-21f"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
 # Aenderung am selben Tag (erste = a, dann b, c ...; neuer Tag beginnt wieder bei a).
+# 2026-08-21f: Set-Artikel-Feature (2026-08-21c) gegen zwei echte Rechnungen
+#   getestet (1701528/52107-4 "2-Fach-Artikel", 1701529/MB15-GD12-10
+#   "10-Fach-Artikel"). Menge-Berechnung war in beiden Faellen korrekt, aber
+#   die GESAMTMENGE-Textersetzung (_fach_token_re) suchte bisher NUR nach dem
+#   '<N>x'-Muster aus dem urspruenglichen Beispiel ('2x Flaschenkappe') - bei
+#   1701529 steht die Set-Groesse aber als eigene Zeile '10 Stück' in der
+#   Bezeichnung (wie bei den bereits laenger bestehenden Packungsartikeln),
+#   wurde also nicht gefunden und blieb sichtbar stehen. Jetzt zusaetzlich
+#   das '<N> Stück'-Muster erkannt (dieselbe Regex-Basis wie bei
+#   Packungsartikeln/_pack_token_re). Bei 1701528 bleibt die Bezeichnung
+#   bewusst unveraendert ('4x' beschreibt dort den Karton-Inhalt der
+#   Basis-Artikelnummer 52107/4, nicht die unabhaengige '2-Fach-Artikel'-
+#   Mehrfachverkaufs-Markierung dieser Bestellung - keine Zahl in der
+#   Bezeichnung entspricht der Fach-Groesse, die Ersetzung findet also
+#   zurecht nichts) - die Menge-Spalte zeigt trotzdem korrekt "2 Stück".
 # 2026-08-21e: EAN-Verifikationsscan (ean_zuordnung.csv, schreibe_ean_csv) fuer
 #   Set-Artikel (N-Fach-Artikel) auf Wunsch ergaenzt: verlangt jetzt N x Menge
 #   Scans statt nur der rohen Bestellmenge - seit 2026-08-21c steht am Etikett
@@ -965,9 +980,17 @@ def artikel_packung(art, bez):
 
 
 def _fach_token_re(n):
-    """Regex fuer ein '<n>x'-Mengen-Token am Anfang der Bezeichnung eines
-    Set-Artikels (z.B. '2x' in '2x Flaschenkappe')."""
-    return re.compile(rf"(?<!\d){n}\s*x\b", re.IGNORECASE)
+    """Regex fuer das Mengen-Token eines Set-Artikels in dessen Bezeichnung:
+    entweder '<n>x' (z.B. '2x' in '2x Flaschenkappe') ODER '<n> Stück' als
+    eigene Zeile (z.B. '10 Stück' bei einer Gasduese, die als 10er-Set
+    verkauft wird - real beobachtet an Rechnung 1701529/MB15-GD12-10). Beide
+    Schreibweisen kommen im Katalog vor; wird keine davon gefunden (z.B. weil
+    die Fach-Artikel-Markierung eine eigenstaendige Mehrfachverkaufs-Angabe
+    ist, die nichts mit einer Zahl in der Bezeichnung zu tun hat - Rechnung
+    1701528/52107-4: '2-Fach-Artikel', aber Bezeichnung nennt '4x' fuer den
+    Karton-Inhalt), bleibt die Bezeichnung unveraendert; die Menge-Spalte
+    zeigt trotzdem korrekt die tatsaechliche Stueckzahl."""
+    return re.compile(rf"(?<!\d){n}\s*(?:x\b|St(?:ü|ue)?c?ke?\b)", re.IGNORECASE)
 
 
 def effektive_menge(p):

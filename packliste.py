@@ -59,8 +59,16 @@ from reportlab.graphics.shapes import Drawing
 # KONFIGURATION
 # ----------------------------------------------------------------------------
 
-VERSION = "2026-08-21d"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+VERSION = "2026-08-21e"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
 # Aenderung am selben Tag (erste = a, dann b, c ...; neuer Tag beginnt wieder bei a).
+# 2026-08-21e: EAN-Verifikationsscan (ean_zuordnung.csv, schreibe_ean_csv) fuer
+#   Set-Artikel (N-Fach-Artikel) auf Wunsch ergaenzt: verlangt jetzt N x Menge
+#   Scans statt nur der rohen Bestellmenge - seit 2026-08-21c steht am Etikett
+#   "GESAMTMENGE" statt "<N>x", es ist also am Label nicht mehr erkennbar, ob
+#   es sich um ein Set oder Einzelbestellungen handelt; der Verifikationsscan
+#   muss deshalb selbst die richtige (hoehere) Anzahl einfordern. Gewichts-
+#   artikel bleiben hier bewusst unveraendert (laufen laut vorheriger
+#   Rueckfrage im Chat ueber mengen_zuordnung.csv, nicht ueber EAN).
 # 2026-08-21d: Die beiden in 2026-08-21c offen gelassenen Einschraenkungen auf
 #   Wunsch nachgezogen:
 #   1) Sammelliste (Teil A) zeigt jetzt fuer Gewichts-, Packungs- UND Set-
@@ -1523,10 +1531,14 @@ def schreibe_ean_csv(rechnungen, csv_pfad):
     Eine Zeile JE Position MIT EAN:
         Rechnungsnummer;EAN;Bezeichnung;Anzahl;Rechnungsdatum
     `Anzahl` = noetige Verifikations-Scans dieser Position (= scan_bedarf der
-    bestellten Menge, gedeckelt auf MAX). Positionen OHNE EAN tauchen hier NICHT
-    auf - fuer sie bleibt es bei der normalen Mehrfach-Scan-Sicherung ueber die
-    Stueckzahl (mengen_zuordnung.csv). So wird der EAN-Scan ausschliesslich bei
-    Artikeln verlangt, die in der Pickliste eine EAN tragen.
+    bestellten Menge, gedeckelt auf MAX; bei einem Set-Artikel/N-Fach-Artikel
+    die TATSAECHLICHE Stueckzahl, Set-Groesse x Menge - seit 2026-08-21e).
+    Positionen OHNE EAN tauchen hier NICHT auf - fuer sie bleibt es bei der
+    normalen Mehrfach-Scan-Sicherung ueber die Stueckzahl (mengen_zuordnung.csv).
+    So wird der EAN-Scan ausschliesslich bei Artikeln verlangt, die in der
+    Pickliste eine EAN tragen. Gewichtsartikel bleiben bei der rohen
+    Bestellmenge (laufen ueber mengen_zuordnung.csv, nicht ueber EAN - siehe
+    Versionshinweis 2026-08-21e).
 
     Wird mit einer eventuell bestehenden Datei zusammengefuehrt (gruppiert
     nach Rechnungsnummer): Rechnungen aus dem AKTUELLEN Lauf ersetzen ihre
@@ -1550,7 +1562,17 @@ def schreibe_ean_csv(rechnungen, csv_pfad):
             if ist_versand(p["art"], p["bez"]):
                 continue
             qty = p["menge"] if p["menge"] is not None else 1
-            anzahl = scan_bedarf(qty)
+            # Set-Artikel (N-Fach-Artikel) auch hier nach TATSAECHLICHER
+            # Stueckzahl verlangen (2026-08-21e): am gedruckten Label steht ab
+            # 2026-08-21c "GESAMTMENGE" statt "<N>x" - ohne diese Anpassung waere
+            # beim EAN-Scan nicht mehr erkennbar, ob es sich um ein Set oder um
+            # Einzelbestellungen handelt, und es wuerde trotz N Teilen im Set nur
+            # 1x zur Verifikation verlangt. Gewichtsartikel bleiben hier bewusst
+            # AUSSEN VOR (gewollt, siehe Chat: Gewichtsartikel laufen ueber die
+            # Mehrfach-Scan-Sicherung/mengen_zuordnung.csv, nicht ueber EAN).
+            fach = p.get("fach")
+            eff = fach * qty if fach is not None and fach > 1 else qty
+            anzahl = scan_bedarf(eff)
             zeilen.append([r["rnr"], ean, p["bez"], anzahl, r.get("datum", "")])
         # Rechnung aus dem aktuellen Lauf ERSETZT ihre alten Zeilen komplett
         # (auch mit einer leeren Liste, falls inzwischen keine EAN-Position

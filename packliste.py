@@ -59,8 +59,17 @@ from reportlab.graphics.shapes import Drawing
 # KONFIGURATION
 # ----------------------------------------------------------------------------
 
-VERSION = "2026-08-21f"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+VERSION = "2026-08-21g"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
 # Aenderung am selben Tag (erste = a, dann b, c ...; neuer Tag beginnt wieder bei a).
+# 2026-08-21g: Bei erneuter projektweiter Pruefung gefundener, von den
+#   heutigen Aenderungen UNABHAENGIGER Bug in extrahiere_adresse() behoben:
+#   Bei einer Lieferadresse mit nur 2 Zeilen (Name + "PLZ Ort", keine eigene
+#   Strassenzeile) griff der alte Fallback "deliv[1] if len(deliv) > 1 else
+#   ''" faelschlich, weil deliv[1] bei genau 2 Elementen identisch mit der
+#   PLZ/Ort-Zeile selbst ist - strasse wurde faelschlich mit dem PLZ/Ort-Text
+#   belegt statt leer zu bleiben (Hausnummer blieb dadurch leer, Deutsche-
+#   Post-Zuordnung per PLZ+Hausnummer konnte fuer solche Bestellungen
+#   fehlschlagen). Fallback jetzt korrekt "" statt einer falschen Zeile.
 # 2026-08-21f: Set-Artikel-Feature (2026-08-21c) gegen zwei echte Rechnungen
 #   getestet (1701528/52107-4 "2-Fach-Artikel", 1701529/MB15-GD12-10
 #   "10-Fach-Artikel"). Menge-Berechnung war in beiden Faellen korrekt, aber
@@ -718,7 +727,14 @@ def extrahiere_adresse(words):
         plzline = next((l for l in reversed(deliv)
                         if re.match(r"\s*(?:[A-Z]{1,3}-?\s?)?\d{5}\b", l)), "")
     idx = deliv.index(plzline) if plzline in deliv else len(deliv) - 1
-    street = deliv[idx - 1] if idx - 1 >= 1 else (deliv[1] if len(deliv) > 1 else "")
+    # Bei genau 2 Zeilen (Name + "PLZ Ort", keine eigene Strassenzeile) ist
+    # idx=1 und idx-1=0 - der alte Fallback "deliv[1] if len(deliv) > 1 else
+    # ''" griff dann FAELSCHLICH, weil deliv[1] bei nur 2 Elementen identisch
+    # mit der PLZ/Ort-Zeile (=plzline) selbst ist: strasse wurde faelschlich
+    # mit dem PLZ/Ort-Text belegt statt leer zu bleiben. Ohne echte Strassen-
+    # zeile (idx-1 zeigt sonst auf die Namenszeile oder liegt vor der Liste)
+    # bleibt strasse jetzt korrekt leer.
+    street = deliv[idx - 1] if idx - 1 >= 1 else ""
     return name, street, _hausnr(street), _plz(plzline, land)
 
 

@@ -49,9 +49,36 @@ try:
 except Exception:
     _HAS_REPORTLAB = False
 # ============================ KONFIGURATION ============================
-VERSION = "2026-08-21d"          # im Fenstertitel sichtbar -> Deployment pruefbar
+VERSION = "2026-08-21e"          # im Fenstertitel sichtbar -> Deployment pruefbar
 # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je Aenderung am selben Tag (erste
 # Aenderung des Tages = a, dann b, c ...; ein neuer Tag beginnt wieder bei a).
+# 2026-08-21e: Zwei bei einer erneuten Projektpruefung gefundene, verifizierte
+#   Bugs behoben:
+#   1) KRITISCH - aktualisiere_index(): post_geaendert (post_zuordnung.csv hat
+#      sich geaendert - praktisch bei JEDEM packliste.py-Lauf, da Pickliste_
+#      erstellen.bat die CSV immer neu kopiert) loeschte bisher z.datei_sig
+#      fuer ALLE aktuell indizierten Dateien pauschal (z.datei_sig.clear()),
+#      nicht nur fuer die mit tatsaechlich unzuordenbaren Post-Sendungen. Beim
+#      dadurch erzwungenen Reparsen wurden auch laengst korrekt eingelesene,
+#      TEILWEISE bereits gedruckte Dateien (typischer Fall: eine Sammel-PDF,
+#      bei der ein Teil der Bestellungen schon gedruckt ist, ein anderer Teil
+#      noch wegen einer unzuordenbaren Post-Adresse wartet - genau der von
+#      diesem Feature zu loesende Fall) neu bewertet - dabei wurden die
+#      BEREITS gedruckten Rechnungsnummern in derselben Datei faelschlich als
+#      "gerade neu aufgetaucht" behandelt und als verdaechtig markiert, obwohl
+#      an ihnen nichts geaendert hatte. Folge: dauerhafte Falsch-Warnung
+#      "schon gedruckt, bitte pruefen" und die Datei wurde nie mehr
+#      automatisch archiviert. Jetzt wird gezielt NUR z.datei_sig der
+#      Dateien geloescht, die laut z.post_unzuordenbar[pfad] noch mindestens
+#      eine unzuordenbare Post-Sendung haben.
+#   2) Sammeldruck-Deckblatt (deckblatt_seite()) zeigte bei einem Sammelcode,
+#      der sich auf mehrere Versender aufteilt (z.B. 3 Bestellungen per DHL +
+#      2 per DPD, gleicher Artikel), fuer JEDEN Versender dieselbe
+#      Gesamtzahl ueber ALLE Versender ("5 x ...") statt der tatsaechlich in
+#      diesem Versender-Buendel enthaltenen Bestellungsanzahl. drucke_sammel()
+#      uebergab bisher konstant len(gefunden) statt der Bestellungsanzahl je
+#      Versender - jetzt zaehlt rnrs_je_versender[versender] die
+#      Rechnungsnummern je Versender-Buendel separat.
 # 2026-08-21d: Zwei auf Wunsch nachgezogene Aenderungen:
 #   1) Sammeldruck-Deckblatt (deckblatt_seite()) zeigt jetzt die ECHTE
 #      Packmenge je Bestellung (neuer Parameter menge_je, aus SAMMEL_LOOKUP/
@@ -879,10 +906,28 @@ def aktualisiere_index(z, ordner):
         lade_ean_zuordnung(EAN_ZUORDNUNG_CSV)
         if post_geaendert:
             # Die Post-Zuordnung hat sich geaendert (typisch: zweiter
-            # Rechnungslauf). Bereits eingelesene PDFs neu bewerten, damit zuvor
-            # unzuordenbare Post-Sendungen jetzt zugeordnet werden - bisher
-            # geschah das erst nach einem Neustart.
-            z.datei_sig.clear()
+            # Rechnungslauf). NUR die Dateien neu bewerten, die noch
+            # mindestens eine unzuordenbare Post-Sendung haben (erkennbar an
+            # z.post_unzuordenbar[pfad]) - damit zuvor unzuordenbare Post-
+            # Sendungen jetzt zugeordnet werden, ohne einen Neustart
+            # abzuwarten. BEWUSST NICHT mehr alle Dateien pauschal reparsen
+            # (Bug bis 2026-08-21, gefunden bei Projektpruefung): Pickliste_
+            # erstellen.bat kopiert post_zuordnung.csv bei JEDEM Lauf neu ->
+            # post_geaendert ist praktisch immer True. Ein pauschales
+            # z.datei_sig.clear() reparste dadurch auch laengst korrekt
+            # eingelesene, teilweise schon gedruckte Dateien (typischer Fall:
+            # eine Sammel-PDF, bei der ein Teil der Bestellungen bereits
+            # gedruckt ist und ein anderer Teil noch wegen einer
+            # unzuordenbaren Post-Adresse wartet - genau der hier zu
+            # loesende Fall). Beim Reparsen wurden dabei auch die BEREITS
+            # gedruckten Rechnungsnummern in derselben Datei erneut als
+            # "neu aufgetaucht" behandelt (Zeile ~955) und faelschlich als
+            # verdaechtig markiert, obwohl an ihnen nichts geaendert hatte -
+            # Folge: dauerhafte Falsch-Warnung "schon gedruckt" und die Datei
+            # wurde nie mehr automatisch archiviert.
+            for pfad, unzuordenbar in list(z.post_unzuordenbar.items()):
+                if unzuordenbar:
+                    z.datei_sig.pop(pfad, None)
         aktuelle = set(liste_pdfs(ordner))
         geaendert = False
         for pfad in list(z.datei_nrs):
@@ -1247,11 +1292,20 @@ def drucke_sammel(z, code, ordner, station=None):
             teile.append(f"{len(fehlend)} ohne Label")
         zusatz = (" (" + ", ".join(teile) + ")") if teile else ""
         return ("unbekannt", f"Sammelcode {code}: nichts zu drucken{zusatz}")
-    # Seiten je Versender (= je Drucker) buendeln, Deckblatt voranstellen
+    # Seiten je Versender (= je Drucker) buendeln, Deckblatt voranstellen.
+    # Zusaetzlich die Bestellungen (Rechnungsnummern) je Versender zaehlen -
+    # NICHT die Gesamtzahl ueber alle Versender (Bug bis 2026-08-21, gefunden
+    # bei Projektpruefung): teilt sich ein Sammelcode auf mehrere Versender
+    # auf (z.B. 3 Bestellungen per DHL + 2 per DPD), zeigte das Deckblatt
+    # fuer BEIDE Versender faelschlich dieselbe Gesamtzahl "5 x ..." statt
+    # der tatsaechlich in diesem Buendel steckenden Anzahl - genau die Zahl,
+    # nach der sich der Packer beim Sammeldruck richtet.
     nach_versender = defaultdict(list)   # versender -> [(pfad, idx)]
+    rnrs_je_versender = defaultdict(set)  # versender -> {rnr, ...}
     for _rnr, tr in gefunden:
         for (pfad, idx, vers) in tr:
             nach_versender[vers].append((pfad, idx))
+            rnrs_je_versender[vers].add(_rnr)
     # Erfolg je Versender einzeln merken: schlaegt der Druckauftrag fuer einen
     # Versender fehl (falscher/offline Drucker), duerfen dessen Rechnungen NICHT
     # als gedruckt gelten - frueher wurden hier ALLE `gefunden`-Rechnungen
@@ -1266,7 +1320,7 @@ def drucke_sammel(z, code, ordner, station=None):
             except Exception:
                 bseite, hseite = 283.0, 425.0
             deck = deckblatt_seite(bseite, hseite, code, g["art"], g["bez"],
-                                   len(gefunden), versender,
+                                   len(rnrs_je_versender[versender]), versender,
                                    g.get("menge_je", "1 Stück"))
             if deck is not None:
                 writer.add_page(deck)

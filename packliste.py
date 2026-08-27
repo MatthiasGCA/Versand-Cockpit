@@ -59,8 +59,18 @@ from reportlab.graphics.shapes import Drawing
 # KONFIGURATION
 # ----------------------------------------------------------------------------
 
-VERSION = "2026-08-21j"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+VERSION = "2026-08-21k"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
 # Aenderung am selben Tag (erste = a, dann b, c ...; neuer Tag beginnt wieder bei a).
+# 2026-08-21k: Bei einer erneuten Projektpruefung gefundener, verifizierter
+#   Aufraeum-Punkt behoben: die vier Konstanten EAN_LO/EAN_HI, MENGE_LO/
+#   MENGE_HI, EP_LO/EP_HI, GP_LO/GP_HI (Spaltenbaender fuer Menge/Einzelpreis/
+#   Gesamtpreis) wurden nirgends mehr gelesen - seit der Umstellung auf
+#   _preiszahlen() werden diese drei Spalten layout-unabhaengig ueber
+#   NUM_MIN_X erkannt, nicht mehr ueber feste x-Baender. Der Kommentar direkt
+#   darueber sagte aber weiterhin, man solle bei einer neuen Layout-Variante
+#   "hier nachjustieren" - das haette ins Leere gezielt, waere aber nicht
+#   sofort aufgefallen. Tote Konstanten entfernt, Kommentar auf den
+#   tatsaechlich aktiven Mechanismus (NUM_MIN_X/EINH_LO/EINH_HI) umgestellt.
 # 2026-08-21j: Gewichtsartikel-Erkennung (artikel_gewicht) von Kundenwunsch
 #   21i (kg-Text muss zur letzten Artikelnr-Zahl passen) auf einen rein
 #   EXPLIZITEN Text-Marker umgestellt: "<X>,<Y>kg-Multipack" im
@@ -272,25 +282,22 @@ SAMMEL_MIN = 2
 # ---------------------------------------------------------------------------
 # AMICRON-LAYOUT MIT EAN-SPALTE (Stand 26.06.2026):
 # Amicron druckt seit der Layout-Umstellung zwischen Einheit und Menge eine
-# zusaetzliche EAN-Spalte. Dadurch sind Menge/Einzelpreis/G-Preis je ~eine
-# Spalte nach RECHTS gerutscht. Die Baender wurden an der neuen Anlage neu
-# vermessen (Werte = Mittelpunkt-x der jeweiligen Spalte, mit Rand fuer breite
-# Betraege, da diese rechtsbuendig nach links wachsen):
-#   Einheit  'Stck.'          mid ~291
-#   EAN      '4262419350831'  mid ~337   <-- NEU
-#   Menge    '1,00'           mid ~415
-#   EPreis   '6,89'           mid ~474
-#   GPreis   '6,89'           mid ~508
-# Faellt eine Layout-Variante auf (Warnung "Menge/Betrag" in der Konsole),
-# hier nachjustieren. Die Selbstpruefung Menge*EP==GP und Summe==Rechnungsbetrag
-# faengt grobe Fehlkalibrierungen ab.
+# zusaetzliche EAN-Spalte. Nur Artikelnr (ART_MAX), Bezeichnung (BEZ_LO/HI)
+# und Einheit (EINH_LO/HI) werden noch ueber feste x-Baender gelesen - Menge,
+# Einzelpreis und Gesamtpreis werden seit der Umstellung auf _preiszahlen()
+# NICHT mehr ueber eigene feste Baender pro Spalte erkannt, sondern
+# layout-unabhaengig als die numerischen Tokens rechts von NUM_MIN_X
+# (s.u., in der Reihenfolge Menge/EP/GP von links nach rechts, siehe
+# _preiszahlen()/parse_block()). Ein fruehes MENGE_LO/EP_LO/GP_LO-Bandsystem
+# (mit den festen Werten 380..440/440..487/487..545) wurde dadurch
+# ueberfluessig und ist entfernt (2026-08-21j-Aufraeumung) - diese drei
+# Spalten NICHT mehr hier nachjustieren, sondern bei einer neuen Layout-
+# Variante an NUM_MIN_X (und ggf. EINH_LO/EINH_HI fuer die EAN-Erkennung).
+# Die Selbstpruefung Menge*EP==GP und Summe==Rechnungsbetrag faengt grobe
+# Fehlkalibrierungen ab.
 ART_MAX = 112
 BEZ_LO, BEZ_HI = 145, 281
 EINH_LO, EINH_HI = 281, 305     # Einheit (EAN liegt rechts davon, eigenes Band)
-EAN_LO, EAN_HI = 305, 380       # NEU: EAN-Spalte (zwischen Einheit und Menge)
-MENGE_LO, MENGE_HI = 380, 440   # war 345..415 (vor EAN-Spalte)
-EP_LO, EP_HI = 440, 487         # war 415..467
-GP_LO, GP_HI = 487, 545         # war 467..540
 TABLE_TOP, TABLE_BOT = 26, 388   # Tabellenbereich (unter Kopf, ueber Rechnungsbetrag)
 
 # Eine EAN/GTIN ist eine reine Ziffernfolge mit 8 oder 12-14 Stellen. Das Muster

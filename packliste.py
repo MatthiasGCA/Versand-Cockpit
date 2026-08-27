@@ -59,8 +59,28 @@ from reportlab.graphics.shapes import Drawing
 # KONFIGURATION
 # ----------------------------------------------------------------------------
 
-VERSION = "2026-08-21h"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+VERSION = "2026-08-21i"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
 # Aenderung am selben Tag (erste = a, dann b, c ...; neuer Tag beginnt wieder bei a).
+# 2026-08-21i: Zwei auf Kundenwunsch praezisierte Regeln fuer effektive_menge()
+#   (welche Positionen die Pickliste-Menge/-Bezeichnung veraendern duerfen):
+#   1) Der Packungsartikel-Mechanismus (artikel_packung/PACK_ART_RE/
+#      _pack_token_re: Artikelnr "<Zahl>/<N>" + "<N> Stück" im Text) wurde
+#      KOMPLETT ENTFERNT. Grund: irrefuehrende Artikelbezeichnungen wurden
+#      dadurch faelschlich korrigiert (real beobachtet an Rechnung 1701626,
+#      299/6: "6 Flaschenkappen" wurde als 6er-Packung erkannt, obwohl keine).
+#      Ab sofort aendert AUSSCHLIESSLICH die explizite "<N>-Fach-Artikel"-
+#      Markierung (Feld "fach", FACH_ARTIKEL_RE) die Menge/Bezeichnung eines
+#      Set-Artikels - keine Ableitung mehr aus Artikelnr-Form oder Text.
+#   2) Die Gewichtsartikel-Erkennung (artikel_gewicht, unveraendert als
+#      Ausnahme mit Inferenz erhalten, "funktioniert sehr gut") wurde
+#      erweitert: Artikel wie "WSG2-1,6-5" (letztes Artikelnr-Segment eine
+#      REINE GANZZAHL statt Komma-Dezimalwert) werden jetzt ebenfalls erkannt,
+#      sofern der Text dazu passend "5,00kg" (mit Komma-Nachkommastelle)
+#      enthaelt. Die Absicherung gegen den historischen Fehlausloeser
+#      "AutoPR-11" (bare "11kg" im Text = Flaschengroesse, keine
+#      Gewichtsangabe) sitzt jetzt in GEWICHT_RE selbst (Komma-Nachkommastelle
+#      im Text zwingend erforderlich) statt in der Artikelnr-Pruefung - siehe
+#      Kommentare bei GEWICHT_RE/artikel_gewicht fuer Details und Beispiele.
 # 2026-08-21h: Sammeldruck-Deckblatt zeigt jetzt die ECHTE Packmenge statt
 #   hartcodiert "1 Stück". Hintergrund (auf Wunsch behoben): Beim Sammeldruck
 #   sieht der Packer haeufig NUR das gedruckte Deckblatt, nicht die Pickliste
@@ -963,12 +983,26 @@ def mengentext(menge, einh):
 # ---------------------------------------------------------------------------
 # Gewichtsartikel (Schweissdraht/-staebe u.ae., Verkauf nach kg)
 # ---------------------------------------------------------------------------
-# Erkennung: im Bezeichnungstext steht ein kg-Token (z.B. "3kg", "0,5 kg",
-# "1,00 kg") UND dieser Wert ist die LETZTE Zahl der Artikelnummer
-# (z.B. V2A-308L-1,6-3,0 -> 3,0  /  WSG2-1,6-0,5 -> 0,5). Die Doppelpruefung
-# verhindert Fehlausloeser bei Artikeln, die kg nur als Packungsgroesse im Text
-# fuehren (z.B. "Chlorgranulat 5kg"), deren Artikelnummer aber nicht auf 5 endet.
-GEWICHT_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*kg\b", re.IGNORECASE)
+# Erkennung: im Bezeichnungstext steht ein kg-Token MIT Komma-Nachkommastelle
+# (z.B. "0,50 kg", "1,00 kg", "5,00kg" - Katalog-Konvention fuer eine
+# tatsaechliche Stueckgewichtsangabe) UND dieser Wert ist die LETZTE Zahl der
+# Artikelnummer (z.B. V2A-308L-1,6-3,0 -> 3,0 / WSG2-1,6-0,5 -> 0,5 / WSG2-1,6-5
+# -> 5). Die Artikelnummer-Seite akzeptiert dabei sowohl Komma-Dezimalwerte
+# (0,5 / 3,0) als auch reine Ganzzahlen (5), da beide Schreibweisen im Katalog
+# vorkommen.
+#
+# WICHTIG: Der kg-Token im Text MUSS eine Komma-Nachkommastelle haben (Stand
+# 2026-08-21i, zuvor genuegte eine reine Ganzzahl wie "11kg"). Grund: ein
+# bare-Ganzzahl-kg-Token im Text ist im Katalog erwiesenermassen oft KEINE
+# Stueckgewichtsangabe, sondern etwas anderes - z.B. Artikel "AutoPR-11" hatte
+# im Text "...fuer 11-kg-Flaschen" (11 = Flaschengroesse, keine Gewichtsangabe)
+# und wurde nur durch Zufall zusaetzlich als "11" letzte Zahl der Artikelnummer
+# gefunden. Ohne dieses Komma-Erfordernis waere WSG2-1,6-5 (Text "5,00kg") nicht
+# von einem solchen Fall unterscheidbar, wenn die Ganzzahl-Artikelnummer-Seite
+# gleichzeitig gelockert wird. Ebenso "Chlorgranulat 5kg" (Packungsgroesse,
+# kein Stueckgewicht) - hier verhindert bereits das fehlende Komma im Text die
+# Erkennung, unabhaengig von der Artikelnummer.
+GEWICHT_RE = re.compile(r"(\d+[.,]\d+)\s*kg\b", re.IGNORECASE)
 
 
 def artikel_gewicht(art, bez):
@@ -979,11 +1013,12 @@ def artikel_gewicht(art, bez):
         return None
     w = float(m.group(1).replace(",", "."))
     letzte = (art or "").split("-")[-1].strip()
-    # Nur ein KOMMA-Dezimalwert als letztes Segment gilt als Gewichtsangabe
-    # (Katalog-Konvention: 0,5 / 1,0 / 3,0). So triggert eine reine Modell-/
-    # Groessennummer wie 'AutoPR-11' (11 == '11kg' im Text = fuer 11-kg-Flaschen)
-    # NICHT faelschlich als Gewichtsartikel.
-    if not re.fullmatch(r"\d+,\d+", letzte):
+    # Letztes Segment der Artikelnummer: Komma-Dezimalwert (0,5 / 1,0 / 3,0)
+    # ODER reine Ganzzahl (5) - beide Schreibweisen kommen im Katalog vor
+    # (z.B. WSG2-1,6-5). Die eigentliche Absicherung gegen Fehlausloeser wie
+    # 'AutoPR-11' liegt jetzt im Komma-Erfordernis von GEWICHT_RE (s.o.), nicht
+    # mehr hier.
+    if not re.fullmatch(r"\d+(?:,\d+)?", letzte):
         return None
     try:
         if abs(float(letzte.replace(",", ".")) - w) < 1e-6:
@@ -994,34 +1029,18 @@ def artikel_gewicht(art, bez):
 
 
 # ---------------------------------------------------------------------------
-# Packungsartikel (feste Stueck-Packung, z.B. Schlauchverbinder 2248/10)
+# Packungsartikel (Artikelnummer-Form "<Zahl>/<N>") - bewusst KEINE
+# Mengen-/Text-Erkennung mehr (Stand 2026-08-21i).
 # ---------------------------------------------------------------------------
-# Erkennung analog zu den Gewichtsartikeln ueber eine Doppelpruefung: die
-# Artikelnummer hat die Form "<Zahl>/<N>" (rein numerisch, z.B. 2248/10) UND im
-# Bezeichnungstext steht "<N> Stück". Nur dann ist N die Packungsgroesse. Das
-# verhindert Fehlausloeser bei Artikeln, deren "/N" etwas anderes bedeutet
-# (z.B. 52107/4 "4x ...", 299/3 "3x ..." -> kein "<N> Stück" im Text).
-PACK_ART_RE = re.compile(r"^(\d+)/(\d+)$")
-
-
-def _pack_token_re(n):
-    """Regex fuer ein '<n> Stück'-Token im Text (Stück/Stueck/Stck/Stk, Sg./Pl.)."""
-    return re.compile(rf"(?<!\d){n}\s*St(?:ü|ue)?c?ke?\b", re.IGNORECASE)
-
-
-def artikel_packung(art, bez):
-    """Packungsgroesse (Stueck je Packung), wenn die Position ein in fester
-    Stueck-Packung verkaufter Artikel ist: Artikelnummer '<Zahl>/<N>' UND '<N>
-    Stück' im Text. Sonst None."""
-    m = PACK_ART_RE.match((art or "").strip())
-    if not m:
-        return None
-    n = int(m.group(2))
-    if n <= 1:
-        return None
-    if _pack_token_re(n).search(bez or ""):
-        return n
-    return None
+# Frueher wurde aus "<Zahl>/<N>" in der Artikelnummer + "<N> Stück" im Text
+# automatisch auf eine Packungsgroesse geschlossen (analog zu den
+# Gewichtsartikeln). Das fuehrte zu Fehlausloesern bei irrefuehrenden
+# Artikelbezeichnungen (z.B. Rechnung 1701626, 299/6: "6 Flaschenkappen" wurde
+# faelschlich als 6er-Packung erkannt, obwohl es keine ist). Auf Wunsch des
+# Kunden aendert eine reine Artikelnummer-/Text-Heuristik die Menge nun NICHT
+# mehr - nur die explizite Markierung "<N>-Fach-Artikel" in der Bezeichnung
+# (siehe FACH_ARTIKEL_RE) und die Gewichtsartikel-Erkennung (kg, s.u.) duerfen
+# die Packliste-Menge/-Bezeichnung noch veraendern.
 
 
 def _fach_token_re(n):
@@ -1040,10 +1059,15 @@ def _fach_token_re(n):
 
 def effektive_menge(p):
     """(menge, einh, bez, immer_hervorheben) - die TATSAECHLICH zu verpackende
-    Menge/Einheit/Bezeichnung einer Position, nach Gewichts-/Packungs-/Set-
-    Artikel-Multiplikator (Mengen-Token in der Bezeichnung durch 'GESAMTMENGE'
-    ersetzt). Bei einem normalen Artikel unveraendert (menge/einh/bez wie im
-    PDF, immer_hervorheben=False). Gemeinsame Grundlage fuer die Packuebersicht
+    Menge/Einheit/Bezeichnung einer Position, nach Gewichts- oder Set-Artikel-
+    Multiplikator (Mengen-Token in der Bezeichnung durch 'GESAMTMENGE'
+    ersetzt). Bewusst KEINE sonstige Ableitung aus der Bezeichnung (Stand
+    2026-08-21i) - nur die Gewichtsartikel-kg-Erkennung (artikel_gewicht) und
+    die explizite '<N>-Fach-Artikel'-Markierung (Feld 'fach') duerfen die
+    Menge/Bezeichnung aendern; alles andere bleibt wie im PDF, auch wenn die
+    Artikelnummer oder der Text irrefuehrend nach etwas anderem aussieht. Bei
+    einem normalen Artikel unveraendert (menge/einh/bez wie im PDF,
+    immer_hervorheben=False). Gemeinsame Grundlage fuer die Packuebersicht
     (pack_anzeige, s.u.) UND die aggregierte Sammelliste (Teil A) - beide
     sollen dieselbe tatsaechliche Stueckzahl/Einheit zeigen, nicht nur die
     Packuebersicht."""
@@ -1052,10 +1076,6 @@ def effektive_menge(p):
     if gw is not None:
         bez = GEWICHT_RE.sub("GESAMTMENGE", p["bez"], count=1)
         return (gw * qty, "kg", bez, True)
-    pk = artikel_packung(p["art"], p["bez"])
-    if pk is not None:
-        bez = _pack_token_re(pk).sub("GESAMTMENGE", p["bez"], count=1)
-        return (pk * qty, "Stück", bez, True)
     fach = p.get("fach")
     if fach is not None and fach > 1:
         bez = _fach_token_re(fach).sub("GESAMTMENGE", p["bez"], count=1)

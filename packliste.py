@@ -59,8 +59,23 @@ from reportlab.graphics.shapes import Drawing
 # KONFIGURATION
 # ----------------------------------------------------------------------------
 
-VERSION = "2026-08-21i"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+VERSION = "2026-08-21j"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
 # Aenderung am selben Tag (erste = a, dann b, c ...; neuer Tag beginnt wieder bei a).
+# 2026-08-21j: Gewichtsartikel-Erkennung (artikel_gewicht) von Kundenwunsch
+#   21i (kg-Text muss zur letzten Artikelnr-Zahl passen) auf einen rein
+#   EXPLIZITEN Text-Marker umgestellt: "<X>,<Y>kg-Multipack" im
+#   Bezeichnungstext (z.B. "5,0kg-Multipack" fuer 5 kg Verkaufsmenge,
+#   "0,25kg-Multipack" fuer 0,25 kg) - analog zur "<N>-Fach-Artikel"-
+#   Markierung bei Set-Artikeln. Grund: die Artikelnr-basierte Inferenz war
+#   trotz der 21i-Absicherung weiterhin ein grundsaetzliches Fehlausloeser-
+#   Risiko (z.B. "AutoPR-11" mit "...fuer 11-kg-Flaschen" im Text), das der
+#   Kunde lieber ganz vermeiden wollte, da korrekte Mengen oberste Prioritaet
+#   haben. Ab sofort daher KEINE Ableitung mehr aus der Bezeichnung/
+#   Artikelnummer bei Gewichtsartikeln - nur der explizite "-Multipack"-
+#   Marker (durch den Kunden gezielt in die betroffenen Artikeltexte
+#   eingepflegt) loest die Erkennung noch aus. GEWICHT_RE/PACK_ART_RE-
+#   Artikelnr-Logik aus 21i komplett entfernt; artikel_gewicht(bez) nimmt
+#   jetzt nur noch die Bezeichnung entgegen (kein "art"-Parameter mehr).
 # 2026-08-21i: Zwei auf Kundenwunsch praezisierte Regeln fuer effektive_menge()
 #   (welche Positionen die Pickliste-Menge/-Bezeichnung veraendern duerfen):
 #   1) Der Packungsartikel-Mechanismus (artikel_packung/PACK_ART_RE/
@@ -983,49 +998,29 @@ def mengentext(menge, einh):
 # ---------------------------------------------------------------------------
 # Gewichtsartikel (Schweissdraht/-staebe u.ae., Verkauf nach kg)
 # ---------------------------------------------------------------------------
-# Erkennung: im Bezeichnungstext steht ein kg-Token MIT Komma-Nachkommastelle
-# (z.B. "0,50 kg", "1,00 kg", "5,00kg" - Katalog-Konvention fuer eine
-# tatsaechliche Stueckgewichtsangabe) UND dieser Wert ist die LETZTE Zahl der
-# Artikelnummer (z.B. V2A-308L-1,6-3,0 -> 3,0 / WSG2-1,6-0,5 -> 0,5 / WSG2-1,6-5
-# -> 5). Die Artikelnummer-Seite akzeptiert dabei sowohl Komma-Dezimalwerte
-# (0,5 / 3,0) als auch reine Ganzzahlen (5), da beide Schreibweisen im Katalog
-# vorkommen.
-#
-# WICHTIG: Der kg-Token im Text MUSS eine Komma-Nachkommastelle haben (Stand
-# 2026-08-21i, zuvor genuegte eine reine Ganzzahl wie "11kg"). Grund: ein
-# bare-Ganzzahl-kg-Token im Text ist im Katalog erwiesenermassen oft KEINE
-# Stueckgewichtsangabe, sondern etwas anderes - z.B. Artikel "AutoPR-11" hatte
-# im Text "...fuer 11-kg-Flaschen" (11 = Flaschengroesse, keine Gewichtsangabe)
-# und wurde nur durch Zufall zusaetzlich als "11" letzte Zahl der Artikelnummer
-# gefunden. Ohne dieses Komma-Erfordernis waere WSG2-1,6-5 (Text "5,00kg") nicht
-# von einem solchen Fall unterscheidbar, wenn die Ganzzahl-Artikelnummer-Seite
-# gleichzeitig gelockert wird. Ebenso "Chlorgranulat 5kg" (Packungsgroesse,
-# kein Stueckgewicht) - hier verhindert bereits das fehlende Komma im Text die
-# Erkennung, unabhaengig von der Artikelnummer.
-GEWICHT_RE = re.compile(r"(\d+[.,]\d+)\s*kg\b", re.IGNORECASE)
+# Erkennung (Stand 2026-08-21j): EXPLIZITE Markierung "<X>,<Y>kg-Multipack" im
+# Bezeichnungstext (z.B. "5,0kg-Multipack" fuer eine Verkaufsmenge von 5 kg,
+# "0,25kg-Multipack" fuer 0,25 kg) - analog zur "<N>-Fach-Artikel"-Markierung
+# bei Set-Artikeln. Bewusst KEINE Ableitung mehr aus der Artikelnummer (vorher:
+# kg-Text musste zur letzten Zahl der Artikelnummer passen). Diese Inferenz
+# war ein wiederkehrendes Fehlausloeser-Risiko bei irrefuehrenden Artikel-
+# nummern/-bezeichnungen (Beispiele aus der Praxis: "AutoPR-11" mit "...fuer
+# 11-kg-Flaschen" im Text, "Chlorgranulat 5kg" als Packungsgroesse) und wurde
+# auf ausdruecklichen Kundenwunsch durch den eindeutigen "-Multipack"-Marker
+# ersetzt: der Marker wird gezielt nur bei tatsaechlichen Gewichtsartikeln in
+# den Artikeltext eingepflegt, jede andere kg-Erwaehnung im Text (Flaschen-
+# groesse, Packungsgroesse, Kompatibilitaetsangabe o.ae.) bleibt unberuehrt.
+MULTIPACK_RE = re.compile(r"(\d+(?:,\d+)?)\s*kg-Multipack", re.IGNORECASE)
 
 
-def artikel_gewicht(art, bez):
-    """Stueckgewicht in kg, wenn die Position ein nach Gewicht verkaufter Artikel
-    ist (kg-Token im Text passt zur letzten Zahl der Artikelnummer), sonst None."""
-    m = GEWICHT_RE.search(bez or "")
+def artikel_gewicht(bez):
+    """Stueckgewicht in kg, wenn im Bezeichnungstext die explizite Markierung
+    '<X>,<Y>kg-Multipack' steht (z.B. '5,0kg-Multipack', '0,25kg-Multipack'),
+    sonst None. Keine Artikelnummer-Beteiligung mehr (s.o.)."""
+    m = MULTIPACK_RE.search(bez or "")
     if not m:
         return None
-    w = float(m.group(1).replace(",", "."))
-    letzte = (art or "").split("-")[-1].strip()
-    # Letztes Segment der Artikelnummer: Komma-Dezimalwert (0,5 / 1,0 / 3,0)
-    # ODER reine Ganzzahl (5) - beide Schreibweisen kommen im Katalog vor
-    # (z.B. WSG2-1,6-5). Die eigentliche Absicherung gegen Fehlausloeser wie
-    # 'AutoPR-11' liegt jetzt im Komma-Erfordernis von GEWICHT_RE (s.o.), nicht
-    # mehr hier.
-    if not re.fullmatch(r"\d+(?:,\d+)?", letzte):
-        return None
-    try:
-        if abs(float(letzte.replace(",", ".")) - w) < 1e-6:
-            return w
-    except ValueError:
-        pass
-    return None
+    return float(m.group(1).replace(",", "."))
 
 
 # ---------------------------------------------------------------------------
@@ -1061,20 +1056,21 @@ def effektive_menge(p):
     """(menge, einh, bez, immer_hervorheben) - die TATSAECHLICH zu verpackende
     Menge/Einheit/Bezeichnung einer Position, nach Gewichts- oder Set-Artikel-
     Multiplikator (Mengen-Token in der Bezeichnung durch 'GESAMTMENGE'
-    ersetzt). Bewusst KEINE sonstige Ableitung aus der Bezeichnung (Stand
-    2026-08-21i) - nur die Gewichtsartikel-kg-Erkennung (artikel_gewicht) und
-    die explizite '<N>-Fach-Artikel'-Markierung (Feld 'fach') duerfen die
-    Menge/Bezeichnung aendern; alles andere bleibt wie im PDF, auch wenn die
-    Artikelnummer oder der Text irrefuehrend nach etwas anderem aussieht. Bei
+    ersetzt). Bewusst KEINE Ableitung aus der Bezeichnung/Artikelnummer (Stand
+    2026-08-21j) - nur zwei EXPLIZITE Text-Marker duerfen die Menge/
+    Bezeichnung aendern: '<X>,<Y>kg-Multipack' (Gewichtsartikel, siehe
+    artikel_gewicht) und '<N>-Fach-Artikel' (Set-Artikel, Feld 'fach');
+    alles andere bleibt wie im PDF, auch wenn die Artikelnummer oder der Text
+    irrefuehrend nach etwas anderem aussieht. Bei
     einem normalen Artikel unveraendert (menge/einh/bez wie im PDF,
     immer_hervorheben=False). Gemeinsame Grundlage fuer die Packuebersicht
     (pack_anzeige, s.u.) UND die aggregierte Sammelliste (Teil A) - beide
     sollen dieselbe tatsaechliche Stueckzahl/Einheit zeigen, nicht nur die
     Packuebersicht."""
     qty = p["menge"] if p["menge"] is not None else 1
-    gw = artikel_gewicht(p["art"], p["bez"])
+    gw = artikel_gewicht(p["bez"])
     if gw is not None:
-        bez = GEWICHT_RE.sub("GESAMTMENGE", p["bez"], count=1)
+        bez = MULTIPACK_RE.sub("GESAMTMENGE", p["bez"], count=1)
         return (gw * qty, "kg", bez, True)
     fach = p.get("fach")
     if fach is not None and fach > 1:
@@ -1123,7 +1119,7 @@ def order_scananzahl(r):
         if ist_versand(p["art"], p["bez"]):
             continue
         qty = p["menge"] if p["menge"] is not None else 1
-        gw = artikel_gewicht(p["art"], p["bez"])
+        gw = artikel_gewicht(p["bez"])
         fach = p.get("fach")
         if gw is not None:
             eff = gw * qty

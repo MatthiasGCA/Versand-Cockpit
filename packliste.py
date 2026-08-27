@@ -59,8 +59,14 @@ from reportlab.graphics.shapes import Drawing
 # KONFIGURATION
 # ----------------------------------------------------------------------------
 
-VERSION = "2026-08-21k"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+VERSION = "2026-08-21l"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
 # Aenderung am selben Tag (erste = a, dann b, c ...; neuer Tag beginnt wieder bei a).
+# 2026-08-21l: Bei der Generalprobe mit echten Rechnungen gefunden (1701663/
+#   BP-TILL-2, "2-Fach-Artikel"): die Menge wurde korrekt auf 2 umgerechnet,
+#   im Bezeichnungstext blieb aber "2 Packungen" stehen statt durch
+#   GESAMTMENGE ersetzt zu werden - _fach_token_re kannte bisher nur die
+#   Muster "<n>x" und "<n> Stück", nicht "<n> Packung(en)". Jetzt zusaetzlich
+#   erkannt, siehe Docstring von _fach_token_re.
 # 2026-08-21k: Bei einer erneuten Projektpruefung gefundener, verifizierter
 #   Aufraeum-Punkt behoben: die vier Konstanten EAN_LO/EAN_HI, MENGE_LO/
 #   MENGE_HI, EP_LO/EP_HI, GP_LO/GP_HI (Spaltenbaender fuer Menge/Einzelpreis/
@@ -1047,16 +1053,22 @@ def artikel_gewicht(bez):
 
 def _fach_token_re(n):
     """Regex fuer das Mengen-Token eines Set-Artikels in dessen Bezeichnung:
-    entweder '<n>x' (z.B. '2x' in '2x Flaschenkappe') ODER '<n> Stück' als
-    eigene Zeile (z.B. '10 Stück' bei einer Gasduese, die als 10er-Set
-    verkauft wird - real beobachtet an Rechnung 1701529/MB15-GD12-10). Beide
-    Schreibweisen kommen im Katalog vor; wird keine davon gefunden (z.B. weil
-    die Fach-Artikel-Markierung eine eigenstaendige Mehrfachverkaufs-Angabe
-    ist, die nichts mit einer Zahl in der Bezeichnung zu tun hat - Rechnung
-    1701528/52107-4: '2-Fach-Artikel', aber Bezeichnung nennt '4x' fuer den
-    Karton-Inhalt), bleibt die Bezeichnung unveraendert; die Menge-Spalte
-    zeigt trotzdem korrekt die tatsaechliche Stueckzahl."""
-    return re.compile(rf"(?<!\d){n}\s*(?:x\b|St(?:ü|ue)?c?ke?\b)", re.IGNORECASE)
+    '<n>x' (z.B. '2x' in '2x Flaschenkappe'), '<n> Stück' als eigene Zeile
+    (z.B. '10 Stück' bei einer Gasduese, die als 10er-Set verkauft wird -
+    real beobachtet an Rechnung 1701529/MB15-GD12-10), ODER '<n> Packung(en)'
+    (real beobachtet an Rechnung 1701663/BP-TILL-2: '2-Fach-Artikel' mit
+    Bezeichnung '... 2 Packungen' - die Menge wurde zwar korrekt auf 2
+    umgerechnet, der Text blieb aber unveraendert stehen, weil 'Packungen'
+    keinem der beiden bisherigen Muster entsprach). Kommt keine dieser
+    Schreibweisen im Katalog vor (z.B. weil die Fach-Artikel-Markierung eine
+    eigenstaendige Mehrfachverkaufs-Angabe ist, die nichts mit einer Zahl in
+    der Bezeichnung zu tun hat - Rechnung 1701528/52107-4: '2-Fach-Artikel',
+    aber Bezeichnung nennt '4x' fuer den Karton-Inhalt), bleibt die
+    Bezeichnung unveraendert; die Menge-Spalte zeigt trotzdem korrekt die
+    tatsaechliche Stueckzahl."""
+    return re.compile(
+        rf"(?<!\d){n}\s*(?:x\b|St(?:ü|ue)?c?ke?\b|Packung(?:en)?\b)",
+        re.IGNORECASE)
 
 
 def effektive_menge(p):

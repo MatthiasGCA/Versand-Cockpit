@@ -49,9 +49,33 @@ try:
 except Exception:
     _HAS_REPORTLAB = False
 # ============================ KONFIGURATION ============================
-VERSION = "2026-08-21e"          # im Fenstertitel sichtbar -> Deployment pruefbar
+VERSION = "2026-08-28a"          # im Fenstertitel sichtbar -> Deployment pruefbar
 # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je Aenderung am selben Tag (erste
 # Aenderung des Tages = a, dann b, c ...; ein neuer Tag beginnt wieder bei a).
+# 2026-08-28a: KRITISCH - reale Fehlzuordnung von Deutsche-Post-Briefmarken
+#   gefunden und behoben (Meldung "Keine Sendung zu <Rechnungsnr> gefunden"
+#   beim Scannen, obwohl im Cockpit KEINE "Post-Sendung ohne Zuordnung"-
+#   Warnung stand). Ursache: aktualisiere_index() berechnete die "bereits
+#   vergebenen" Rechnungsnummern (fuer die Dublettenerkennung bei mehreren
+#   Bestellungen an derselbe Adresse) nur aus dem LIVE-Index z.index, nicht
+#   aus dem dauerhaften Druck-Log z.gedruckt. Bestellt derselbe Kunde von
+#   derselben Adresse erneut (post_zuordnung.csv haelt beide Rechnungen ein
+#   paar Tage "frisch", siehe BRUECKEN_CSV_MERGE_TAGE), und die AELTERE
+#   Bestellung wurde laengst verschickt+archiviert (also nicht mehr in
+#   z.index), erschien deren PLZ+Hausnr in POST_LOOKUP dadurch faelschlich
+#   wieder als "frei" - die neue Briefmarke wurde der ALTEN, schon
+#   verschickten Rechnung zugeordnet statt der neuen. Real beobachtet an
+#   zwei Faellen vom 28.08.: Evi Schmid ("Jägerwirth 122, 94081
+#   Fürstenzell": Re 1701441 vom 26.08. kollidierte mit der neuen Re
+#   1701727) und Michael Bohn ("Gmünder Straße 47, 74417 Gschwend": Re
+#   1701272 vom 25.08. kollidierte mit der neuen Re 1701670). Fix:
+#   aktualisiere_index() bezieht jetzt zusaetzlich z.gedruckt.keys() in die
+#   "belegte"-Menge ein - eine bereits gedruckte Rechnungsnummer kann nicht
+#   mehr erneut vergeben werden, egal ob sie noch im Live-Index steht oder
+#   schon archiviert ist. WICHTIG: nach dem Deployment muss scan_druck.py
+#   einmal NEU GESTARTET werden, damit der Index komplett neu aufgebaut wird
+#   - sonst bleibt eine bereits (falsch) zugeordnete Briefmarke bis zum
+#   naechsten post_zuordnung.csv-Update falsch zugeordnet.
 # 2026-08-21e: Zwei bei einer erneuten Projektpruefung gefundene, verifizierte
 #   Bugs behoben:
 #   1) KRITISCH - aktualisiere_index(): post_geaendert (post_zuordnung.csv hat
@@ -957,9 +981,24 @@ def aktualisiere_index(z, ordner):
             if time.time() - st.st_mtime < SETTLE_SEKUNDEN:
                 continue
             # bereits vergebene Rechnungsnummern (ohne die eigenen alten dieser
-            # Datei) -> eindeutige Post-Zuordnung bei mehreren gleichen Adressen
+            # Datei) -> eindeutige Post-Zuordnung bei mehreren gleichen Adressen.
+            # BEWUSST auch z.gedruckt einbeziehen, nicht nur z.index (Bug
+            # gefunden 2026-08-28, real beobachtet an Evi Schmid/"Jägerwirth
+            # 122, 94081 Fürstenzell": dieselbe Adresse bestellte am 26.08.
+            # (Re 1701441, laengst verschickt+archiviert -> NICHT mehr in
+            # z.index) und erneut am 28.08. (Re 1701727). post_zuordnung.csv
+            # haelt beide Zeilen ein paar Tage "frisch" (BRUECKEN_CSV_
+            # MERGE_TAGE), POST_LOOKUP["94081|122"] enthaelt also BEIDE
+            # Rechnungsnummern. Nur ueber z.index geprueft, war 1701441 fuer
+            # die Dublettenerkennung faelschlich "frei" (laengst archiviert,
+            # also nicht mehr im Live-Index) - die neue Briefmarke wurde
+            # dadurch der ALTEN, schon verschickten Rechnung 1701441
+            # zugeordnet statt der neuen 1701727. Symptom: keine Warnung bei
+            # "Post-Sendungen ohne Zuordnung" (es WURDE ja "erfolgreich"
+            # zugeordnet, nur falsch), aber "Keine Sendung zu 1701727
+            # gefunden" beim Scannen der echten neuen Rechnung.
             eigene_alt = z.datei_nrs.get(pfad, set())
-            belegte = set(z.index.keys()) - eigene_alt
+            belegte = (set(z.index.keys()) | set(z.gedruckt.keys())) - eigene_alt
             eintraege = parse_datei(pfad, belegte)
             if eintraege is None:
                 continue

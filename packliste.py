@@ -59,8 +59,11 @@ from reportlab.graphics.shapes import Drawing
 # KONFIGURATION
 # ----------------------------------------------------------------------------
 
-VERSION = "2026-08-21m"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+VERSION = "2026-08-21n"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
 # Aenderung am selben Tag (erste = a, dann b, c ...; neuer Tag beginnt wieder bei a).
+# 2026-08-21n: Auf Kundenwunsch "Rolle"/"Rollen" als weiteres Mengen-Token in
+#   _fach_token_re aufgenommen (zusaetzlich zu Kartusche(n)/Flasche(n)/
+#   Dose(n)/Eimer aus 2026-08-21m).
 # 2026-08-21m: Auf Kundenwunsch weitere Gebinde-Einheiten in _fach_token_re
 #   aufgenommen, die im Katalog als Mengen-Token in der Bezeichnung eines
 #   Fach-Artikels vorkommen koennen: Kartusche(n), Flasche(n), Dose(n), Eimer
@@ -1061,18 +1064,19 @@ def _fach_token_re(n):
     (z.B. '10 Stück' bei einer Gasduese, die als 10er-Set verkauft wird -
     real beobachtet an Rechnung 1701529/MB15-GD12-10), '<n> Packung(en)'
     (real beobachtet an Rechnung 1701663/BP-TILL-2), oder eine der
-    Gebinde-Einheiten Kartusche(n)/Flasche(n)/Dose(n)/Eimer (auf Kundenwunsch
-    ergaenzt, 2026-08-21m - dieselben Woerter, die auch als Verpackungseinheit
-    in Bezeichnungen wie '4 Kartuschen', '6 Flaschen', '3 Dosen', '2 Eimer'
-    vorkommen). Kommt keine dieser Schreibweisen im Katalog vor (z.B. weil die
-    Fach-Artikel-Markierung eine eigenstaendige Mehrfachverkaufs-Angabe ist,
-    die nichts mit einer Zahl in der Bezeichnung zu tun hat - Rechnung
-    1701528/52107-4: '2-Fach-Artikel', aber Bezeichnung nennt '4x' fuer den
-    Karton-Inhalt), bleibt die Bezeichnung unveraendert; die Menge-Spalte
-    zeigt trotzdem korrekt die tatsaechliche Stueckzahl."""
+    Gebinde-Einheiten Kartusche(n)/Flasche(n)/Dose(n)/Eimer/Rolle(n) (auf
+    Kundenwunsch ergaenzt, 2026-08-21m/n - dieselben Woerter, die auch als
+    Verpackungseinheit in Bezeichnungen wie '4 Kartuschen', '6 Flaschen',
+    '3 Dosen', '2 Eimer', '5 Rollen' vorkommen). Kommt keine dieser
+    Schreibweisen im Katalog vor (z.B. weil die Fach-Artikel-Markierung eine
+    eigenstaendige Mehrfachverkaufs-Angabe ist, die nichts mit einer Zahl in
+    der Bezeichnung zu tun hat - Rechnung 1701528/52107-4: '2-Fach-Artikel',
+    aber Bezeichnung nennt '4x' fuer den Karton-Inhalt), bleibt die
+    Bezeichnung unveraendert; die Menge-Spalte zeigt trotzdem korrekt die
+    tatsaechliche Stueckzahl."""
     return re.compile(
         rf"(?<!\d){n}\s*(?:x\b|St(?:ü|ue)?c?ke?\b|Packung(?:en)?\b|"
-        rf"Kartusche(?:n)?\b|Flasche(?:n)?\b|Dose(?:n)?\b|Eimer\b)",
+        rf"Kartusche(?:n)?\b|Flasche(?:n)?\b|Dose(?:n)?\b|Eimer\b|Rolle(?:n)?\b)",
         re.IGNORECASE)
 
 

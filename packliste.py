@@ -59,8 +59,21 @@ from reportlab.graphics.shapes import Drawing
 # KONFIGURATION
 # ----------------------------------------------------------------------------
 
-VERSION = "2026-09-01a"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+VERSION = "2026-09-01b"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
 # Aenderung am selben Tag (erste = a, dann b, c ...; neuer Tag beginnt wieder bei a).
+# 2026-09-01b: Auf Kundenwunsch die zweite Ursache fuer unbegrenzt wachsende
+#   Bruecken-CSVs beseitigt (die aus 2026-09-01a bekannte, aber eigenstaendige
+#   "immer frisch"-Schwaeche): _bruecken_datum_frisch() wertete ein leeres/
+#   unlesbares Rechnungsdatum bisher als dauerhaft frisch ("lieber zu lange
+#   behalten als zu frueh verlieren"). Da eine gemergte Zeile ihr Datum nie
+#   aendert, blieb ein Eintrag ohne Datum dadurch fuer IMMER in der Datei -
+#   genau die Bedingung, unter der der 2026-09-01a-Quotierungsbug ungebremst
+#   exponentiell eskalieren konnte. Jetzt gilt ein leeres/unlesbares Datum
+#   als NICHT frisch (wird verworfen). Damit das keinen echten Auftrag zu
+#   frueh verliert, tragen alle Schreibfunktionen jetzt IMMER ein gueltiges
+#   Datum ein (neue Helfer _csv_datum() bzw. in merge_sammelgruppen() fuer
+#   Sammelgruppen, die kein einzelnes Rechnungsdatum haben) - notfalls das
+#   heutige, statt es leer zu lassen.
 # 2026-09-01a: KRITISCH - Absturz mit MemoryError beim Schreiben von
 #   ean_zuordnung.csv behoben (real beobachtet, Datei war auf ~940 MB
 #   angewachsen). Ursache: _lies_bestehende_zeilen() las mit einem naiven
@@ -608,6 +621,14 @@ def merge_sammelgruppen(neue_gruppen, csv_pfad):
             naechste += 1
         neu = dict(g)
         neu["code"] = f"SAM-{naechste}"
+        # finde_sammelgruppen() liefert noch KEIN "datum" (eine Sammelgruppe
+        # hat kein einzelnes Rechnungsdatum, sie fasst mehrere Bestellungen
+        # zusammen) - ohne dieses Feld wuerde _bruecken_datum_frisch() die
+        # Zeile jetzt (Stand 2026-09-01, leeres Datum gilt nicht mehr als
+        # "immer frisch") schon beim naechsten Lauf faelschlich verwerfen,
+        # obwohl der Sammelcode noch gar nicht gedruckt wurde. Heutiges Datum
+        # als "seit wann bekannt" eintragen, analog zu _csv_datum().
+        neu["datum"] = datetime.now().strftime("%d.%m.%Y")
         belegt.add(naechste)
         fuer_pdf.append(neu)
 
@@ -1544,16 +1565,44 @@ BRUECKEN_CSV_MERGE_TAGE = 5
 
 def _bruecken_datum_frisch(datum_str, max_tage=BRUECKEN_CSV_MERGE_TAGE):
     """True, wenn ein 'TT.MM.JJJJ'-Rechnungsdatum noch nicht aelter als
-    max_tage ist. Unlesbares/leeres Datum wird vorsichtshalber als 'noch
-    frisch' gewertet (lieber einen Alteintrag zu lange behalten als einen
-    gueltigen zu frueh verlieren)."""
+    max_tage ist. Unlesbares/leeres Datum gilt als NICHT frisch (Stand
+    2026-09-01 - vorher als 'immer frisch' behandelt).
+
+    FRUEHERER BUG (real beobachtet, fuehrte zum MemoryError-Absturz vom
+    2026-09-01): ein leeres/unlesbares Datum wurde 'vorsichtshalber' als
+    dauerhaft frisch gewertet, um einen gueltigen Eintrag nicht zu frueh zu
+    verlieren. Da eine per merge() weitergereichte Zeile ihr Datum NIE
+    aendert (das Feld wird nur roh kopiert), blieb ein Eintrag ohne Datum
+    dadurch fuer immer 'frisch' und wuchs unbegrenzt weiter - genau die
+    Bedingung, unter der der o.g. CSV-Quotierungsbug ungebremst exponentiell
+    eskalieren konnte. Der eigentliche Schutzzweck (eine noch offene
+    Bestellung nicht zu frueh verlieren) wird jetzt anders sichergestellt:
+    schreibe_csv()/schreibe_mengen_csv()/schreibe_ean_csv()/
+    schreibe_wc_bestellnummern_csv() tragen beim Schreiben IMMER ein
+    gueltiges Datum ein (siehe _csv_datum()) - notfalls das heutige, wenn
+    parse_pdf() keines aus der Rechnung extrahieren konnte. Sammelgruppen
+    (schreibe_sammel_csv) haben kein einzelnes Rechnungsdatum - dort setzt
+    merge_sammelgruppen() beim Anlegen einer neuen Gruppe ebenso das
+    heutige Datum. Ein Eintrag ohne Datum kann in der Datei also nur noch
+    aus einer AELTEREN Version dieses Skripts stammen und wird jetzt bewusst
+    verworfen statt endlos mitgeschleppt."""
     if not datum_str:
-        return True
+        return False
     try:
         d = datetime.strptime(datum_str.strip(), "%d.%m.%Y")
     except ValueError:
-        return True
+        return False
     return (datetime.now() - d).days <= max_tage
+
+
+def _csv_datum(r):
+    """Rechnungsdatum fuer eine Bruecken-CSV-Zeile: das aus der Rechnung
+    extrahierte Datum, sonst (parse_pdf() fand keines) ersatzweise das
+    heutige Datum - NIE leer. Nur so bleibt _bruecken_datum_frisch() fuer
+    diese Zeile spaeter aussagekraeftig (s. dortiger Kommentar); ein leeres
+    Rechnungsdatum wuerde die Zeile sonst beim naechsten Merge sofort als
+    'nicht frisch' verwerfen, obwohl die Bestellung noch offen sein kann."""
+    return (r.get("datum") or "").strip() or datetime.now().strftime("%d.%m.%Y")
 
 
 def _lies_bestehende_zeilen(csv_pfad, mindest_spalten):
@@ -1613,7 +1662,7 @@ def schreibe_csv(rechnungen, csv_pfad):
         if not r["rnr"]:
             continue
         bestand[r["rnr"]] = [r["rnr"], r["name"], r["strasse"], r["hausnr"],
-                              r["plz"], r.get("datum", "")]
+                              r["plz"], _csv_datum(r)]
     with open(csv_pfad, "w", encoding="utf-8-sig", newline="") as f:
         w = csv.writer(f, delimiter=";", lineterminator="\n")
         w.writerow(["Rechnungsnummer", "Name", "Strasse", "Hausnummer",
@@ -1669,7 +1718,7 @@ def schreibe_mengen_csv(rechnungen, csv_pfad):
     for r in rechnungen:
         if not r["rnr"]:
             continue
-        bestand[r["rnr"]] = [r["rnr"], order_scananzahl(r), r.get("datum", "")]
+        bestand[r["rnr"]] = [r["rnr"], order_scananzahl(r), _csv_datum(r)]
     with open(csv_pfad, "w", encoding="utf-8-sig", newline="") as f:
         w = csv.writer(f, delimiter=";", lineterminator="\n")
         w.writerow(["Rechnungsnummer", "Scananzahl", "Rechnungsdatum"])
@@ -1724,7 +1773,7 @@ def schreibe_ean_csv(rechnungen, csv_pfad):
             fach = p.get("fach")
             eff = fach * qty if fach is not None and fach > 1 else qty
             anzahl = scan_bedarf(eff)
-            zeilen.append([r["rnr"], ean, p["bez"], anzahl, r.get("datum", "")])
+            zeilen.append([r["rnr"], ean, p["bez"], anzahl, _csv_datum(r)])
         # Rechnung aus dem aktuellen Lauf ERSETZT ihre alten Zeilen komplett
         # (auch mit einer leeren Liste, falls inzwischen keine EAN-Position
         # mehr vorhanden waere).

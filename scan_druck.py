@@ -29,6 +29,7 @@ import os
 import re
 import io
 import sys
+import csv
 import glob
 import time
 import shutil
@@ -49,9 +50,34 @@ try:
 except Exception:
     _HAS_REPORTLAB = False
 # ============================ KONFIGURATION ============================
-VERSION = "2026-08-28a"          # im Fenstertitel sichtbar -> Deployment pruefbar
+VERSION = "2026-09-01a"          # im Fenstertitel sichtbar -> Deployment pruefbar
 # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je Aenderung am selben Tag (erste
 # Aenderung des Tages = a, dann b, c ...; ein neuer Tag beginnt wieder bei a).
+# 2026-09-01a: KRITISCH - reale Ursache fuer einen MemoryError-Absturz von
+#   packliste.py gefunden (ean_zuordnung.csv war auf ~940 MB angewachsen).
+#   Ursache lag in einer gemeinsamen Schwaeche aller vier hier eingebauten
+#   CSV-Lesefunktionen (lade_post_zuordnung, lade_sammel_zuordnung,
+#   lade_mengen_zuordnung, lade_ean_zuordnung): sie lasen mit einem simplen
+#   zeile.split(";") statt echtem CSV-Parsing. Ein Bezeichnungstext, der ein
+#   Semikolon UND ein Anfuehrungszeichen enthaelt (z.B. Rechnung 1700713:
+#   'Regler 8,0kg/h; 0,5-4bar; Kombi x G 3/8"LH-KN; ...' - das " steht fuer
+#   Zoll, kommt bei Schlauch-/Gewindeartikeln haeufig vor), wird beim
+#   Schreiben (packliste.py, csv.writer) korrekt in Anfuehrungszeichen gesetzt
+#   und das interne " dabei verdoppelt (CSV-Standard) - der naive split(";")
+#   kannte diese Quotierung aber nicht und las die Anfuehrungszeichen als
+#   literalen Text. Las packliste.py diese Zeile bei einem spaeteren Lauf
+#   erneut ein (ueber dieselbe Schwaeche in seiner eigenen
+#   _lies_bestehende_zeilen()) und schrieb sie zurueck, verdoppelten sich die
+#   Anfuehrungszeichen bei JEDEM Durchlauf erneut - exponentielles Wachstum
+#   (2 -> 4 -> 8 -> ... -> nach ca. 30 Laeufen ueber 900 Millionen), bis
+#   packliste.py beim Schreiben schliesslich mit MemoryError abstuerzte.
+#   scan_druck.py selbst wurde durch die riesige Datei nicht zum Absturz
+#   gebracht, hat sie aber bei jedem Poll-Zyklus mitgelesen (unnoetige Last).
+#   Jetzt echtes CSV-Parsing (csv.reader) in allen vier Lesefunktionen statt
+#   split(";") - Quotierung wird korrekt aufgeloest, Felder bleiben bei jedem
+#   Lese-/Schreibzyklus gleich lang. Die bereits korrupte ean_zuordnung.csv
+#   auf dem Netzwerkordner wurde manuell bereinigt (die eine betroffene Zeile
+#   entfernt, 940 MB -> 19,5 KB).
 # 2026-08-28a: KRITISCH - reale Fehlzuordnung von Deutsche-Post-Briefmarken
 #   gefunden und behoben (Meldung "Keine Sendung zu <Rechnungsnr> gefunden"
 #   beim Scannen, obwohl im Cockpit KEINE "Post-Sendung ohne Zuordnung"-
@@ -523,10 +549,10 @@ def lade_post_zuordnung(pfad):
     lookup = defaultdict(list)
     by_plz = defaultdict(list)
     try:
-        with open(pfad, encoding="utf-8-sig") as f:
-            f.readline()  # Kopfzeile
-            for zeile in f:
-                t = zeile.rstrip("\n").split(";")
+        with open(pfad, encoding="utf-8-sig", newline="") as f:
+            reader = csv.reader(f, delimiter=";")
+            next(reader, None)  # Kopfzeile
+            for t in reader:
                 if len(t) < 5 or not t[0]:
                     continue
                 nr, name, strasse, hausnr, plz = t[0], t[1], t[2], t[3], t[4]
@@ -565,10 +591,10 @@ def lade_sammel_zuordnung(pfad):
         return
     lookup = {}
     try:
-        with open(pfad, encoding="utf-8-sig") as f:
-            f.readline()  # Kopfzeile
-            for zeile in f:
-                t = zeile.rstrip("\n").split(";")
+        with open(pfad, encoding="utf-8-sig", newline="") as f:
+            reader = csv.reader(f, delimiter=";")
+            next(reader, None)  # Kopfzeile
+            for t in reader:
                 if len(t) < 5 or not t[0]:
                     continue
                 code, art, bez, menge, rnrs = t[0], t[1], t[2], t[3], t[4]
@@ -599,10 +625,10 @@ def lade_mengen_zuordnung(pfad):
         return
     lookup = {}
     try:
-        with open(pfad, encoding="utf-8-sig") as f:
-            f.readline()  # Kopfzeile
-            for zeile in f:
-                t = zeile.rstrip("\n").split(";")
+        with open(pfad, encoding="utf-8-sig", newline="") as f:
+            reader = csv.reader(f, delimiter=";")
+            next(reader, None)  # Kopfzeile
+            for t in reader:
                 if len(t) < 2 or not t[0]:
                     continue
                 key = re.sub(r"\D", "", t[0])
@@ -666,10 +692,10 @@ def lade_ean_zuordnung(pfad):
         return
     lookup = {}
     try:
-        with open(pfad, encoding="utf-8-sig") as f:
-            f.readline()  # Kopfzeile
-            for zeile in f:
-                t = zeile.rstrip("\n").split(";")
+        with open(pfad, encoding="utf-8-sig", newline="") as f:
+            reader = csv.reader(f, delimiter=";")
+            next(reader, None)  # Kopfzeile
+            for t in reader:
                 if len(t) < 4 or not t[0]:
                     continue
                 rn = re.sub(r"\D", "", t[0])

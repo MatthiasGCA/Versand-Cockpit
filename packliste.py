@@ -59,8 +59,19 @@ from reportlab.graphics.shapes import Drawing
 # KONFIGURATION
 # ----------------------------------------------------------------------------
 
-VERSION = "2026-08-21n"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+VERSION = "2026-09-01a"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
 # Aenderung am selben Tag (erste = a, dann b, c ...; neuer Tag beginnt wieder bei a).
+# 2026-09-01a: KRITISCH - Absturz mit MemoryError beim Schreiben von
+#   ean_zuordnung.csv behoben (real beobachtet, Datei war auf ~940 MB
+#   angewachsen). Ursache: _lies_bestehende_zeilen() las mit einem naiven
+#   zeile.split(";") statt echtem CSV-Parsing - ein Bezeichnungstext mit
+#   Semikolon UND Anfuehrungszeichen (Rechnung 1700713: 'Regler 8,0kg/h;
+#   0,5-4bar; Kombi x G 3/8"LH-KN; ...') wurde dadurch bei jedem Lese-/
+#   Schreibzyklus erneut falsch requotiert - die Anfuehrungszeichen
+#   verdoppelten sich exponentiell ueber ca. 30 Laeufe hinweg. Jetzt echtes
+#   CSV-Parsing (csv.reader). Betrifft auch scan_druck.py (VERSION
+#   2026-09-01a dort), das dieselbe Schwaeche in seinen vier CSV-Lesefunk-
+#   tionen hatte. Die korrupte Live-Datei wurde manuell bereinigt.
 # 2026-08-21n: Auf Kundenwunsch "Rolle"/"Rollen" als weiteres Mengen-Token in
 #   _fach_token_re aufgenommen (zusaetzlich zu Kartusche(n)/Flasche(n)/
 #   Dose(n)/Eimer aus 2026-08-21m).
@@ -1549,16 +1560,37 @@ def _lies_bestehende_zeilen(csv_pfad, mindest_spalten):
     """Bestehende Bruecken-CSV zeilenweise als Liste von Tokenlisten einlesen
     (roh, vor der eigentlichen Verarbeitung). Bei fehlender/kaputter Datei:
     leere Liste (verhaelt sich dann wie 'erster Lauf', nichts zum
-    Zusammenfuehren)."""
+    Zusammenfuehren).
+
+    KRITISCHER FIX (2026-09-01, real beobachtet - ean_zuordnung.csv wuchs auf
+    ~940 MB und liess packliste.py mit MemoryError abstuerzen): las bisher mit
+    einem simplen zeile.split(";") statt echtem CSV-Parsing. Ein Bezeichnungs-
+    text, der ein Semikolon UND ein Anfuehrungszeichen enthaelt (z.B. Rechnung
+    1700713: 'Regler 8,0kg/h; 0,5-4bar; Kombi x G 3/8"LH-KN; ...' - das "
+    steht fuer Zoll, kommt bei Schlauch-/Gewindeartikeln haeufig vor), wird
+    von csv.writer beim Schreiben korrekt in Anfuehrungszeichen gesetzt und
+    das interne " dabei verdoppelt (CSV-Standard). Der naive split(";") kannte
+    diese Quotierung nicht: er zerlegte das Feld an den EINGEBETTETEN
+    Semikolons und uebernahm die (nicht entfernten) Anfuehrungszeichen als
+    literalen Text. Wurde diese Zeile beim naechsten Lauf erneut geschrieben,
+    hat csv.writer die inzwischen literalen Anfuehrungszeichen ERNEUT
+    verdoppelt - bei jedem Lauf, der diese Rechnung noch als 'frisch' fand,
+    verdoppelte sich die Anzahl der Anfuehrungszeichen (EXPONENTIELLES
+    Wachstum: 2 -> 4 -> 8 -> ... -> nach ca. 30 Laeufen ueber 900 Millionen).
+    Jetzt echtes CSV-Parsing (csv.reader) statt split(";") - Quotierung wird
+    korrekt aufgeloest, das Feld bleibt bei jedem Lese-/Schreibzyklus gleich
+    lang. Betraf alle Bruecken-CSVs, die diese Funktion nutzen (post_/sammel_/
+    mengen_/ean_zuordnung.csv), ausgeloest ist es aber offenbar bisher nur bei
+    ean_zuordnung.csv (die anderen drei sind unauffaellig gross)."""
     if not os.path.exists(csv_pfad):
         return []
     zeilen = []
     try:
-        with open(csv_pfad, encoding="utf-8-sig") as f:
-            next(f, None)  # Kopfzeile
-            for zeile in f:
-                t = zeile.rstrip("\n").split(";")
-                if len(t) >= mindest_spalten and t[0]:
+        with open(csv_pfad, encoding="utf-8-sig", newline="") as f:
+            reader = csv.reader(f, delimiter=";")
+            next(reader, None)  # Kopfzeile
+            for t in reader:
+                if len(t) >= mindest_spalten and t and t[0]:
                     zeilen.append(t)
     except Exception:
         return []

@@ -59,8 +59,23 @@ from reportlab.graphics.shapes import Drawing
 # KONFIGURATION
 # ----------------------------------------------------------------------------
 
-VERSION = "2026-09-01b"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+VERSION = "2026-09-04a"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
 # Aenderung am selben Tag (erste = a, dann b, c ...; neuer Tag beginnt wieder bei a).
+# 2026-09-04a: KRITISCH - kg-Multipack-Erkennung (2026-08-21j) hat in der
+#   Praxis nie gegriffen (real gemeldet und an Rechnung 1703025/WSG2-1,6-5
+#   nachvollzogen). Ursache: die Markierungszeile "5kg-Multipack" steht -
+#   genau wie "Lagerort:"/"N-Fach-Artikel" - links-buendig (x0 < ART_MAX) im
+#   Positionsblock und wurde von parse_block() beim Zusammensetzen der
+#   Bezeichnung schlicht VERWORFEN, noch bevor artikel_gewicht() den Text
+#   je zu sehen bekam - kein Formatierungsproblem der Regex, sondern eine
+#   fehlende Zeilen-Erkennung. Jetzt wird "<X>,<Y>kg-Multipack" in
+#   parse_block() wie "N-Fach-Artikel" als eigene Markierungszeile erkannt
+#   und in einem neuen Feld "gewicht" gemerkt; artikel_gewicht(p) liest das
+#   jetzt direkt aus der Position statt (erfolglos) im fertigen
+#   Bezeichnungstext zu suchen. Die tatsaechlich sichtbare Gewichtsangabe im
+#   Bezeichnungstext (z.B. "5,00 kg", eigenstaendig neben dem Marker - analog
+#   zu "10 Stück" neben "10-Fach-Artikel") wird ueber den neuen Helfer
+#   _gewicht_token_re() gefunden und durch GESAMTMENGE ersetzt.
 # 2026-09-01b: Auf Kundenwunsch die zweite Ursache fuer unbegrenzt wachsende
 #   Bruecken-CSVs beseitigt (die aus 2026-09-01a bekannte, aber eigenstaendige
 #   "immer frisch"-Schwaeche): _bruecken_datum_frisch() wertete ein leeres/
@@ -450,6 +465,14 @@ def _lagerort_wert(txt):
 # das nicht zuverlaessig unterscheidbar.
 FACH_ARTIKEL_RE = re.compile(r"(\d+)-Fach-Artikel", re.IGNORECASE)
 
+# "<X>,<Y>kg-Multipack" (z.B. "5kg-Multipack", "0,25kg-Multipack"): steht wie
+# die Lagerort-/Fach-Artikel-Zeile als EIGENE Zeile im Positionsblock und
+# markiert einen nach Gewicht verkauften Artikel (Gewichtsartikel) - X,Y = das
+# Stueckgewicht in kg. Analog zu FACH_ARTIKEL_RE eine EXPLIZITE Markierung
+# statt einer Ableitung aus der Bezeichnung (siehe dortiger Kommentar zu den
+# historischen Fehlausloesern "AutoPR-11"/"Chlorgranulat 5kg").
+MULTIPACK_RE = re.compile(r"(\d+(?:,\d+)?)\s*kg-Multipack", re.IGNORECASE)
+
 
 # ----------------------------------------------------------------------------
 # KATEGORIE-ZUORDNUNG (allein aus dem Lagerort)
@@ -689,6 +712,7 @@ def parse_block(words):
     menge = ep = gp = None
     bez_parts, lagerorte = [], []
     fach = None
+    gewicht = None
 
     # Menge / Einzelpreis / G-Preis aus der Hauptzeile (rechts verankert).
     if main:
@@ -746,6 +770,18 @@ def parse_block(words):
             fach = int(m_fach.group(1))
             i += 1
             continue
+        m_multi = MULTIPACK_RE.search(txt)
+        if m_multi:
+            # "<X>,<Y>kg-Multipack"-Zeile: genau wie Lagerort/Fach-Artikel eine
+            # eigene Zeile, NICHT Teil der Bezeichnung (real beobachtet an
+            # Rechnung 1703025/WSG2-1,6-5: die Zeile "5kg-Multipack" stand an
+            # derselben links-buendigen Position wie "Lagerort:"/"N-Fach-
+            # Artikel" - x0 < ART_MAX - und wurde deshalb bisher komplett
+            # verworfen, noch bevor sie ueberhaupt bei artikel_gewicht() als
+            # Text ankam. Als Set-Groesse merken wie "fach".
+            gewicht = float(m_multi.group(1).replace(",", "."))
+            i += 1
+            continue
         links = [w for w in sorted(ln, key=lambda w: w["x0"])
                  if w["x0"] < ART_MAX and w["text"] != "."]
         if links and not art_done:                          # erste Positionszeile
@@ -774,6 +810,7 @@ def parse_block(words):
         "gp": gp,
         "lagerorte": lagerorte,
         "fach": fach,
+        "gewicht": gewicht,
     }
 
 
@@ -1050,29 +1087,55 @@ def mengentext(menge, einh):
 # ---------------------------------------------------------------------------
 # Gewichtsartikel (Schweissdraht/-staebe u.ae., Verkauf nach kg)
 # ---------------------------------------------------------------------------
-# Erkennung (Stand 2026-08-21j): EXPLIZITE Markierung "<X>,<Y>kg-Multipack" im
-# Bezeichnungstext (z.B. "5,0kg-Multipack" fuer eine Verkaufsmenge von 5 kg,
-# "0,25kg-Multipack" fuer 0,25 kg) - analog zur "<N>-Fach-Artikel"-Markierung
-# bei Set-Artikeln. Bewusst KEINE Ableitung mehr aus der Artikelnummer (vorher:
-# kg-Text musste zur letzten Zahl der Artikelnummer passen). Diese Inferenz
-# war ein wiederkehrendes Fehlausloeser-Risiko bei irrefuehrenden Artikel-
-# nummern/-bezeichnungen (Beispiele aus der Praxis: "AutoPR-11" mit "...fuer
-# 11-kg-Flaschen" im Text, "Chlorgranulat 5kg" als Packungsgroesse) und wurde
-# auf ausdruecklichen Kundenwunsch durch den eindeutigen "-Multipack"-Marker
-# ersetzt: der Marker wird gezielt nur bei tatsaechlichen Gewichtsartikeln in
-# den Artikeltext eingepflegt, jede andere kg-Erwaehnung im Text (Flaschen-
-# groesse, Packungsgroesse, Kompatibilitaetsangabe o.ae.) bleibt unberuehrt.
-MULTIPACK_RE = re.compile(r"(\d+(?:,\d+)?)\s*kg-Multipack", re.IGNORECASE)
+# Erkennung (Stand 2026-08-21j, Parsing-Fix 2026-09-04): EXPLIZITE Markierung
+# "<X>,<Y>kg-Multipack" als EIGENE ZEILE im Positionsblock (siehe
+# MULTIPACK_RE/parse_block weiter oben) - analog zur "<N>-Fach-Artikel"-
+# Markierung bei Set-Artikeln. Bewusst KEINE Ableitung mehr aus der
+# Artikelnummer (vorher: kg-Text musste zur letzten Zahl der Artikelnummer
+# passen). Diese Inferenz war ein wiederkehrendes Fehlausloeser-Risiko bei
+# irrefuehrenden Artikelnummern/-bezeichnungen (Beispiele aus der Praxis:
+# "AutoPR-11" mit "...fuer 11-kg-Flaschen" im Text, "Chlorgranulat 5kg" als
+# Packungsgroesse) und wurde auf ausdruecklichen Kundenwunsch durch den
+# eindeutigen "-Multipack"-Marker ersetzt.
+#
+# BUGFIX 2026-09-04 (real beobachtet an Rechnung 1703025/WSG2-1,6-5): der
+# Marker wurde urspruenglich per MULTIPACK_RE.search() INNERHALB des schon
+# fertigen Bezeichnungstexts gesucht - dabei aber uebersehen, dass eine
+# Markierungszeile wie "5kg-Multipack" GENAUSO wie "Lagerort:"/"N-Fach-
+# Artikel" links-buendig (x0 < ART_MAX) im PDF steht und von parse_block()
+# schlicht VERWORFEN wurde, bevor der Bezeichnungstext ueberhaupt
+# zusammengesetzt war - artikel_gewicht() sah die Markierung also nie. Jetzt
+# wird die Zeile in parse_block() wie "fach" als eigenes Feld "gewicht"
+# erkannt/konsumiert; die tatsaechlich SICHTBARE Gewichtsangabe im
+# Bezeichnungstext (z.B. "5,00 kg", eigenstaendig neben "5kg-Multipack" -
+# analog zu "10 Stück" neben "10-Fach-Artikel") wird separat ueber
+# _gewicht_token_re() gefunden und ersetzt.
+def artikel_gewicht(p):
+    """Stueckgewicht in kg, wenn diese Position die explizite Markierung
+    '<X>,<Y>kg-Multipack' als eigene Zeile im Positionsblock hatte, sonst
+    None. Keine Artikelnummer-/Bezeichnungs-Ableitung."""
+    return p.get("gewicht")
 
 
-def artikel_gewicht(bez):
-    """Stueckgewicht in kg, wenn im Bezeichnungstext die explizite Markierung
-    '<X>,<Y>kg-Multipack' steht (z.B. '5,0kg-Multipack', '0,25kg-Multipack'),
-    sonst None. Keine Artikelnummer-Beteiligung mehr (s.o.)."""
-    m = MULTIPACK_RE.search(bez or "")
-    if not m:
-        return None
-    return float(m.group(1).replace(",", "."))
+def _gewicht_token_re(w):
+    """Regex fuer die SICHTBARE Gewichtsangabe im Bezeichnungstext eines
+    Gewichtsartikels, die durch GESAMTMENGE ersetzt wird (z.B. '5,00 kg' bei
+    einem Artikel mit der Markierungszeile '5kg-Multipack' - real beobachtet
+    an Rechnung 1703025/WSG2-1,6-5: Marker nennt die Zahl bar als '5', der
+    Bezeichnungstext aber als '5,00 kg' mit Leerzeichen). Akzeptiert daher
+    sowohl die genaue Schreibweise des Markers als auch die uebliche
+    2-Nachkommastellen-Variante, jeweils mit optionalem Leerzeichen vor 'kg'.
+    Passt keine Zahl im Text (z.B. weil der Katalogtext das Gewicht in einer
+    dritten Schreibweise nennt), bleibt die Bezeichnung unveraendert - die
+    Menge-Spalte zeigt trotzdem korrekt die tatsaechliche Gesamtmenge
+    (gleiches Verhalten wie bei _fach_token_re, s.u.)."""
+    varianten = {f"{w:.2f}".replace(".", ",")}
+    if float(w).is_integer():
+        varianten.add(str(int(w)))
+    else:
+        varianten.add(f"{w:g}".replace(".", ","))
+    alt = "|".join(re.escape(v) for v in sorted(varianten, key=len, reverse=True))
+    return re.compile(rf"(?<!\d)(?:{alt})\s*kg\b", re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
@@ -1128,9 +1191,9 @@ def effektive_menge(p):
     sollen dieselbe tatsaechliche Stueckzahl/Einheit zeigen, nicht nur die
     Packuebersicht."""
     qty = p["menge"] if p["menge"] is not None else 1
-    gw = artikel_gewicht(p["bez"])
+    gw = artikel_gewicht(p)
     if gw is not None:
-        bez = MULTIPACK_RE.sub("GESAMTMENGE", p["bez"], count=1)
+        bez = _gewicht_token_re(gw).sub("GESAMTMENGE", p["bez"], count=1)
         return (gw * qty, "kg", bez, True)
     fach = p.get("fach")
     if fach is not None and fach > 1:
@@ -1179,7 +1242,7 @@ def order_scananzahl(r):
         if ist_versand(p["art"], p["bez"]):
             continue
         qty = p["menge"] if p["menge"] is not None else 1
-        gw = artikel_gewicht(p["bez"])
+        gw = artikel_gewicht(p)
         fach = p.get("fach")
         if gw is not None:
             eff = gw * qty

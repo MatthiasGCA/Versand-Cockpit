@@ -1,0 +1,14 @@
+{
+  "base_url": "https://www.gasecenter-onlineshop.de",
+  "consumer_key": "ck_HIER_DEN_READ_WRITE_KEY",
+  "consumer_secret": "cs_HIER_DAS_READ_WRITE_SECRET",
+  "input_dir": "C:\\Scripts\\Sendungsnummern_WC",
+  "state_path": "C:\\Scripts\\wc_sync_state.json",
+  "set_status_shipped": true,
+  "archive_after_days": 14,
+  "provider_slugs": {
+    "DHL": "dhl",
+    "DPD": "dpd",
+    "Deutsche Post": "deutsche_post"
+  }
+}

@@ -59,8 +59,24 @@ from reportlab.graphics.shapes import Drawing
 # KONFIGURATION
 # ----------------------------------------------------------------------------
 
-VERSION = "2026-09-04a"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+VERSION = "2026-09-18a"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
 # Aenderung am selben Tag (erste = a, dann b, c ...; neuer Tag beginnt wieder bei a).
+# 2026-09-18a: WooCommerce-Anbindung (Pause seit 2026-08-28, s.u.) wieder
+#   aufgenommen - reine Neudatierung dieses Eintrags, am Code selbst hat sich
+#   seit der Pause nichts mehr geaendert (gegen HEAD/2026-09-04a gegengeprueft,
+#   Diff bleibt sauber auf die unten beschriebenen Stellen beschraenkt).
+# 2026-08-28a: Neue fuenfte Bruecken-CSV "wc_bestellnummern.csv"
+#   (schreibe_wc_bestellnummern_csv): Rechnungsnummer -> WooCommerce-
+#   Bestellnummer, NUR fuer Onlineshop-Rechnungen (Ziffernblock 4-6 Stellen
+#   unter "Rechnung Nr." + Kundenmail nicht von Amazon/eBay). Quelle fuer das
+#   separate Skript wc_sendungsnummer_sync.py, das die Carrier-Sendungsnummern
+#   per REST-API in Shiptastic eintraegt. parse_pdf() liefert dazu neu das
+#   Feld "email"; die kdnr-Erkennung ueberspringt jetzt zusaetzlich eine Zeile,
+#   die exakt der Rechnungsnummer entspricht (Schutz vor falscher kdnr, falls
+#   "Rechnung Nr." und Nummer je auf eigener Zeile stehen). Rein additiv -
+#   Pickliste-PDF und die vier bestehenden CSVs unveraendert.
+#   [Diese Aenderung ist weiterhin NICHT committet - bewusst getrennt von den
+#   produktiven Bugfixes unten, bis die WC-Anbindung im Echtbetrieb getestet ist.]
 # 2026-09-04a: KRITISCH - kg-Multipack-Erkennung (2026-08-21j) hat in der
 #   Praxis nie gegriffen (real gemeldet und an Rechnung 1703025/WSG2-1,6-5
 #   nachvollzogen). Ursache: die Markierungszeile "5kg-Multipack" steht -
@@ -904,15 +920,30 @@ def parse_pdf(path):
     m = re.search(r"Rechnung\s*Nr\.?\s*:?\s*(\d+)", full)
     rnr = m.group(1) if m else ""
 
-    # Kd-Nr. = Zeile direkt nach der Rechnungsnummer-Zeile
+    # Direkt unter der "Rechnung Nr."-Zeile druckt Amicron ein Fremdbeleg-Feld:
+    #   - Onlineshop  -> WooCommerce-Bestellnummer (reine Ziffern, 4-6 Stellen)
+    #   - Amazon      -> "nnn-nnnnnnn-nnnnnnn"
+    #   - Zaehltheke  -> Kd-Nr.
+    # gefolgt (bei Shop/Marktplatz) von der Kundenmail. Fuer die Pickliste heisst
+    # dieses Feld weiterhin "kdnr" (Anzeige im Kopf der Packuebersicht); die
+    # Kundenmail wird zusaetzlich als "email" gemerkt - beides zusammen erlaubt
+    # schreibe_wc_bestellnummern_csv(), echte Onlineshop-Rechnungen sauber von
+    # Amazon/eBay/Theke zu trennen.
     kdnr = ""
+    email = ""
     for i, z in enumerate(zeilen):
         if re.search(r"Rechnung\s*Nr", z):
-            for j in range(i + 1, min(i + 3, len(zeilen))):
+            for j in range(i + 1, min(i + 5, len(zeilen))):
                 cand = zeilen[j].strip()
-                if cand and "@" not in cand:
+                if not cand:
+                    continue
+                em = re.search(r"[^\s@;]+@[^\s@;]+\.[A-Za-z]{2,}", cand)
+                if em:
+                    if not email:
+                        email = em.group(0)
+                    continue
+                if not kdnr and cand != rnr:
                     kdnr = cand
-                    break
             break
 
     md = re.search(r"(\d{2}\.\d{2}\.\d{4})", full)
@@ -1009,7 +1040,7 @@ def parse_pdf(path):
 
     return {
         "datei": os.path.basename(path),
-        "rnr": rnr, "kdnr": kdnr, "datum": datum,
+        "rnr": rnr, "kdnr": kdnr, "email": email, "datum": datum,
         "positionen": positionen, "total": total, "summe": summe,
         "name": name, "strasse": strasse, "hausnr": hausnr, "plz": plz,
         "zeilen_ok": zeilen_ok, "summe_ok": summe_ok,
@@ -1850,6 +1881,70 @@ def schreibe_ean_csv(rechnungen, csv_pfad):
                 w.writerow(row)
 
 
+# ----------------------------------------------------------------------------
+# wc_bestellnummern.csv  (Bruecke fuer wc_sendungsnummer_sync.py)
+# ----------------------------------------------------------------------------
+# Ordnet die Amicron-Rechnungsnummer der WooCommerce-Bestellnummer zu, damit
+# ein separates Skript die Carrier-Sendungsnummern (DHL/DPD/Deutsche Post,
+# jeweils per Rechnungsnummer referenziert) ueber die REST-API in den
+# Onlineshop (Shiptastic) eintragen kann.
+#
+# Nur ONLINESHOP-Rechnungen kommen hinein. Erkennung: die Zeile unter
+# "Rechnung Nr." (Feld r["kdnr"]) ist eine reine 4-6-stellige Ziffernfolge
+# UND darunter steht eine Kundenmail (r["email"]), deren Domain NICHT von
+# Amazon/eBay stammt. Amazon-Rechnungen tragen dort "nnn-nnnnnnn-nnnnnnn",
+# Zaehltheken-Rechnungen eine Kd-Nr ohne Mail - beide fallen damit raus.
+# Eine zufaellig passende Kd-Nr wird spaeter vom Sync-Skript abgefangen
+# (die Nummer muss sich per API als echte Bestellung aufloesen lassen).
+#
+# Kumulativ wie post_zuordnung.csv (siehe _lies_bestehende_zeilen /
+# BRUECKEN_CSV_MERGE_TAGE), aber mit deutlich laengerer Verfallsfrist: ein
+# Carrier-Export kann eine Rechnung referenzieren, die vor Wochen gepickt und
+# laengst archiviert wurde. Die Zeilen sind winzig, das faellt nicht ins
+# Gewicht. Rechnungsdatum als LETZTE Spalte (Verfallslogik).
+WC_BESTELLNR_CSV_MERGE_TAGE = 60
+
+_MARKTPLATZ_MAIL = ("amazon.", "ebay.", "marketplace.")
+
+
+def _ist_onlineshop_bestellung(kdnr, email):
+    if not re.fullmatch(r"\d{4,6}", (kdnr or "").strip()):
+        return False
+    e = (email or "").strip().lower()
+    if "@" not in e:
+        return False
+    return not any(marker in e for marker in _MARKTPLATZ_MAIL)
+
+
+def schreibe_wc_bestellnummern_csv(rechnungen, csv_pfad):
+    """wc_bestellnummern.csv - Rechnungsnummer -> WooCommerce-Bestellnummer.
+    Format: Rechnungsnummer;WC_Bestellnummer;Email;Name;PLZ;Rechnungsdatum
+    Rueckgabe: Anzahl der in DIESEM Lauf aufgenommenen Onlineshop-Rechnungen."""
+    bestand = {}
+    for t in _lies_bestehende_zeilen(csv_pfad, 2):
+        datum = t[5] if len(t) > 5 else ""
+        if _bruecken_datum_frisch(datum, WC_BESTELLNR_CSV_MERGE_TAGE):
+            row = (t[:6] + ["", "", "", "", "", ""])[:6]
+            bestand[t[0]] = row
+    neu = 0
+    for r in rechnungen:
+        if not r["rnr"]:
+            continue
+        if not _ist_onlineshop_bestellung(r.get("kdnr"), r.get("email")):
+            continue
+        bestand[r["rnr"]] = [r["rnr"], (r.get("kdnr") or "").strip(),
+                              (r.get("email") or "").strip(), r["name"],
+                              r["plz"], _csv_datum(r)]
+        neu += 1
+    with open(csv_pfad, "w", encoding="utf-8-sig", newline="") as f:
+        w = csv.writer(f, delimiter=";", lineterminator="\n")
+        w.writerow(["Rechnungsnummer", "WC_Bestellnummer", "Email", "Name",
+                     "PLZ", "Rechnungsdatum"])
+        for row in bestand.values():
+            w.writerow(row)
+    return neu
+
+
 def archiviere(rechnungen, archiv_basis):
     """Verschiebt die AUFGENOMMENEN Rechnungs-PDFs nach
     <archiv_basis>/<JJJJ-MM-TT>/, damit sie nicht erneut auf eine Packliste
@@ -1945,6 +2040,8 @@ def main(argv):
     schreibe_mengen_csv(rechnungen, mengen_pfad)
     ean_pfad = os.path.join(out_dir, "ean_zuordnung.csv")
     schreibe_ean_csv(rechnungen, ean_pfad)
+    wc_pfad = os.path.join(out_dir, "wc_bestellnummern.csv")
+    wc_neu = schreibe_wc_bestellnummern_csv(rechnungen, wc_pfad)
 
     warn = [r for r in rechnungen
             if not (r["zeilen_ok"] and r["summe_ok"] and r["vollstaendig_ok"])]
@@ -1956,6 +2053,7 @@ def main(argv):
     _ean_pos = sum(1 for r in rechnungen for p in r["positionen"]
                    if (p.get("ean") or "").strip() and not ist_versand(p["art"], p["bez"]))
     print(f"EAN-CSV:          {ean_pfad}  ({_ean_pos} Position(en) mit EAN)")
+    print(f"WC-Bestellnr-CSV: {wc_pfad}  ({wc_neu} Onlineshop-Rechnung(en) in diesem Lauf)")
     if gruppen:
         print(f"Sammeldruck-CSV:  {sammel_pfad}  ({len(gruppen)} Sammelcode(s): "
               + ", ".join(f"{g['code']}={g['art']}×{len(g['rnr'])}" for g in gruppen) + ")")

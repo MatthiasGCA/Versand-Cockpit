@@ -1,8 +1,17 @@
 # === PaketImport-Mover.ps1 ===
 # Verarbeitet den Downloads-Ordner in zwei unabhaengigen Schritten:
 #
-#   1) Sendungsnummern-Exporte (CSV, Namensmuster unten) -> wie bisher nach
-#      C:\AfterSell\PaketImport VERSCHIEBEN.
+#   1) Sendungsnummern-Exporte (CSV, Namensmuster unten):
+#        a) ZUERST nach C:\Scripts\Sendungsnummern_WC KOPIEREN
+#           (Quelle fuer den WooCommerce-Sendungsnummer-Sync, gasecenter-
+#           onlineshop.de - laeuft auf DEMSELBEN PC).
+#        b) DANN wie bisher nach C:\AfterSell\PaketImport VERSCHIEBEN
+#           (Amazon/eBay-Schnittstelle "AfterSell").
+#      Die Reihenfolge ist wichtig: Downloads ist die einzige Quelle. Erst wenn
+#      die Datei sicher im WC-Ordner liegt, wird sie aus Downloads wegbewegt -
+#      sonst kann ein Export dauerhaft nie beim WC-Sync ankommen. Beide Ziele
+#      liegen lokal auf C:, das Kopieren sollte also praktisch immer klappen;
+#      die Absicherung unten bleibt trotzdem (Platte voll, Rechteproblem).
 #
 #   2) ECHTE Versandlabel-PDFs (per Inhalt erkannt ueber label_erkennen.py -
 #      derselbe Erkennungscode wie in scan_druck.py, NICHT nur "*.pdf": im
@@ -14,6 +23,16 @@
 #      jeder folgende 1-Minuten-Lauf dieselbe Datei erneut kopieren, auch
 #      wenn scan_druck.py sie laengst gedruckt hat. Alle anderen PDFs (kein
 #      erkanntes Label) bleiben in Downloads unangetastet liegen.
+#
+# 2026-08-28: Schritt 1 um die WooCommerce-Kopie erweitert (s.o.). Damit die
+#   fest benannte "DHL-VLS-Export.csv" bei einem fehlgeschlagenen Move nach
+#   AfterSell nicht bei jedem Lauf erneut in den WC-Ordner dupliziert wird,
+#   gibt es analog zur PDF-Merkliste eine kleine Statusdatei
+#   ($CsvAusstehendDatei): Dateien, die bereits nach Sendungsnummern_WC
+#   kopiert wurden, deren Move nach AfterSell aber (noch) nicht klappte,
+#   stehen dort und werden beim naechsten Lauf NUR noch verschoben, nicht
+#   erneut kopiert. Ein trotzdem entstehendes Duplikat im WC-Ordner ist
+#   harmlos - der WC-Sync entdoppelt ueber Rechnungsnummer + Sendungsnummer.
 #
 # 2026-08-21: Absicherung gegen wiederholtes Doppel-Kopieren ergaenzt. Bisher
 #   wurde bei einem fehlgeschlagenen Move-Item (Original -> Downloads-Archiv,
@@ -32,6 +51,7 @@
 
 $Quelle          = "$env:USERPROFILE\Downloads"
 $ZielAfterSell   = "C:\AfterSell\PaketImport"
+$ZielWooCommerce = "C:\Scripts\Sendungsnummern_WC"
 $ZielNetzwerk    = "\\DESKTOP-N2H75H\Netzwerk\Paketscheine"
 $QuelleArchiv    = Join-Path $Quelle "Verarbeitete-Label"
 $LogDatei        = "C:\Scripts\PaketImport-Mover.log"
@@ -45,13 +65,20 @@ $PythonExe       = "py"    # ggf. auf vollen Pfad umstellen, siehe Hinweis im Ch
 # kopiert, aber deren Original NICHT archiviert werden konnte (s.o.) - sonst
 # droht dieselbe Duplikat-Kaskade wie beim Vorfall vom 06.08.
 $GeprueftDatei   = "C:\Scripts\PaketImport-Mover-geprueft.csv"
-# Wiederholversuche fuers Archivieren des Originals nach erfolgreichem Kopieren
-# (kurze Antivirus-/Browser-Sperre direkt nach Downloadende ist meist in ein
-# paar Sekunden vorbei).
+# Merkliste fuer Schritt 1: Sendungsnummern-CSVs, die bereits nach
+# Sendungsnummern_WC kopiert wurden, deren Move nach AfterSell aber noch
+# aussteht. Signatur = Pfad|Groesse|Aenderungszeit (wie $GeprueftDatei).
+$CsvAusstehendDatei = "C:\Scripts\PaketImport-Mover-csv-ausstehend.csv"
+# Wiederholversuche fuers Verschieben (Original -> AfterSell bzw. -> Label-
+# Archiv) nach erfolgreichem Kopieren. Eine kurze Antivirus-/Browser-Sperre
+# direkt nach Downloadende ist meist in ein paar Sekunden vorbei.
 $ArchivVersuche      = 3
 $ArchivWartenSekunden = 2
 
 # Dateinamen-Muster fuer die Sendungsnummern-CSVs (unveraendert):
+#   DHL-VLS*.csv          DHL Versandlabel-System, FESTER Name (Kollision haeufig)
+#   *_Sendungsnummern.csv Deutsche Post ("..._mit_Sendungsnummern.csv")
+#   EXPORT_*.csv          DPD (myDPD-Export, mit Zeitstempel im Namen)
 $Muster = @(
     "DHL-VLS*.csv",
     "*_Sendungsnummern.csv",
@@ -90,8 +117,32 @@ function Get-DateiSignatur($DateiInfo) {
     return "{0}|{1}|{2}" -f $DateiInfo.FullName, $DateiInfo.Length, $DateiInfo.LastWriteTimeUtc.Ticks
 }
 
-# Original nach dem Kopieren archivieren, mit ein paar Wiederholversuchen bei
-# einer kurzen (Antivirus-/Browser-)Sperre. True bei Erfolg.
+# Selbstreinigend eine Signatur-Merkliste laden: nur Eintraege behalten, deren
+# Datei (erstes Feld) noch existiert. Geloeschte/verschobene Downloads
+# verschwinden damit automatisch wieder aus der Liste.
+function Read-SignaturSet($Pfad) {
+    $set = New-Object 'System.Collections.Generic.HashSet[string]'
+    if (Test-Path $Pfad) {
+        Get-Content $Pfad | ForEach-Object {
+            $teile = $_ -split '\|'
+            if ($teile.Count -eq 3 -and (Test-Path -LiteralPath $teile[0])) {
+                [void]$set.Add($_)
+            }
+        }
+    }
+    return ,$set
+}
+
+function Write-SignaturSet($Pfad, $Set) {
+    try {
+        $Set | Set-Content -Path $Pfad -Encoding UTF8
+    } catch {
+        Log "FEHLER beim Schreiben der Merkliste $($Pfad): $($_.Exception.Message)"
+    }
+}
+
+# Verschieben mit ein paar Wiederholversuchen bei einer kurzen (Antivirus-/
+# Browser-)Sperre. True bei Erfolg.
 function Move-ItemMitRetry($QuellPfad, $ZielPfad) {
     for ($versuch = 1; $versuch -le $ArchivVersuche; $versuch++) {
         try {
@@ -101,23 +152,11 @@ function Move-ItemMitRetry($QuellPfad, $ZielPfad) {
             if ($versuch -lt $ArchivVersuche) {
                 Start-Sleep -Seconds $ArchivWartenSekunden
             } else {
-                Log "FEHLER beim Archivieren nach $ArchivVersuche Versuch(en) $QuellPfad -> $($ZielPfad): $($_.Exception.Message)"
+                Log "FEHLER beim Verschieben nach $ArchivVersuche Versuch(en) $QuellPfad -> $($ZielPfad): $($_.Exception.Message)"
             }
         }
     }
     return $false
-}
-
-# Merkliste laden: nur Eintraege behalten, deren Datei noch existiert (selbst-
-# reinigend - geloeschte/verschobene Downloads verschwinden automatisch wieder).
-$GeprueftSet = New-Object 'System.Collections.Generic.HashSet[string]'
-if (Test-Path $GeprueftDatei) {
-    Get-Content $GeprueftDatei | ForEach-Object {
-        $teile = $_ -split '\|'
-        if ($teile.Count -eq 3 -and (Test-Path -LiteralPath $teile[0])) {
-            [void]$GeprueftSet.Add($_)
-        }
-    }
 }
 
 # Prueft per Inhalt (label_erkennen.py), ob eine PDF ein echtes Versandlabel
@@ -162,11 +201,18 @@ function Test-IstVersandlabel($Pfad) {
     }
 }
 
-foreach ($Ordner in @($ZielAfterSell, $QuelleArchiv)) {
-    if (-not (Test-Path $Ordner)) { New-Item -ItemType Directory -Path $Ordner -Force | Out-Null }
+# Alle drei Zielordner liegen lokal auf C: - bei Bedarf einfach anlegen.
+foreach ($Ordner in @($ZielAfterSell, $QuelleArchiv, $ZielWooCommerce)) {
+    if (-not (Test-Path $Ordner)) {
+        try { New-Item -ItemType Directory -Path $Ordner -Force | Out-Null }
+        catch { Log "FEHLER beim Anlegen von $($Ordner): $($_.Exception.Message)" }
+    }
 }
 
-# --- 1) Sendungsnummern-CSVs -> wie bisher nach AfterSell verschieben -------
+$CsvAusstehendSet = Read-SignaturSet $CsvAusstehendDatei
+
+# --- 1) Sendungsnummern-CSVs -> erst nach Sendungsnummern_WC KOPIEREN, --------
+#        dann nach AfterSell VERSCHIEBEN --------------------------------------
 foreach ($m in $Muster) {
     Get-ChildItem -Path $Quelle -Filter $m -File -ErrorAction SilentlyContinue | ForEach-Object {
         # Datei-Objekt VOR try/catch in eine eigene Variable uebernehmen: $_
@@ -175,17 +221,51 @@ foreach ($m in $Muster) {
         # catch waere dann leer, egal was schiefging.
         $datei = $_
         if (-not (Test-FileReady $datei.FullName)) { return }   # Download noch nicht abgeschlossen
-        $ZielPfad = Get-EindeutigenZielpfad $ZielAfterSell $datei.Name
-        try {
-            Move-Item -LiteralPath $datei.FullName -Destination $ZielPfad -Force
-            Log "Sendungsnummern verschoben: $($datei.Name) -> $ZielPfad"
-        } catch {
-            Log "FEHLER beim Verschieben (Sendungsnummern) $($datei.Name): $($_.Exception.Message)"
+
+        $signatur = Get-DateiSignatur $datei
+
+        # a) Kopie nach Sendungsnummern_WC - nur wenn nicht schon geschehen
+        #    (siehe $CsvAusstehendSet: Move nach AfterSell stand beim letzten
+        #    Lauf noch aus, kopiert wurde aber bereits).
+        if (-not $CsvAusstehendSet.Contains($signatur)) {
+            if (-not (Test-Path $ZielWooCommerce)) {
+                # Sollte nach dem Anlegen oben nicht vorkommen (Platte voll /
+                # Rechteproblem). Datei bleibt komplett in Downloads liegen und
+                # wird beim naechsten Lauf erneut versucht - NICHT schon nach
+                # AfterSell verschieben, sonst erreicht dieser Export den WC-Sync nie.
+                Log "WARNUNG: WC-Ordner fehlt: $ZielWooCommerce - $($datei.Name) bleibt vorerst in Downloads."
+                return
+            }
+            $WcZielPfad = Get-EindeutigenZielpfad $ZielWooCommerce $datei.Name
+            try {
+                Copy-Item -LiteralPath $datei.FullName -Destination $WcZielPfad -Force
+                [void]$CsvAusstehendSet.Add($signatur)
+                Log "Sendungsnummern kopiert nach WC: $($datei.Name) -> $WcZielPfad"
+            } catch {
+                Log "FEHLER beim Kopieren nach WC $($datei.Name): $($_.Exception.Message) - bleibt in Downloads."
+                return
+            }
+        }
+
+        # b) Verschieben nach AfterSell (lokal). Die Datei liegt jetzt sicher
+        #    im WC-Ordner; schlaegt der Move fehl, bleibt sie in Downloads und
+        #    der Move wird naechsten Lauf erneut versucht - dank $CsvAusstehendSet
+        #    OHNE erneute WC-Kopie.
+        $AsZielPfad = Get-EindeutigenZielpfad $ZielAfterSell $datei.Name
+        if (Move-ItemMitRetry $datei.FullName $AsZielPfad) {
+            [void]$CsvAusstehendSet.Remove($signatur)
+            Log "Sendungsnummern verschoben nach AfterSell: $($datei.Name) -> $AsZielPfad"
+        } else {
+            Log ("WARNUNG: $($datei.Name) wurde nach WC kopiert, aber der Move nach AfterSell " +
+                 "schlug fehl - Datei bleibt in Downloads, Move wird naechsten Lauf erneut " +
+                 "versucht (keine erneute WC-Kopie).")
         }
     }
 }
 
 # --- 2) Versandlabel-PDFs -> ins Netzwerk kopieren, Original archivieren ---
+$GeprueftSet = Read-SignaturSet $GeprueftDatei
+
 if (-not (Test-Path $ZielNetzwerk)) {
     # Netzwerkordner gerade nicht erreichbar (z.B. Freigabe kurz weg) -> Label
     # bleibt in Downloads liegen und wird beim naechsten Lauf erneut versucht.
@@ -227,9 +307,6 @@ if (-not (Test-Path $ZielNetzwerk)) {
     }
 }
 
-# Merkliste aktualisiert zurueckschreiben (nur noch existierende Dateien, s.o.)
-try {
-    $GeprueftSet | Set-Content -Path $GeprueftDatei -Encoding UTF8
-} catch {
-    Log "FEHLER beim Schreiben der Merkliste $($GeprueftDatei): $($_.Exception.Message)"
-}
+# Merklisten aktualisiert zurueckschreiben (nur noch existierende Dateien, s.o.)
+Write-SignaturSet $CsvAusstehendDatei $CsvAusstehendSet
+Write-SignaturSet $GeprueftDatei $GeprueftSet

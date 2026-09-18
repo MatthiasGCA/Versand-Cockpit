@@ -43,10 +43,17 @@ set "ARCHIV=C:\Packlisten\Archiv"
 REM --- Netzwerkordner, den scan_druck.py ueberwacht -------------------------
 set "NETZWERK=\\DESKTOP-N2H75H\Netzwerk\Paketscheine"
 
+REM --- Ordner fuer den WooCommerce-Sendungsnummer-Sync --------------------
+REM     Lokal auf DIESEM PC (Amicron/AfterSell/packliste laufen alle hier) - -
+REM     dorthin legt auch PaketImport-Mover.ps1 die Carrier-CSVs, und von hier -
+REM     liest wc_sendungsnummer_sync.py. Kein Netzwerkpfad noetig. -----------
+set "WC_NETZWERK=C:\Scripts\Sendungsnummern_WC"
+
 REM ===========================================================================
 echo.
 echo === Pickliste wird erstellt ===
 if not exist "%AUSGABE%" mkdir "%AUSGABE%"
+if not exist "%WC_NETZWERK%" mkdir "%WC_NETZWERK%"
 
 REM --- Zeitstempel JJJJ-MM-TT_HHMM (locale-unabhaengig ueber PowerShell) ------
 for /f %%i in ('powershell -NoProfile -Command "Get-Date -Format yyyy-MM-dd_HHmm"') do set "STAMP=%%i"
@@ -88,14 +95,36 @@ if not exist "%NETZWERK%\" (
 )
 
 echo.
-if "!KOPIER_FEHLER!"=="1" (
-  echo === FERTIG MIT WARNUNG - CSVs NICHT vollstaendig aktualisiert, siehe oben^! ===
+echo === WC-Bestellnr-CSV in den Sync-Ordner kopieren ===
+REM Eigener Ordner + eigenes Fehler-Flag: ein fehlender WC-Ordner soll die
+REM Paketscheine-Kopie oben nicht verschlucken und umgekehrt. wc_bestellnummern.csv
+REM ist die Bruecke von der Rechnungsnummer zur WooCommerce-Bestellnummer
+REM fuer wc_sendungsnummer_sync.py.
+set "WC_KOPIER_FEHLER=0"
+if not exist "%WC_NETZWERK%\" (
+  echo.
+  echo *** WARNUNG: WC-Sync-Ordner "%WC_NETZWERK%" nicht vorhanden - wc_bestellnummern.csv NICHT kopiert^! ***
+  echo *** Der Sendungsnummer-Sync arbeitet dann mit dem alten Stand weiter. Nach dem naechsten         ***
+  echo *** erfolgreichen Lauf ist die Zuordnung wieder aktuell - die Datei ist kumulativ.               ***
+  set "WC_KOPIER_FEHLER=1"
+) else (
+  copy /Y "%AUSGABE%\wc_bestellnummern.csv" "%WC_NETZWERK%\wc_bestellnummern.csv" || set "WC_KOPIER_FEHLER=1"
+  if "!WC_KOPIER_FEHLER!"=="1" (
+    echo.
+    echo *** WARNUNG: wc_bestellnummern.csv konnte NICHT kopiert werden - siehe oben^! ***
+  )
+)
+
+echo.
+if "!KOPIER_FEHLER!!WC_KOPIER_FEHLER!" NEQ "00" (
+  echo === FERTIG MIT WARNUNG - nicht alle CSVs aktualisiert, siehe oben^! ===
 ) else (
   echo === Fertig ===
 )
-echo Pickliste:    %PICKPDF%
-echo CSVs nach:    %NETZWERK%
-echo Archiviert:   %ARCHIV%\(Datum)
+echo Pickliste:       %PICKPDF%
+echo CSVs nach:        %NETZWERK%
+echo WC-Bestellnr-CSV: %WC_NETZWERK%
+echo Archiviert:       %ARCHIV%\(Datum)
 echo.
 REM Pickliste zum Drucken oeffnen (REM davor deaktiviert das Oeffnen)
 start "" "%PICKPDF%"

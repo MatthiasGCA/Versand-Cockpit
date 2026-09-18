@@ -1,0 +1,5 @@
+# Enthaelt den WooCommerce Read/Write-API-Key im Klartext - nie committen.
+wc_sync_config.json
+
+# Laufzeit-Statusdatei des Sendungsnummer-Syncs (kann Kundendaten enthalten).
+wc_sync_state.json

@@ -50,9 +50,16 @@ try:
 except Exception:
     _HAS_REPORTLAB = False
 # ============================ KONFIGURATION ============================
-VERSION = "2026-09-21a"          # im Fenstertitel sichtbar -> Deployment pruefbar
+VERSION = "2026-09-21b"          # im Fenstertitel sichtbar -> Deployment pruefbar
 # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je Aenderung am selben Tag (erste
 # Aenderung des Tages = a, dann b, c ...; ein neuer Tag beginnt wieder bei a).
+# 2026-09-21b: Eigene Toene statt des Windows-Pieptons. standard.mp3 (Standard-
+#   ton: Mehrfach-Scan-Warnung, Mengeninfo fehlt, falscher Artikel) und EAN.mp3
+#   (Aufforderung zum Artikel-EAN-Scan, auch Sammeldruck) - beide Dateien
+#   liegen im Ordner von scan_druck.py. Wiedergabe ueber Windows-MCI (winmm,
+#   ctypes) - keine Zusatzpakete noetig. Fehlt eine Datei oder klappt die
+#   Wiedergabe nicht, kommt wie bisher root.bell(). Erfolgreiche Drucke bleiben
+#   wie bisher stumm.
 # 2026-09-21a: _hausnr() ignoriert Satzzeichen hinter der Hausnummer ("... 358,"
 #   -> "358"), identisch zu packliste.py 2026-09-21a (real beobachtet: Adresse
 #   mit Komma hinter der Hausnummer hatte eine leere Hausnummer in der
@@ -407,6 +414,35 @@ TESTMODUS = False                # True = Treffer als PDF in "test_ausgabe" stat
 # nicht-blockierendes Drucken waere ein Hintergrund-Thread noetig (groessere
 # Umbau-Aenderung, absichtlich noch nicht umgesetzt).
 DRUCK_TIMEOUT_SEKUNDEN = 8
+# --- Toene -------------------------------------------------------------------
+# Die MP3-Dateien liegen im SELBEN Ordner wie scan_druck.py:
+#   standard.mp3  Standardton (ersetzt den frueheren Windows-Piepton: Mehrfach-
+#                 Scan-Warnung, Mengeninfo fehlt, falscher Artikel)
+#   EAN.mp3       Aufforderung zum Artikel-EAN-Scan (ean_start/ean_teil und
+#                 Sammeldruck-EAN)
+# Fehlt eine Datei oder klappt die Wiedergabe nicht, faellt das Cockpit auf den
+# bisherigen Windows-Ton (root.bell()) zurueck - der Betrieb wird nie blockiert.
+TON_STANDARD = "standard.mp3"
+TON_EAN = "EAN.mp3"
+_TON_DIR = os.path.dirname(os.path.abspath(__file__))
+_TON_ALIAS = "cockpit_ton"
+def _mci(befehl):
+    """Windows-MCI-Befehl (winmm) - spielt MP3 ohne Zusatzpakete. Rueckgabe 0 = ok."""
+    try:
+        import ctypes
+        return ctypes.windll.winmm.mciSendStringW(befehl, None, 0, 0)
+    except Exception:
+        return -1
+def spiele_ton(dateiname):
+    """Spielt eine MP3 aus dem Skriptordner asynchron ab (ein noch laufender Ton
+    wird abgebrochen). True bei Erfolg, False -> Aufrufer nimmt den Ersatzton."""
+    pfad = os.path.join(_TON_DIR, dateiname)
+    if not os.path.isfile(pfad):
+        return False
+    _mci(f"close {_TON_ALIAS}")            # Rest eines vorigen Tons freigeben (Fehler egal)
+    if _mci(f'open "{pfad}" type mpegvideo alias {_TON_ALIAS}') != 0:
+        return False
+    return _mci(f"play {_TON_ALIAS} from 0") == 0
 # --- Duplikat-Erkennung (Inhalt) ---------------------------------------------
 # Mindestlaenge des extrahierten Seitentextes, ab der ein Inhalts-Hash als
 # verlaesslich gilt (verhindert Fehlalarm bei fast leeren Seiten). Kuerzer ->
@@ -1983,6 +2019,17 @@ def starte_cockpit():
             root.after_cancel(_warn_timer["job"])
             _warn_timer["job"] = None
         warn_overlay.place_forget()
+    def ton(dateiname):
+        """MP3 abspielen, sonst (Datei fehlt/Fehler) der bisherige Windows-Ton."""
+        try:
+            if spiele_ton(dateiname):
+                return
+        except Exception:
+            pass
+        try:
+            root.bell()
+        except Exception:
+            pass
     def zeige_warnung(info):
         """info['modus']: 'teil' (gelb, bleibt stehen), 'fertig' (gruen, blendet
         aus) oder 'fehlt' (rot, bleibt stehen - Mengeninfo fehlt, nicht gedruckt)."""
@@ -2005,10 +2052,7 @@ def starte_cockpit():
                 zusatz += f"      Bestellung: {menge} Stück  (max. {soll}× nötig)"
             warn_sub.configure(text=zusatz)
             warn_overlay.place(relx=0.5, rely=0.40, anchor="center")
-            try:
-                root.bell()
-            except Exception:
-                pass
+            ton(TON_STANDARD)
         elif info["modus"] == "fehlt":     # rot -> Mengeninfo fehlt, NICHT gedruckt
             _zeichne_dreieck("#FF5252")
             warn_overlay.configure(highlightbackground="#FF5252")
@@ -2017,10 +2061,7 @@ def starte_cockpit():
             warn_sub.configure(text=f"Rechnung {rn} – Pickliste/mengen_zuordnung.csv "
                                     f"aktualisieren")
             warn_overlay.place(relx=0.5, rely=0.40, anchor="center")
-            try:
-                root.bell()
-            except Exception:
-                pass
+            ton(TON_STANDARD)
         elif info["modus"] in ("ean_start", "ean_teil"):
             # blau -> Bestellung offen, jetzt die ARTIKEL-EAN(s) scannen
             ist = info.get("ist", 0)
@@ -2037,10 +2078,7 @@ def starte_cockpit():
                 artikel = info.get("artikel") or ", ".join(info.get("namen", []))
                 warn_sub.configure(text=f"Rechnung {rn}      {artikel}")
             warn_overlay.place(relx=0.5, rely=0.40, anchor="center")
-            try:
-                root.bell()
-            except Exception:
-                pass
+            ton(TON_EAN)
         elif info["modus"] == "ean_falsch":   # rot -> falscher/fremder Artikel
             ist = info.get("ist", 0)
             _zeichne_dreieck("#FF5252")
@@ -2055,10 +2093,7 @@ def starte_cockpit():
                 warn_prog.configure(text="EAN passt NICHT zur Bestellung", fg="#FFFFFF")
                 warn_sub.configure(text=f"Rechnung {rn} – {ist} von {soll} geprüft")
             warn_overlay.place(relx=0.5, rely=0.40, anchor="center")
-            try:
-                root.bell()
-            except Exception:
-                pass
+            ton(TON_STANDARD)
         elif info["modus"] == "ean_fertig":   # gruen -> alle EANs geprueft, gedruckt
             _zeichne_dreieck("#00E676")
             warn_overlay.configure(highlightbackground="#00E676")
@@ -2075,10 +2110,7 @@ def starte_cockpit():
             warn_prog.configure(text=info.get("code", ""), fg="#FFFFFF")
             warn_sub.configure(text=info.get("bez", ""))
             warn_overlay.place(relx=0.5, rely=0.40, anchor="center")
-            try:
-                root.bell()
-            except Exception:
-                pass
+            ton(TON_EAN)
         elif info["modus"] == "sam_ean_falsch":  # rot -> falscher Artikel fuer Sammelcode
             _zeichne_dreieck("#FF5252")
             warn_overlay.configure(highlightbackground="#FF5252")
@@ -2086,10 +2118,7 @@ def starte_cockpit():
             warn_prog.configure(text=f"passt nicht zu {info.get('code','')}", fg="#FFFFFF")
             warn_sub.configure(text=info.get("bez", ""))
             warn_overlay.place(relx=0.5, rely=0.40, anchor="center")
-            try:
-                root.bell()
-            except Exception:
-                pass
+            ton(TON_STANDARD)
         elif info["modus"] == "sam_ean_fertig":  # gruen -> EAN bestaetigt, Sammelblock gedruckt
             _zeichne_dreieck("#00E676")
             warn_overlay.configure(highlightbackground="#00E676")

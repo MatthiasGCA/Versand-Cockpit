@@ -6,6 +6,7 @@
   "state_path": "C:\\Scripts\\wc_sync_state.json",
   "set_status_shipped": true,
   "archive_after_days": 14,
+  "offen_prune_days": 90,
   "provider_slugs": {
     "DHL": "dhl",
     "DPD": "dpd",

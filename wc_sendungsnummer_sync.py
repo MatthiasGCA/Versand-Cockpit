@@ -87,6 +87,7 @@ KONFIG (wc_sync_config.json - Vorlage: wc_sync_config.example.json):
   "state_path": "C:\\Scripts\\wc_sync_state.json",
   "set_status_shipped": true,
   "archive_after_days": 14,
+  "offen_prune_days": 90,
   "provider_slugs": { "DHL": "dhl", "DPD": "dpd", "Deutsche Post": "deutsche_post" }
 }
 """
@@ -166,6 +167,7 @@ def lade_konfig(pfad):
     cfg["base_url"] = cfg["base_url"].rstrip("/")
     cfg.setdefault("set_status_shipped", True)
     cfg.setdefault("archive_after_days", 14)
+    cfg.setdefault("offen_prune_days", 90)
     slugs = dict(DEFAULT_PROVIDER_SLUGS)
     slugs.update(cfg.get("provider_slugs") or {})
     cfg["provider_slugs"] = slugs
@@ -521,6 +523,32 @@ def verarbeite(rgnr, bestellnr, trackings, carrier_name, api, cfg, state, dry, l
     return ergebnis
 
 
+def bereinige_offen(state, tage):
+    """Entfernt aus state["offen"] alte Eintraege mit dem Grund "keine WC-
+    Bestellnummer bekannt" (Nicht-Onlineshop-Sendungen: Amazon/eBay/Theke -
+    sie machen den Grossteil aus und wuerden die Statusdatei, die stuendlich
+    komplett neu geschrieben wird, sonst dauerhaft aufblaehen). "zuletzt" wird
+    bei jedem Lauf erneuert, solange die Carrier-CSV noch im Eingangsordner
+    liegt (max. archive_after_days) - ein Eintrag, der seit `tage` Tagen nicht
+    mehr aufgefrischt wurde, ist also endgueltig erledigt. Alle ANDEREN Gruende
+    (Konflikt, Bestellnummer nicht im Shop, kein Provider-Slug) bleiben
+    bewusst stehen, die braucht ein Mensch. Rueckgabe: Anzahl entfernt."""
+    grenze = datetime.now().timestamp() - tage * 86400
+    weg = []
+    for rgnr, e in state["offen"].items():
+        if e.get("grund") != "keine WC-Bestellnummer bekannt":
+            continue
+        try:
+            ts = datetime.fromisoformat(e.get("zuletzt", "")).timestamp()
+        except ValueError:
+            continue  # kein lesbarer Zeitstempel -> lieber behalten
+        if ts < grenze:
+            weg.append(rgnr)
+    for rgnr in weg:
+        del state["offen"][rgnr]
+    return len(weg)
+
+
 # ==========================================================================
 # Archivierung
 # ==========================================================================
@@ -675,6 +703,11 @@ def main(argv):
             if res == "sync":
                 geschrieben += 1
             time.sleep(0.3)
+
+    entfernt = bereinige_offen(state, cfg["offen_prune_days"])
+    if entfernt:
+        log("Aufgeraeumt: %d alte Nicht-Onlineshop-Eintraege (> %d Tage) aus 'offen' entfernt."
+            % (entfernt, cfg["offen_prune_days"]))
 
     speichere_state(state_pfad, state)
 

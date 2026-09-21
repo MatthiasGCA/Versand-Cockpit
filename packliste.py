@@ -11,11 +11,19 @@ Einzelpreis/G-Preis/Rechnungsbetrag und Lagerort-Feld) und erzeugt:
      - Teil B "Packuebersicht je Rechnung": Kopf mit Rechnungsnr., Kd-Nr.,
        Datum, Empfaenger und Code128-Barcode der Rechnungsnummer, darunter
        die Positionen mit Abhak-Kaestchen.
-  2. die Datei "post_zuordnung.csv" (Bruecke fuer scan_druck.py):
-       Rechnungsnummer;Name;Strasse;Hausnummer;PLZ
-     Format exakt so, wie scan_druck.py es einliest (Semikolon, Kopfzeile,
-     UTF-8). Damit ordnet das Cockpit Deutsche-Post-Labels (ohne Rechnungs-
-     nummer) ueber die Lieferadresse zu.
+  2. fuenf Bruecken-CSVs (Semikolon, Kopfzeile, UTF-8; jeweils mit dem
+     Rechnungsdatum als LETZTER Spalte fuer den Verfall, siehe
+     BRUECKEN_CSV_MERGE_TAGE; werden mit dem Bestand frueherer Laeufe
+     zusammengefuehrt):
+       post_zuordnung.csv    Rechnungsnummer;Name;Strasse;Hausnummer;PLZ;Datum
+                             -> scan_druck.py ordnet Deutsche-Post-Labels (ohne
+                                Rechnungsnummer) ueber die Lieferadresse zu
+       sammel_zuordnung.csv  Sammelcodes (SAM-n) -> Bestellungen, EAN, Menge je
+                             Bestellung (Sammeldruck-Deckblatt)
+       mengen_zuordnung.csv  Rechnungsnummer;Scananzahl;Datum (Mehrfach-Scan)
+       ean_zuordnung.csv     Rechnungsnummer;EAN;Bezeichnung;Anzahl;Datum
+       wc_bestellnummern.csv Rechnungsnummer;WC_Bestellnummer;... (nur fuer
+                             wc_sendungsnummer_sync.py, nicht fuer scan_druck.py)
 
  Aufruf:
     python packliste.py <rechnungs_ordner> "<stammdaten_oder_leer>" <ausgabe.pdf>
@@ -59,8 +67,16 @@ from reportlab.graphics.shapes import Drawing
 # KONFIGURATION
 # ----------------------------------------------------------------------------
 
-VERSION = "2026-09-21a"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+VERSION = "2026-09-21b"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
 # Aenderung am selben Tag (erste = a, dann b, c ...; neuer Tag beginnt wieder bei a).
+# 2026-09-21b: Projektpruefung, Nachzuegler: _fach_token_re()/_gewicht_token_re()
+#   pruefen jetzt (?<![\d,.]) statt (?<!\d) - eine Dezimalzahl in der
+#   Bezeichnung ("1,5 kg", "1,2 Stück") wird sonst hinter dem Komma angebrochen
+#   ("1,GESAMTMENGE"). Ausserdem veraltete Kommentare zu den seit 2026-08-21i
+#   entfernten Packungsartikeln bereinigt und den Modul-Kopf um alle fuenf
+#   Bruecken-CSVs ergaenzt. Rein kosmetisch/haertend, keine Logikaenderung fuer
+#   die bisherigen echten Bezeichnungen (von Hand gegen 5,00 kg / 10 Stück / 6x
+#   / 2 Packungen gegengeprueft).
 # 2026-09-21a: Bei der Projektpruefung gefunden: _hausnr() ignoriert jetzt
 #   Satzzeichen hinter der Hausnummer ("Clara Zetkin Strasse 358," -> "358",
 #   real in post_zuordnung.csv beobachtet, Hausnummer war dort leer und das
@@ -481,7 +497,8 @@ def _lagerort_wert(txt):
 # Lagerort-Zeile als eigene Zeile im Positionsblock und markiert einen im Set
 # verkauften Artikel - N = Anzahl der im Set/in der Verpackungseinheit
 # enthaltenen Einzelteile. Bewusst eine EXPLIZITE Markierung statt einer
-# Ableitung aus der Bezeichnung (wie bei Gewichts-/Packungsartikeln): die
+# Ableitung aus der Bezeichnung (frueher auch bei Gewichts-/Packungsartikeln
+# ueblich, dort inzwischen abgeschafft, siehe MULTIPACK_RE): die
 # Bezeichnung selbst enthaelt haeufig ein "<N>x "-Praefix (z.B. "2x
 # Flaschenkappe", "12x campcooga Schraubkartusche"), das aber NICHT immer
 # bedeutet, dass N Einzelteile zu verpacken sind (z.B. ein Karton mit 12
@@ -567,7 +584,7 @@ def finde_sammelgruppen(rechnungen, min_anzahl=SAMMEL_MIN):
     Rueckgabe: Liste von dicts {code, art, bez, einh, menge_je_text, rnr:[...]}.
 
     "bez" und "menge_je_text" kommen ueber effektive_menge() - bei einem
-    Gewichts-/Packungs-/Set-Artikel (2026-08-21h) steht hier NICHT mehr
+    Gewichts-/Set-Artikel (2026-08-21h) steht hier NICHT mehr
     hartcodiert "1 Stück", sondern die tatsaechlich je Bestellung zu
     verpackende Menge (z.B. "3 Stück" bei einem 3-Fach-Artikel), und die
     Bezeichnung hat das Mengen-Token durch "GESAMTMENGE" ersetzt. Der Packer
@@ -1174,7 +1191,9 @@ def _gewicht_token_re(w):
     else:
         varianten.add(f"{w:g}".replace(".", ","))
     alt = "|".join(re.escape(v) for v in sorted(varianten, key=len, reverse=True))
-    return re.compile(rf"(?<!\d)(?:{alt})\s*kg\b", re.IGNORECASE)
+    # (?<![\d,.]) statt nur (?<!\d): sonst wuerde z.B. bei Marker 5 in "1,5 kg"
+    # nur die "5" hinter dem Komma ersetzt ("1,GESAMTMENGE").
+    return re.compile(rf"(?<![\d,.])(?:{alt})\s*kg\b", re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
@@ -1208,8 +1227,10 @@ def _fach_token_re(n):
     aber Bezeichnung nennt '4x' fuer den Karton-Inhalt), bleibt die
     Bezeichnung unveraendert; die Menge-Spalte zeigt trotzdem korrekt die
     tatsaechliche Stueckzahl."""
+    # (?<![\d,.]) statt nur (?<!\d): "1,2 Stück" darf bei n=2 nicht als "2 Stück"
+    # gelten (Dezimalzahl in der Bezeichnung).
     return re.compile(
-        rf"(?<!\d){n}\s*(?:x\b|St(?:ü|ue)?c?ke?\b|Packung(?:en)?\b|"
+        rf"(?<![\d,.]){n}\s*(?:x\b|St(?:ü|ue)?c?ke?\b|Packung(?:en)?\b|"
         rf"Kartusche(?:n)?\b|Flasche(?:n)?\b|Dose(?:n)?\b|Eimer\b|Rolle(?:n)?\b)",
         re.IGNORECASE)
 
@@ -1243,8 +1264,7 @@ def effektive_menge(p):
 
 def pack_anzeige(p):
     """Anzeige (bez, mengentext, hervorheben) fuer die PACKUEBERSICHT - siehe
-    effektive_menge() fuer die Multiplikator-Logik (Gewichts-/Packungs-/Set-
-    Artikel). Bei einem normalen Artikel bleibt die bisherige Menge>1-
+    effektive_menge() fuer die Multiplikator-Logik (Gewichts-/Set-Artikel). Bei einem normalen Artikel bleibt die bisherige Menge>1-
     Hervorhebung bestehen."""
     menge, einh, bez, immer_hv = effektive_menge(p)
     hv = immer_hv or (menge or 0) > 1.0000001
@@ -1273,9 +1293,9 @@ def order_scananzahl(r):
     Mehrfach-Scan-Sicherung z.B. bei einem als '1x' bestellten 2er-Set-Artikel
     nur 1 statt 2 Scans verlangen und ein vergessenes zweites Teil nicht
     abfangen (2026-08-21c nachgezogen, analog zur bereits bestehenden
-    Gewichtsartikel-Behandlung). Packungsartikel (Artikelnr '<Zahl>/<N>')
-    zaehlen bewusst WEITERHIN nach der rohen Bestellmenge - unveraendertes,
-    bereits bestehendes Verhalten, nicht Teil dieser Anfrage."""
+    Gewichtsartikel-Behandlung). Alle anderen Positionen zaehlen nach der
+    rohen Bestellmenge (Packungsartikel-Ableitung gibt es seit 2026-08-21i
+    nicht mehr)."""
     total = 0
     for p in r["positionen"]:
         if ist_versand(p["art"], p["bez"]):

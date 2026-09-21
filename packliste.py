@@ -67,8 +67,15 @@ from reportlab.graphics.shapes import Drawing
 # KONFIGURATION
 # ----------------------------------------------------------------------------
 
-VERSION = "2026-09-21b"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+VERSION = "2026-09-21c"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
 # Aenderung am selben Tag (erste = a, dann b, c ...; neuer Tag beginnt wieder bei a).
+# 2026-09-21c: Menge-Spalte breiter (80 -> 100 pt, Kommissionierliste UND
+#   Packuebersicht) und MengeFlow verkleinert die hervorgehobene Menge
+#   automatisch, wenn Text + Kreis trotzdem nicht in die Spalte passen. Anlass:
+#   Rechnung 1705307, "2 Schuber" ragte mit dem roten Kreis ueber die Spalte
+#   und ueberdeckte Lagerort bzw. Checkbox. Nur Layout, keine Mengenlogik.
+#   (Hinweis: bei N-Fach-Artikeln ersetzt effektive_menge() die Einheit weiter
+#   bewusst durch "Stück", z.B. Schuber -> "12 Stück" bei 4-Fach x 3.)
 # 2026-09-21b: Projektpruefung, Nachzuegler: _fach_token_re()/_gewicht_token_re()
 #   pruefen jetzt (?<![\d,.]) statt (?<!\d) - eine Dezimalzahl in der
 #   Bezeichnung ("1,5 kg", "1,2 Stück") wird sonst hinter dem Komma angebrochen
@@ -1102,9 +1109,22 @@ class MengeFlow(Flowable):
         self.text = text or ""
         self.hervor = hervor
         self.fs = (fs + self.HERVOR_PLUS) if hervor else fs
+        self.fs0 = self.fs
 
     def wrap(self, aw, ah):
         self.aw = aw
+        self.fs = self.fs0    # wrap() kann mehrfach mit unterschiedlicher Breite laufen
+        if self.hervor:
+            # Lange Einheitenwoerter ("2 Schuber", "12 Packungen") duerfen den
+            # Kreis nicht ueber die Spalte hinaus ziehen (real beobachtet an
+            # Rechnung 1705307: "2 Schuber" ueberdeckte Lagerort/Checkbox).
+            # Der Kreis reicht 9 pt (Einzug) + Textbreite + 6 pt (Kreisrand) +
+            # ~1 pt Strichstaerke - so weit verkleinern, bis das in `aw` passt,
+            # aber nie unter die Normalschrift (9 pt).
+            from reportlab.pdfbase.pdfmetrics import stringWidth
+            while (self.fs > 9 and
+                   9 + stringWidth(self.text, "Helvetica-Bold", self.fs) + 7 > aw):
+                self.fs -= 0.5
         self.height = self.fs + (12 if self.hervor else 4)
         return aw, self.height
 
@@ -1438,7 +1458,7 @@ def baue_pdf(rechnungen, pdf_pfad, gruppen):
             story.append(Paragraph(untertitel, st_klein))
         story.append(Spacer(1, 6))
         head = ["Lagerort", "Artikelnr", "Bezeichnung", "Menge", ""]
-        lw, aw, mw, cw = 66, 80, 80, 26
+        lw, aw, mw, cw = 66, 80, 100, 26   # mw 80 -> 100: lange Einheitenwoerter (2026-09-21c)
         bw = SEITE - lw - aw - mw - cw
         data = [head]
         for key in sorted(artikel, key=lambda k: _artikel_sortkey(artikel[k]["art"] or k)):
@@ -1497,7 +1517,7 @@ def baue_pdf(rechnungen, pdf_pfad, gruppen):
                 st_info))
 
         head2 = ["Artikelnr", "Bezeichnung", "Menge", "Lagerort", ""]
-        aw, mw, lw, cw = 74, 80, 92, 26
+        aw, mw, lw, cw = 74, 100, 92, 26   # mw 80 -> 100: lange Einheitenwoerter (2026-09-21c)
         bw = inner - aw - mw - lw - cw
         data = [head2]
         for p in pos:

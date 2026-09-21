@@ -59,8 +59,13 @@ from reportlab.graphics.shapes import Drawing
 # KONFIGURATION
 # ----------------------------------------------------------------------------
 
-VERSION = "2026-09-18a"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+VERSION = "2026-09-21a"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
 # Aenderung am selben Tag (erste = a, dann b, c ...; neuer Tag beginnt wieder bei a).
+# 2026-09-21a: Bei der Projektpruefung gefunden: _hausnr() ignoriert jetzt
+#   Satzzeichen hinter der Hausnummer ("Clara Zetkin Strasse 358," -> "358",
+#   real in post_zuordnung.csv beobachtet, Hausnummer war dort leer und das
+#   Post-Matching lief nur ueber den Namen). Gleiche Aenderung in scan_druck.py
+#   (beide Dateien gemeinsam deployen, sonst weichen Schluessel voneinander ab).
 # 2026-09-18a: WooCommerce-Anbindung (Pause seit 2026-08-28, s.u.) wieder
 #   aufgenommen - reine Neudatierung dieses Eintrags, am Code selbst hat sich
 #   seit der Pause nichts mehr geaendert (gegen HEAD/2026-09-04a gegengeprueft,
@@ -393,8 +398,11 @@ def num(s):
 
 
 def _hausnr(street):
-    """Wie in scan_druck.py: letzte Zahl (+optionaler Buchstabe) am Ende."""
-    m = re.search(r"(\d+\s*[a-zA-Z]?)\s*$", (street or "").strip())
+    """Wie in scan_druck.py: letzte Zahl (+optionaler Buchstabe) am Ende.
+    Satzzeichen dahinter (Komma/Punkt/Semikolon, z.B. 'Clara Zetkin Strasse
+    358,' aus einer real beobachteten Lieferadresse) werden ignoriert - vorher
+    blieb die Hausnummer dann leer und das Matching lief nur ueber den Namen."""
+    m = re.search(r"(\d+\s*[a-zA-Z]?)[\s,.;]*$", (street or "").strip())
     return re.sub(r"\s+", "", m.group(1)) if m else ""
 
 

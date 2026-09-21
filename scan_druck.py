@@ -50,9 +50,13 @@ try:
 except Exception:
     _HAS_REPORTLAB = False
 # ============================ KONFIGURATION ============================
-VERSION = "2026-09-01a"          # im Fenstertitel sichtbar -> Deployment pruefbar
+VERSION = "2026-09-21a"          # im Fenstertitel sichtbar -> Deployment pruefbar
 # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je Aenderung am selben Tag (erste
 # Aenderung des Tages = a, dann b, c ...; ein neuer Tag beginnt wieder bei a).
+# 2026-09-21a: _hausnr() ignoriert Satzzeichen hinter der Hausnummer ("... 358,"
+#   -> "358"), identisch zu packliste.py 2026-09-21a (real beobachtet: Adresse
+#   mit Komma hinter der Hausnummer hatte eine leere Hausnummer in der
+#   post_zuordnung.csv). Beide Dateien gemeinsam deployen.
 # 2026-09-01a: KRITISCH - reale Ursache fuer einen MemoryError-Absturz von
 #   packliste.py gefunden (ean_zuordnung.csv war auf ~940 MB angewachsen).
 #   Ursache lag in einer gemeinsamen Schwaeche aller vier hier eingebauten
@@ -490,7 +494,9 @@ def _namen_passen(a, b):
         return False
     return ta <= tb or tb <= ta or len(ta & tb) >= 2
 def _hausnr(street):
-    m = re.search(r"(\d+\s*[a-zA-Z]?)\s*$", (street or "").strip())
+    # Satzzeichen hinter der Hausnummer (z.B. "Clara Zetkin Strasse 358,") werden
+    # ignoriert - identisch zu packliste.py; sonst bliebe die Hausnummer leer.
+    m = re.search(r"(\d+\s*[a-zA-Z]?)[\s,.;]*$", (street or "").strip())
     return re.sub(r"\s+", "", m.group(1)) if m else ""
 def _plz(zeile):
     m = re.search(r"\b(\d{5})\b", zeile or "")

@@ -64,6 +64,10 @@ SICHERHEIT
 - Eine WC-Bestellnummer, die sich per API nicht als echte Bestellung aufloesen
   laesst, wird uebersprungen (faengt eine faelschlich als Onlineshop erkannte
   Kd-Nr ab).
+- Eine Datei, bei der WEDER Rechnungs- noch Tracking-Spalte am Namen erkannt
+  wird, gilt als fremde Datei (z.B. "export_Rechnungen.csv" trifft das Muster
+  EXPORT_*.csv) und wird NICHT ueber die festen Fallback-Spalten gelesen.
+- POST-Aufrufe werden nie automatisch wiederholt (Duplikat-Gefahr bei Timeout).
 
 AUFRUF
 ------
@@ -237,6 +241,18 @@ def lies_carrier_csv(pfad, carrier, log):
         log("  FEHLER %s: Spalte nicht gefunden (Rg=%s, Tracking=%s) - Datei uebersprungen."
             % (os.path.basename(pfad), ref_m, trk_m))
         return [], False
+    # Der feste Fallback-Index ist nur ein Netz fuer EINE umbenannte Spalte einer
+    # ansonsten erkennbaren Carrier-Datei. Wurde KEINE der beiden Spalten am
+    # Namen erkannt, ist das mit hoher Wahrscheinlichkeit gar kein Export dieses
+    # Carriers (z.B. matcht "EXPORT_*.csv" unter Windows auch eine fremde
+    # "export_Rechnungen.csv" aus Downloads) - dann NICHT blind Spalte 22/15
+    # lesen und womoeglich beliebigen Text als Sendungsnummer eintragen.
+    if ref_m.startswith("Fallback") and trk_m.startswith("Fallback"):
+        log("  FEHLER %s: keine bekannte %s-Kopfzeile (weder '%s' noch '%s' gefunden) - "
+            "Datei uebersprungen, bitte manuell pruefen."
+            % (os.path.basename(pfad), carrier["name"],
+               carrier["ref_spalten"][0], carrier["track_spalten"][0]))
+        return [], False
     log("  %s [%s]: Rg-Nr via %s, Tracking via %s, %d Datenzeile(n)"
         % (os.path.basename(pfad), carrier["name"], ref_m, trk_m, len(rows) - 1))
     out = []
@@ -331,7 +347,15 @@ class Api:
         req.add_header("Accept", "application/json")
         if data is not None:
             req.add_header("Content-Type", "application/json")
-        for versuch in range(1, 4):
+        # POST wird NIE wiederholt: bei einem Timeout weiss man nicht, ob der Shop
+        # die Sendung schon angelegt hat - ein zweiter Versuch koennte eine
+        # DOPPELTE Sendung erzeugen (samt zweiter Versandbestaetigung an den
+        # Kunden). Ein gescheiterter POST wird als api_fehler gemeldet; beim
+        # naechsten Lauf zeigt das GET, ob die Nummer schon drin ist (dann
+        # "schon im Shop"), sonst wird sie erneut versucht. GET/PUT sind
+        # idempotent und duerfen wiederholt werden.
+        versuche = 1 if method == "POST" else 3
+        for versuch in range(1, versuche + 1):
             try:
                 with urllib.request.urlopen(req, timeout=30) as resp:
                     body = resp.read().decode("utf-8")
@@ -344,7 +368,7 @@ class Api:
                     parsed = {"raw": raw[:300]}
                 return e.code, parsed
             except (urllib.error.URLError, OSError) as e:
-                if versuch == 3:
+                if versuch == versuche:
                     return None, {"fehler": str(e)}
                 time.sleep(2 * versuch)
         return None, {"fehler": "unerreichbar"}

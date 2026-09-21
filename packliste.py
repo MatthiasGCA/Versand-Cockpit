@@ -67,7 +67,13 @@ from reportlab.graphics.shapes import Drawing
 # KONFIGURATION
 # ----------------------------------------------------------------------------
 
-VERSION = "2026-09-21c"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+VERSION = "2026-09-21d"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+# 2026-09-21d: Carrier-Dashboard (neu: carrier_dashboard.py/carrier_regeln.py). parse_pdf()
+#   liefert zusaetzlich "sendungsgewicht" (kg, Kopfzeile "Sendungsgewicht"), "adresse_zeilen"
+#   (alle Zeilen der Lieferadresse, sonst Rechnungsadresse) und je Position "kennungen"
+#   (Pax1/Pox1/Brx1/Wapo als eigene Zeile, KENNUNG_RE). Rein additiv - Pickliste und
+#   Bruecken-CSVs unveraendert (Kennungszeile wird wie Lagerort/Fach-Marker aus der
+#   Bezeichnung ferngehalten, ist aber sonst ohne Wirkung auf die Pickliste).
 # Aenderung am selben Tag (erste = a, dann b, c ...; neuer Tag beginnt wieder bei a).
 # 2026-09-21c: Menge-Spalte breiter (80 -> 100 pt, Kommissionierliste UND
 #   Packuebersicht) und MengeFlow verkleinert die hervorgehobene Menge
@@ -521,6 +527,16 @@ FACH_ARTIKEL_RE = re.compile(r"(\d+)-Fach-Artikel", re.IGNORECASE)
 # historischen Fehlausloesern "AutoPR-11"/"Chlorgranulat 5kg").
 MULTIPACK_RE = re.compile(r"(\d+(?:,\d+)?)\s*kg-Multipack", re.IGNORECASE)
 
+# Versand-Kennung aus dem Artikelstamm (Amicron): steht als EIGENE Zeile im
+# Positionsblock (wie "Lagerort:"/"N-Fach-Artikel", linksbuendig) - Pax1 = DHL,
+# Pox1 = Deutsche Post Grossbrief, Brx1 = Deutsche Post Brief, Wapo = DPD.
+# Gross-/Kleinschreibung ist egal. Wird von parse_block() als Feld "kennungen"
+# gemerkt und NICHT in die Bezeichnung uebernommen; ausgewertet wird sie vom
+# Carrier-Dashboard (carrier_dashboard.py / carrier_regeln.py), die Pickliste
+# selbst nutzt sie nicht. ("Wapo" steht teils zusaetzlich als Lagerort - das
+# wertet carrier_regeln.py ueber die Lagerort-Werte aus.)
+KENNUNG_RE = re.compile(r"^\s*(pax1|pox1|brx1|wapo)\s*$", re.IGNORECASE)
+
 
 # ----------------------------------------------------------------------------
 # KATEGORIE-ZUORDNUNG (allein aus dem Lagerort)
@@ -761,6 +777,7 @@ def parse_block(words):
     bez_parts, lagerorte = [], []
     fach = None
     gewicht = None
+    kennungen = []
 
     # Menge / Einzelpreis / G-Preis aus der Hauptzeile (rechts verankert).
     if main:
@@ -830,6 +847,13 @@ def parse_block(words):
             gewicht = float(m_multi.group(1).replace(",", "."))
             i += 1
             continue
+        m_ken = KENNUNG_RE.match(txt)
+        if m_ken:
+            # Versand-Kennung (Pax1/Pox1/Brx1/Wapo) als eigene Zeile: merken,
+            # nicht in die Bezeichnung uebernehmen (siehe KENNUNG_RE).
+            kennungen.append(m_ken.group(1).lower())
+            i += 1
+            continue
         links = [w for w in sorted(ln, key=lambda w: w["x0"])
                  if w["x0"] < ART_MAX and w["text"] != "."]
         if links and not art_done:                          # erste Positionszeile
@@ -859,6 +883,7 @@ def parse_block(words):
         "lagerorte": lagerorte,
         "fach": fach,
         "gewicht": gewicht,
+        "kennungen": kennungen,
     }
 
 
@@ -937,6 +962,28 @@ def extrahiere_adresse(words):
     # bleibt strasse jetzt korrekt leer.
     street = deliv[idx - 1] if idx - 1 >= 1 else ""
     return name, street, _hausnr(street), _plz(plzline, land)
+
+
+def lieferadresse_zeilen(words):
+    """ALLE Zeilen der Lieferadresse (bzw. der Rechnungsadresse, wenn keine
+    abweichende Lieferadresse existiert) in Lesereihenfolge, z.B.
+    ['Evi Schmid', 'Jaegerwirth 122', 'DE-94081 Fuerstenzell'].
+    Grundlage fuer den CSV-Export des Carrier-Dashboards (Firma/c-o/Zusatzzeilen
+    und Land werden dort ausgewertet). Die Zeilenauswahl ist bewusst IDENTISCH zu
+    extrahiere_adresse() oben (gleiches Fenster, gleiche Links/Rechts-Regel) -
+    dort wird sie fuer die Post-Zuordnung genutzt; hier bewusst als eigene
+    Funktion, damit dieser bewaehrte Code unveraendert bleibt."""
+    send = next((w["top"] for w in words if "Gasecenter" in w["text"]), 640)
+    ADR_BOT = 800
+    left = [w for w in words if w["x0"] < 405 and send + 5 < w["top"] < ADR_BOT]
+    right = [w for w in words if w["x0"] >= 405 and send + 5 < w["top"] < ADR_BOT]
+    lefts = [line_text(ln) for ln in cluster_lines(left)]
+    rights = [line_text(ln) for ln in cluster_lines(right)]
+    right_real = [l for l in rights
+                  if "Lieferadresse" not in l and "Rechnungsadresse" not in l]
+    same = any("Rechnungsadresse" in l for l in rights)
+    deliv = lefts if (same or not right_real) else right_real
+    return [l.strip() for l in deliv if l.strip()]
 
 
 def parse_pdf(path):
@@ -1018,6 +1065,13 @@ def parse_pdf(path):
     total = num(mb.group(1)) if mb else None
 
     name, strasse, hausnr, plz = extrahiere_adresse(words)
+    adresse_zeilen = lieferadresse_zeilen(words)
+
+    # Sendungsgewicht (kg) aus der Kopfzeile "Sendungsgewicht : 0,34000" (seit
+    # 2026-09 auf den Amicron-Rechnungen, Grundlage der Carrier-Zuordnung im
+    # Carrier-Dashboard). None, wenn die Zeile fehlt oder nicht lesbar ist.
+    mg = re.search(r"Sendungsgewicht\s*:?\s*([\d.,]+)", full)
+    sendungsgewicht = num(mg.group(1)) if mg else None
 
     # Betragsabgleich
     zeilen_ok = True
@@ -1075,6 +1129,7 @@ def parse_pdf(path):
         "rnr": rnr, "kdnr": kdnr, "email": email, "datum": datum,
         "positionen": positionen, "total": total, "summe": summe,
         "name": name, "strasse": strasse, "hausnr": hausnr, "plz": plz,
+        "adresse_zeilen": adresse_zeilen, "sendungsgewicht": sendungsgewicht,
         "zeilen_ok": zeilen_ok, "summe_ok": summe_ok,
         "total_lesbar": total_lesbar,
         "vollstaendig_ok": vollstaendig_ok, "unvollstaendig": unvollstaendig,

@@ -46,7 +46,11 @@ from tkinter import messagebox, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-09-22b"
+VERSION = "2026-09-22c"
+
+# Fenster-/Taskleisten-Symbol (siehe gui() unten) - liegt im selben Ordner
+# wie dieses Skript, damit es unveraendert auch nach einem Umzug funktioniert.
+ICON_PFAD = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Carrier-Dashboard.ico")
 
 # ----------------------------------------------------------------------------
 # ORDNER - hier fest eintragen, nicht im Dashboard waehlbar (die Ordner
@@ -212,6 +216,11 @@ def gui():
     root = tk.Tk()
     root.title("Carrier-Dashboard  (Version %s / Regeln %s)" % (VERSION, regeln.VERSION))
     root.geometry("1100x720")
+    if os.path.exists(ICON_PFAD):
+        try:
+            root.iconbitmap(ICON_PFAD)
+        except Exception:
+            pass                      # z.B. falsches Format - Fenster laeuft trotzdem
 
     pool_anz = tk.StringVar(value="")
     status_var = tk.StringVar(value="Noch nicht zugeordnet.")

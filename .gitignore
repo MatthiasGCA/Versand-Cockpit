@@ -3,3 +3,9 @@ wc_sync_config.json
 
 # Laufzeit-Statusdatei des Sendungsnummer-Syncs (kann Kundendaten enthalten).
 wc_sync_state.json
+
+# Python-Bytecode-Cache
+__pycache__/
+
+# Merkt sich den zuletzt benutzten Pool-Ordner des Carrier-Dashboards.
+carrier_config.json

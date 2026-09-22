@@ -312,10 +312,16 @@ def bewerte_rechnung(r):
     if not (r.get("zeilen_ok", True) and r.get("summe_ok", True)
             and r.get("vollstaendig_ok", True)):
         hinweise.append("Rechnungsprüfung (Beträge/Vollständigkeit) nicht bestanden")
+    kdnr = (r.get("kdnr") or "").strip()
+    if carrier == DPD and not kdnr:
+        # DPD-Export braucht die Kundennummer als Empfaengerreferenz (siehe
+        # carrier_export.py) - fehlt sie, blockiert das den Export NICHT
+        # (Feld bleibt leer), wird aber angezeigt, damit es auffaellt.
+        hinweise.append("Keine Kundennummer erkannt - Empfängerreferenz bleibt beim DPD-Export leer")
     status = "fehler" if fehler else ("warn" if hinweise else "ok")
     return {
         "rnr": rnr, "datei": r.get("datei", ""), "adresse": adr,
-        "kennungen": sorted(kenn), "gewicht": gewicht,
+        "kennungen": sorted(kenn), "gewicht": gewicht, "kdnr": kdnr,
         "carrier": carrier, "ausland": bool(adr["land"]) and adr["land"] != "DE",
         "grund": grund, "fehler": fehler, "hinweise": hinweise, "status": status,
     }
@@ -410,6 +416,14 @@ def selftest():
     check("Wapo nur als Lagerort", bewerte_rechnung(r2)["carrier"], DPD)
     r3 = dict(r, positionen=[{"kennungen": [], "lagerorte": ["Pax1"]}])
     check("Pax1 als Lagerort-Wert verschluckt", bewerte_rechnung(r3)["carrier"], DHL)
+    r4 = dict(r, kdnr="674982", positionen=[{"kennungen": ["wapo"], "lagerorte": []}],
+              sendungsgewicht=0.5)
+    b4 = bewerte_rechnung(r4)
+    check("DPD mit Kundennummer -> ok, kdnr durchgereicht",
+          (b4["status"], b4["kdnr"]), ("ok", "674982"))
+    r5 = dict(r4, kdnr="")
+    b5 = bewerte_rechnung(r5)
+    check("DPD ohne Kundennummer -> warn, kdnr leer", (b5["status"], b5["kdnr"]), ("warn", ""))
 
     if n_fail:
         print("SELBSTTEST FEHLGESCHLAGEN (%d von %d):" % (len(n_fail), n_ok + len(n_fail)))

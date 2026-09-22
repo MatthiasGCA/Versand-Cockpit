@@ -7,5 +7,5 @@ wc_sync_state.json
 # Python-Bytecode-Cache
 __pycache__/
 
-# Merkt sich den zuletzt benutzten Pool-Ordner des Carrier-Dashboards.
-carrier_config.json
+# Log des per VBS unsichtbar gestarteten Carrier-Dashboards.
+Carrier-Dashboard.log

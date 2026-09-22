@@ -26,28 +26,38 @@ Die Regeln stehen in carrier_regeln.py, der CSV-Export in carrier_export.py,
 das Auslesen/die Pickliste in packliste.py - alle vier Dateien muessen im
 selben Ordner liegen.
 
-Start:  py carrier_dashboard.py
-Pool-/Ausgabe-/Archiv-/Carrier-Export-Ordner werden in carrier_config.json
-neben dem Skript gemerkt.
+Start:  py carrier_dashboard.py  (oder per Carrier-Dashboard_starten.vbs)
+
+Die Ordner (Pool/Ausgabe/Archiv/Carrier-Export) sind bewusst FEST im Code
+unten (POOL_ORDNER usw.) und NICHT im Dashboard waehlbar/aenderbar - sie
+werden nicht von Lauf zu Lauf gewechselt. Zum Anpassen (z.B. beim Umzug auf
+den Faktura-PC) einfach die Konstanten unten im Quelltext bearbeiten, genau
+wie bei Pickliste_erstellen.bat.
 """
 
 import glob
-import json
 import os
 import queue
 import sys
 import threading
 import tkinter as tk
 from datetime import datetime
-from tkinter import filedialog, messagebox, ttk
+from tkinter import messagebox, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-09-22a"
+VERSION = "2026-09-22b"
 
-HIER = os.path.dirname(os.path.abspath(__file__))
-CONFIG_PFAD = os.path.join(HIER, "carrier_config.json")
-POOL_STANDARD = os.path.join(HIER, "Pool")
+# ----------------------------------------------------------------------------
+# ORDNER - hier fest eintragen, nicht im Dashboard waehlbar (die Ordner
+# aendern sich nicht von Lauf zu Lauf). Beim Umzug auf den Faktura-PC einfach
+# diese vier Zeilen anpassen.
+# ----------------------------------------------------------------------------
+POOL_ORDNER = r"C:\Carrier-Dashboard\Pool"
+AUSGABE_ORDNER = r"C:\Carrier-Dashboard\Pool\Pickliste"
+ARCHIV_ORDNER = r"C:\Carrier-Dashboard\Pool\Archiv"
+CARRIER_EXPORT_ORDNER = r"C:\Carrier_Export"
+
 REFRESH_MS = 5000
 
 # Reihenfolge und Beschriftung der Zusammenfassung
@@ -69,22 +79,6 @@ def gruppen_schluessel(b):
     if c in (regeln.BRIEF, regeln.GROSSBRIEF):
         return "%s|%s" % (c, "AUS" if b["ausland"] else "DE")
     return c
-
-
-def lade_config():
-    try:
-        with open(CONFIG_PFAD, encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-
-def speichere_config(cfg):
-    try:
-        with open(CONFIG_PFAD, "w", encoding="utf-8") as f:
-            json.dump(cfg, f, indent=2, ensure_ascii=False)
-    except Exception:
-        pass
 
 
 def lese_pool(ordner, melde=None):
@@ -215,17 +209,10 @@ def detailtext(b):
 # ==========================================================================
 
 def gui():
-    cfg = lade_config()
     root = tk.Tk()
     root.title("Carrier-Dashboard  (Version %s / Regeln %s)" % (VERSION, regeln.VERSION))
     root.geometry("1100x720")
 
-    pool_var = tk.StringVar(value=cfg.get("pool_ordner") or POOL_STANDARD)
-    ausgabe_var = tk.StringVar(
-        value=cfg.get("ausgabe_ordner") or os.path.join(pool_var.get(), "Pickliste"))
-    archiv_var = tk.StringVar(
-        value=cfg.get("archiv_ordner") or os.path.join(pool_var.get(), "Archiv"))
-    carrier_var = tk.StringVar(value=cfg.get("carrier_export_ordner") or r"C:\Carrier_Export")
     pool_anz = tk.StringVar(value="")
     status_var = tk.StringVar(value="Noch nicht zugeordnet.")
     ergebnisse = []
@@ -233,40 +220,23 @@ def gui():
     q = queue.Queue()
     laeuft = {"an": False}
 
-    # --- Kopf: Ordner + Zaehler ---------------------------------------------
+    # --- Kopf: Pool-Ordner (fest, nur zur Information) + Zaehler -------------
+    # Die Ordner sind bewusst NICHT hier waehlbar, siehe Modul-Kopf/Konstanten
+    # oben - der Platz bleibt frei fuer spaetere Erweiterungen.
     kopf = ttk.Frame(root, padding=8)
     kopf.pack(fill="x")
-
-    def _pfadzeile(row, label, var, merk_schluessel):
-        ttk.Label(kopf, text=label).grid(row=row, column=0, sticky="w")
-        ttk.Entry(kopf, textvariable=var).grid(row=row, column=1, sticky="ew", padx=6)
-
-        def waehle():
-            d = filedialog.askdirectory(initialdir=var.get() or HIER)
-            if d:
-                var.set(os.path.normpath(d))
-                cfg[merk_schluessel] = var.get()
-                speichere_config(cfg)
-                aktualisiere_zaehler()
-
-        ttk.Button(kopf, text="Durchsuchen ...", command=waehle).grid(row=row, column=2)
-
-    _pfadzeile(0, "Pool-Ordner (Rechnungen):", pool_var, "pool_ordner")
-    _pfadzeile(1, "Ausgabe (Pickliste + Bruecken-CSVs):", ausgabe_var, "ausgabe_ordner")
-    _pfadzeile(2, "Archiv-Ordner:", archiv_var, "archiv_ordner")
-    _pfadzeile(3, "Carrier-Export-Ordner:", carrier_var, "carrier_export_ordner")
-    kopf.columnconfigure(1, weight=1)
+    ttk.Label(kopf, text="Pool-Ordner: %s" % POOL_ORDNER,
+              foreground="#555555").pack(anchor="w")
 
     zaehler = tk.Label(kopf, textvariable=pool_anz, font=("Segoe UI", 18, "bold"), anchor="w")
-    zaehler.grid(row=4, column=0, columnspan=3, sticky="w", pady=(8, 0))
+    zaehler.pack(anchor="w", pady=(8, 0))
 
     def aktualisiere_zaehler():
-        ordner = pool_var.get()
-        if os.path.isdir(ordner):
-            n = len(glob.glob(os.path.join(ordner, "*.pdf")))
+        if os.path.isdir(POOL_ORDNER):
+            n = len(glob.glob(os.path.join(POOL_ORDNER, "*.pdf")))
             pool_anz.set("Rechnungen im Pool: %d" % n)
         else:
-            pool_anz.set("Pool-Ordner nicht gefunden")
+            pool_anz.set("Pool-Ordner nicht gefunden: %s" % POOL_ORDNER)
 
     def tick():
         if not laeuft["an"]:
@@ -360,20 +330,17 @@ def gui():
             q.put(("abbruch", "%s: %s" % (type(e).__name__, e)))
 
     def starte():
-        ordner = pool_var.get()
         if laeuft["an"]:
             return
-        if not os.path.isdir(ordner):
-            status_var.set("Pool-Ordner nicht gefunden: %s" % ordner)
+        if not os.path.isdir(POOL_ORDNER):
+            status_var.set("Pool-Ordner nicht gefunden: %s" % POOL_ORDNER)
             return
-        cfg["pool_ordner"] = ordner
-        speichere_config(cfg)
         laeuft["an"] = True
         btn_zuordnen.configure(state="disabled")
         btn_export.configure(state="disabled")
         prog.configure(value=0)
         status_var.set("Lese Rechnungen ...")
-        threading.Thread(target=arbeite, args=(ordner,), daemon=True).start()
+        threading.Thread(target=arbeite, args=(POOL_ORDNER,), daemon=True).start()
         root.after(100, abfrage)
 
     def abfrage():
@@ -423,17 +390,17 @@ def gui():
                                 "Keine gueltigen Rechnungen zum Verarbeiten - bitte zuerst "
                                 "Schritt 1 erneut ausfuehren.")
             return
-        ausgabe_ordner = ausgabe_var.get().strip()
-        pool_abs = os.path.abspath(pool_var.get() or "")
-        if not ausgabe_ordner or os.path.abspath(ausgabe_ordner) == pool_abs:
+        ausgabe_ordner = AUSGABE_ORDNER
+        archiv_ordner = ARCHIV_ORDNER
+        carrier_ordner = CARRIER_EXPORT_ORDNER
+        if os.path.abspath(ausgabe_ordner) == os.path.abspath(POOL_ORDNER):
+            # Defensive Pruefung falls die Konstanten oben im Quelltext mal
+            # falsch abgeaendert werden - die Pickliste wuerde sonst beim
+            # naechsten Lauf als Rechnung mit eingelesen.
             messagebox.showerror("Carrier-Dashboard",
-                                 "Der Ausgabe-Ordner darf nicht der Pool-Ordner selbst sein "
-                                 "(die Pickliste wuerde sonst beim naechsten Lauf als "
-                                 "Rechnung mit eingelesen). Bitte einen Unterordner waehlen, "
-                                 "z.B. %s." % os.path.join(pool_var.get(), "Pickliste"))
+                                 "AUSGABE_ORDNER darf nicht gleich POOL_ORDNER sein - bitte "
+                                 "im Quelltext (carrier_dashboard.py, Kopf) korrigieren.")
             return
-        archiv_ordner = archiv_var.get().strip()
-        carrier_ordner = carrier_var.get().strip()
         n_fehler = sum(1 for _, b in paare if b["status"] == "fehler")
         stamp = datetime.now().strftime("%Y-%m-%d_%H%M")
         ausgabe_pfad = os.path.join(ausgabe_ordner, "Pickliste_%s.pdf" % stamp)
@@ -450,10 +417,6 @@ def gui():
                    archiv_ordner or "(nicht archiviert)"))
         if not messagebox.askyesno("Carrier-Dashboard", frage):
             return
-        cfg["ausgabe_ordner"] = ausgabe_ordner
-        cfg["archiv_ordner"] = archiv_ordner
-        cfg["carrier_export_ordner"] = carrier_ordner
-        speichere_config(cfg)
         laeuft["an"] = True
         btn_zuordnen.configure(state="disabled")
         btn_export.configure(state="disabled")

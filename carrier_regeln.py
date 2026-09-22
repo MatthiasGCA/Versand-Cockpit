@@ -195,8 +195,19 @@ def analysiere_adresse(zeilen):
     if rest:
         out["hinweise"].append("Unerwartete Zeile(n) nach der PLZ: %s" % " | ".join(rest))
     if not land:
+        # Ohne Laenderkuerzel/-zeile: 5-stellige PLZ -> Deutschland, 4-stellige
+        # PLZ -> Oesterreich (beide Defaults, nur als Hinweis - real beobachtet:
+        # etliche AT-Rechnungen tragen KEIN "AT-"/keine Laenderzeile, obwohl
+        # andere das tun, z.B. Rechnung 1705088 "4595 Waldneukirchen" ohne
+        # jeden Hinweis auf Oesterreich). CH/LI haben ebenfalls 4-stellige PLZ,
+        # sind hier aber die deutliche Ausnahme - daher AT als Default, mit
+        # Hinweis statt stillschweigend, damit es auffaellt.
         if len(out["plz"]) == 5:
             land = "DE"
+        elif len(out["plz"]) == 4:
+            land = "AT"
+            out["hinweise"].append(
+                "Kein Länderkürzel/-zeile - 4-stellige PLZ als Österreich angenommen, bitte prüfen")
         else:
             out["fehler"].append("Land unklar (%d-stellige PLZ ohne Länderkürzel/-zeile)"
                                  % len(out["plz"]))
@@ -399,7 +410,14 @@ def selftest():
     a = analysiere_adresse(["X Y", "Hauptstr. 1"])
     check("adr ohne PLZ -> Fehler", bool(a["fehler"]), True)
     a = analysiere_adresse(["X Y", "Hauptstr. 1", "8330 Feldbach"])
-    check("adr 4-stellig ohne Land -> Fehler", bool(a["fehler"]), True)
+    check("adr 4-stellig ohne Land -> AT-Default mit Hinweis, kein Fehler",
+          (a["land"], a["fehler"], bool(a["hinweise"])), ("AT", [], True))
+    a = analysiere_adresse(["Gegenleitner Johannes", "Bad Haller Straße 56",
+                            "4595 Waldneukirchen"])
+    check("adr real 1705088 (AT ohne Länderzeile)",
+          (a["land"], a["plz"], a["ort"], a["fehler"]), ("AT", "4595", "Waldneukirchen", []))
+    a = analysiere_adresse(["X Y", "Hauptstr. 1", "123 Ort"])
+    check("adr 3-stellig ohne Land -> weiterhin Fehler", bool(a["fehler"]), True)
     a = analysiere_adresse(["Dienstleistungs-GmbH der WG &#34;Kohle Geiseltal&#34;",
                             "Am Stadion 1", "06242 Braunsbedra"])
     check("HTML-Entity/Semikolon bereinigt", ";" in a["name"] or "&#" in a["name"], False)

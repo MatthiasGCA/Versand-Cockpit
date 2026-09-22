@@ -1,22 +1,34 @@
 # -*- coding: utf-8 -*-
 """
-carrier_dashboard.py - Carrier-Dashboard (Schritt 1: nur LESEN und ZUORDNEN)
+carrier_dashboard.py - Carrier-Dashboard
 ============================================================================
 Liest alle Rechnungs-PDFs eines Pool-Ordners, ordnet jede Bestellung einem
 Versanddienstleister zu (DHL / DPD / Deutsche Post Brief / Grossbrief, je
-Inland und Ausland) und zeigt das Ergebnis samt allen Fehlern an.
+Inland und Ausland) und zeigt das Ergebnis samt allen Fehlern an. Erst nach
+einem zweiten, manuellen Schritt werden Pickliste, Bruecken-CSVs und
+Carrier-CSVs tatsaechlich geschrieben und die eingelesenen PDFs archiviert.
 
-  Schritt 1 (diese Version): Zuordnung + Anzeige. Es wird NICHTS geschrieben,
-      nichts verschoben, keine Pickliste erzeugt - die PDFs bleiben liegen.
-  Schritt 2 (folgt): CSV-Dateien fuer DHL/DPD/Post nach C:\\Carrier_Export.
-  Schritt 3 (folgt): Pickliste + Archivierung aus demselben Lauf.
+  Schritt 1 "1. Bestellungen zuordnen": nur LESEN + ZUORDNEN, zeigt das
+      Ergebnis inkl. aller Fehler/Hinweise. Es wird NICHTS geschrieben oder
+      verschoben - die PDFs bleiben liegen, beliebig oft wiederholbar.
+  Schritt 2 "2. Pickliste + CSV erstellen" (diese Version): baut aus dem
+      Ergebnis von Schritt 1 die Pickliste (Layout unveraendert, wie
+      packliste.baue_pdf) + die fuenf Bruecken-CSVs (wie packliste.main()),
+      schreibt die Carrier-CSVs (carrier_export.exportiere) und archiviert
+      die eingelesenen Rechnungs-PDFs (packliste.archiviere). NUR Rechnungen
+      mit carrier-status != "fehler" UND zugeordnetem Carrier landen in einer
+      Carrier-CSV - alle anderen werden trotzdem gepackt (Pickliste), aber
+      NICHT automatisch exportiert (manuelle Nachbearbeitung noetig).
+  Schritt 4 (spaeter, optional): Warnung in scan_druck.py bei Carrier-
+      Abweichung zwischen Label und dieser Zuordnung.
 
-Die Regeln stehen in carrier_regeln.py, das Auslesen der Rechnungen in
-packliste.py (parse_pdf) - beide muessen im selben Ordner liegen.
+Die Regeln stehen in carrier_regeln.py, der CSV-Export in carrier_export.py,
+das Auslesen/die Pickliste in packliste.py - alle vier Dateien muessen im
+selben Ordner liegen.
 
 Start:  py carrier_dashboard.py
-Der zuletzt benutzte Pool-Ordner wird in carrier_config.json neben dem Skript
-gemerkt.
+Pool-/Ausgabe-/Archiv-/Carrier-Export-Ordner werden in carrier_config.json
+neben dem Skript gemerkt.
 """
 
 import glob
@@ -26,11 +38,12 @@ import queue
 import sys
 import threading
 import tkinter as tk
-from tkinter import filedialog, ttk
+from datetime import datetime
+from tkinter import filedialog, messagebox, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-09-21a"
+VERSION = "2026-09-22a"
 
 HIER = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PFAD = os.path.join(HIER, "carrier_config.json")
@@ -75,11 +88,15 @@ def speichere_config(cfg):
 
 
 def lese_pool(ordner, melde=None):
-    """Liest alle PDFs des Ordners und bewertet sie. Rueckgabe: Liste von
-    Ergebnis-dicts (sortiert nach Rechnungsnummer, Fehler ohne Nummer am Ende)."""
+    """Liest alle PDFs des Ordners und bewertet sie. Rueckgabe: (rechnungen_roh,
+    ergebnisse) - zwei gleich lange, gemeinsam nach Rechnungsnummer sortierte
+    Listen (Fehler ohne Nummer am Ende). rechnungen_roh[i] ist das komplette
+    parse_pdf()-Ergebnis (inkl. "quelle" fuer die spaetere Archivierung) oder
+    None, wenn diese Zeile nur ein Fehler ist (PDF nicht lesbar/keine
+    Positionen) - dann ist ergebnisse[i] eine _fehlerzeile() ohne Carrier."""
     import packliste
     pdfs = sorted(glob.glob(os.path.join(ordner, "*.pdf")))
-    ergebnisse = []
+    treffer = []                      # Liste von (r_oder_None, b)
     for i, pfad in enumerate(pdfs, 1):
         name = os.path.basename(pfad)
         if melde:
@@ -87,18 +104,63 @@ def lese_pool(ordner, melde=None):
         try:
             r = packliste.parse_pdf(pfad)
         except Exception as e:
-            ergebnisse.append(_fehlerzeile(name, "PDF nicht lesbar: %s" % e))
+            treffer.append((None, _fehlerzeile(name, "PDF nicht lesbar: %s" % e)))
             continue
         if not r.get("positionen"):
-            ergebnisse.append(_fehlerzeile(
-                name, "Keine Positionen erkannt (keine Rechnung?)", r.get("rnr", "")))
+            treffer.append((None, _fehlerzeile(
+                name, "Keine Positionen erkannt (keine Rechnung?)", r.get("rnr", ""))))
             continue
         r["datei"] = name
+        r["quelle"] = pfad
         b = regeln.bewerte_rechnung(r)
         b["quelle"] = pfad
-        ergebnisse.append(b)
-    ergebnisse.sort(key=lambda b: (not b["rnr"], b["rnr"], b["datei"]))
-    return ergebnisse
+        treffer.append((r, b))
+    treffer.sort(key=lambda t: (not t[1]["rnr"], t[1]["rnr"], t[1]["datei"]))
+    return [t[0] for t in treffer], [t[1] for t in treffer]
+
+
+def exportiere_alles(rechnungen, ergebnisse, ausgabe_pfad, archiv_ordner, carrier_ordner):
+    """Schritt 2: rechnungen (gueltige parse_pdf()-Dicts, "quelle" gesetzt) UND
+    ergebnisse (dazu bewertete Carrier-Ergebnisse, GLEICHE Reihenfolge/Laenge)
+    -> Pickliste-PDF + fuenf Bruecken-CSVs (wie packliste.main(), Layout/Logik
+    unveraendert) im Ordner von ausgabe_pfad, Carrier-CSVs nach carrier_ordner
+    (carrier_export.exportiere - exportiert nur status != 'fehler' MIT
+    Carrier), danach Archivierung der eingelesenen PDFs nach archiv_ordner
+    (packliste.archiviere - verschiebt nur, was erfolgreich verarbeitet wurde).
+    Gibt einen Berichts-dict zurueck; einzelne Archiv-Fehler werfen KEINE
+    Exception, sondern stehen im Bericht (siehe packliste.archiviere)."""
+    import carrier_export
+    import packliste
+
+    out_dir = os.path.dirname(os.path.abspath(ausgabe_pfad))
+    os.makedirs(out_dir, exist_ok=True)
+
+    gruppen_roh = packliste.finde_sammelgruppen(rechnungen)
+    heute_str = datetime.now().strftime("%d.%m.%Y")
+    for g in gruppen_roh:
+        g["datum"] = heute_str
+    sammel_pfad = os.path.join(out_dir, "sammel_zuordnung.csv")
+    gruppen, gruppen_fuer_csv = packliste.merge_sammelgruppen(gruppen_roh, sammel_pfad)
+    packliste.baue_pdf(rechnungen, ausgabe_pfad, gruppen)
+
+    packliste.schreibe_csv(rechnungen, os.path.join(out_dir, "post_zuordnung.csv"))
+    packliste.schreibe_sammel_csv(gruppen_fuer_csv, sammel_pfad)
+    packliste.schreibe_mengen_csv(rechnungen, os.path.join(out_dir, "mengen_zuordnung.csv"))
+    packliste.schreibe_ean_csv(rechnungen, os.path.join(out_dir, "ean_zuordnung.csv"))
+    wc_neu = packliste.schreibe_wc_bestellnummern_csv(
+        rechnungen, os.path.join(out_dir, "wc_bestellnummern.csv"))
+
+    carrier_dateien = carrier_export.exportiere(ergebnisse, carrier_ordner)
+
+    verschoben, archiv_fehler, archiv_ziel = 0, [], None
+    if archiv_ordner:
+        verschoben, archiv_fehler, archiv_ziel = packliste.archiviere(rechnungen, archiv_ordner)
+
+    return {
+        "pickliste": ausgabe_pfad, "anzahl": len(rechnungen), "gruppen": gruppen,
+        "wc_neu": wc_neu, "carrier_dateien": carrier_dateien,
+        "archiviert": verschoben, "archiv_fehler": archiv_fehler, "archiv_ziel": archiv_ziel,
+    }
 
 
 def _fehlerzeile(datei, text, rnr=""):
@@ -159,31 +221,44 @@ def gui():
     root.geometry("1100x720")
 
     pool_var = tk.StringVar(value=cfg.get("pool_ordner") or POOL_STANDARD)
+    ausgabe_var = tk.StringVar(
+        value=cfg.get("ausgabe_ordner") or os.path.join(pool_var.get(), "Pickliste"))
+    archiv_var = tk.StringVar(
+        value=cfg.get("archiv_ordner") or os.path.join(pool_var.get(), "Archiv"))
+    carrier_var = tk.StringVar(value=cfg.get("carrier_export_ordner") or r"C:\Carrier_Export")
     pool_anz = tk.StringVar(value="")
     status_var = tk.StringVar(value="Noch nicht zugeordnet.")
     ergebnisse = []
+    rechnungen_roh = []
     q = queue.Queue()
     laeuft = {"an": False}
 
-    # --- Kopf: Pool-Ordner + Zaehler ---------------------------------------
+    # --- Kopf: Ordner + Zaehler ---------------------------------------------
     kopf = ttk.Frame(root, padding=8)
     kopf.pack(fill="x")
-    ttk.Label(kopf, text="Pool-Ordner:").grid(row=0, column=0, sticky="w")
-    ttk.Entry(kopf, textvariable=pool_var).grid(row=0, column=1, sticky="ew", padx=6)
+
+    def _pfadzeile(row, label, var, merk_schluessel):
+        ttk.Label(kopf, text=label).grid(row=row, column=0, sticky="w")
+        ttk.Entry(kopf, textvariable=var).grid(row=row, column=1, sticky="ew", padx=6)
+
+        def waehle():
+            d = filedialog.askdirectory(initialdir=var.get() or HIER)
+            if d:
+                var.set(os.path.normpath(d))
+                cfg[merk_schluessel] = var.get()
+                speichere_config(cfg)
+                aktualisiere_zaehler()
+
+        ttk.Button(kopf, text="Durchsuchen ...", command=waehle).grid(row=row, column=2)
+
+    _pfadzeile(0, "Pool-Ordner (Rechnungen):", pool_var, "pool_ordner")
+    _pfadzeile(1, "Ausgabe (Pickliste + Bruecken-CSVs):", ausgabe_var, "ausgabe_ordner")
+    _pfadzeile(2, "Archiv-Ordner:", archiv_var, "archiv_ordner")
+    _pfadzeile(3, "Carrier-Export-Ordner:", carrier_var, "carrier_export_ordner")
     kopf.columnconfigure(1, weight=1)
 
-    def waehle():
-        d = filedialog.askdirectory(initialdir=pool_var.get() or HIER)
-        if d:
-            pool_var.set(os.path.normpath(d))
-            cfg["pool_ordner"] = pool_var.get()
-            speichere_config(cfg)
-            aktualisiere_zaehler()
-
-    ttk.Button(kopf, text="Durchsuchen ...", command=waehle).grid(row=0, column=2)
-
     zaehler = tk.Label(kopf, textvariable=pool_anz, font=("Segoe UI", 18, "bold"), anchor="w")
-    zaehler.grid(row=1, column=0, columnspan=3, sticky="w", pady=(8, 0))
+    zaehler.grid(row=4, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
     def aktualisiere_zaehler():
         ordner = pool_var.get()
@@ -203,8 +278,7 @@ def gui():
     knoepfe.pack(fill="x")
     btn_zuordnen = ttk.Button(knoepfe, text="1. Bestellungen zuordnen")
     btn_zuordnen.pack(side="left")
-    btn_export = ttk.Button(knoepfe, text="2. Pickliste + CSV erstellen  (folgt in Schritt 2/3)",
-                            state="disabled")
+    btn_export = ttk.Button(knoepfe, text="2. Pickliste + CSV erstellen", state="disabled")
     btn_export.pack(side="left", padx=8)
     ttk.Label(knoepfe, textvariable=status_var).pack(side="left", padx=12)
     prog = ttk.Progressbar(root, mode="determinate")
@@ -277,11 +351,11 @@ def gui():
             zlabels[k].configure(text=str(z.get(k, 0)), fg="black")
         zlabels["FEHLER"].configure(text=str(fehler), fg=("#b00000" if fehler else "black"))
 
-    # --- Lauf im Hintergrund -------------------------------------------------
+    # --- Schritt 1 im Hintergrund --------------------------------------------
     def arbeite(ordner):
         try:
-            erg = lese_pool(ordner, lambda i, n, name: q.put(("fortschritt", i, n, name)))
-            q.put(("fertig", erg))
+            roh, erg = lese_pool(ordner, lambda i, n, name: q.put(("fortschritt", i, n, name)))
+            q.put(("fertig", roh, erg))
         except Exception as e:                       # z.B. reportlab/pdfplumber fehlt
             q.put(("abbruch", "%s: %s" % (type(e).__name__, e)))
 
@@ -296,6 +370,7 @@ def gui():
         speichere_config(cfg)
         laeuft["an"] = True
         btn_zuordnen.configure(state="disabled")
+        btn_export.configure(state="disabled")
         prog.configure(value=0)
         status_var.set("Lese Rechnungen ...")
         threading.Thread(target=arbeite, args=(ordner,), daemon=True).start()
@@ -310,10 +385,12 @@ def gui():
                     prog.configure(maximum=max(n, 1), value=i)
                     status_var.set("Lese %d/%d: %s" % (i, n, name))
                 elif m[0] == "fertig":
-                    ergebnisse[:] = m[1]
+                    rechnungen_roh[:] = m[1]
+                    ergebnisse[:] = m[2]
                     fuelle()
                     laeuft["an"] = False
                     btn_zuordnen.configure(state="normal")
+                    btn_export.configure(state=("normal" if ergebnisse else "disabled"))
                     z, fehler = zaehle(ergebnisse)
                     status_var.set("Fertig: %d Rechnung(en), %d Fehler. Es wurde nichts "
                                    "geschrieben oder verschoben." % (len(ergebnisse), fehler))
@@ -328,7 +405,113 @@ def gui():
             pass
         root.after(100, abfrage)
 
+    # --- Schritt 2 im Hintergrund ---------------------------------------------
+    def arbeite_export(rechnungen, ergebnisse_gueltig, ausgabe_pfad, archiv_ordner, carrier_ordner):
+        try:
+            bericht = exportiere_alles(rechnungen, ergebnisse_gueltig, ausgabe_pfad,
+                                       archiv_ordner, carrier_ordner)
+            q.put(("export_fertig", bericht))
+        except Exception as e:
+            q.put(("export_abbruch", "%s: %s" % (type(e).__name__, e)))
+
+    def starte_export():
+        if laeuft["an"]:
+            return
+        paare = [(r, b) for r, b in zip(rechnungen_roh, ergebnisse) if r is not None]
+        if not paare:
+            messagebox.showinfo("Carrier-Dashboard",
+                                "Keine gueltigen Rechnungen zum Verarbeiten - bitte zuerst "
+                                "Schritt 1 erneut ausfuehren.")
+            return
+        ausgabe_ordner = ausgabe_var.get().strip()
+        pool_abs = os.path.abspath(pool_var.get() or "")
+        if not ausgabe_ordner or os.path.abspath(ausgabe_ordner) == pool_abs:
+            messagebox.showerror("Carrier-Dashboard",
+                                 "Der Ausgabe-Ordner darf nicht der Pool-Ordner selbst sein "
+                                 "(die Pickliste wuerde sonst beim naechsten Lauf als "
+                                 "Rechnung mit eingelesen). Bitte einen Unterordner waehlen, "
+                                 "z.B. %s." % os.path.join(pool_var.get(), "Pickliste"))
+            return
+        archiv_ordner = archiv_var.get().strip()
+        carrier_ordner = carrier_var.get().strip()
+        n_fehler = sum(1 for _, b in paare if b["status"] == "fehler")
+        stamp = datetime.now().strftime("%Y-%m-%d_%H%M")
+        ausgabe_pfad = os.path.join(ausgabe_ordner, "Pickliste_%s.pdf" % stamp)
+        hinweis_fehler = ("\n\n%d davon werden zwar gepackt, aber NICHT in eine "
+                          "Carrier-CSV geschrieben (Zuordnungsfehler, siehe Tabelle) - "
+                          "diese muessen manuell nachbearbeitet werden." % n_fehler
+                          ) if n_fehler else ""
+        frage = ("%d Rechnung(en) werden verarbeitet:%s\n\n"
+                "Pickliste + Bruecken-CSVs -> %s\n"
+                "Carrier-CSVs -> %s\n"
+                "Die eingelesenen PDFs werden anschliessend NACH %s VERSCHOBEN "
+                "(nicht kopiert).\n\nJetzt ausfuehren?"
+                % (len(paare), hinweis_fehler, ausgabe_ordner, carrier_ordner,
+                   archiv_ordner or "(nicht archiviert)"))
+        if not messagebox.askyesno("Carrier-Dashboard", frage):
+            return
+        cfg["ausgabe_ordner"] = ausgabe_ordner
+        cfg["archiv_ordner"] = archiv_ordner
+        cfg["carrier_export_ordner"] = carrier_ordner
+        speichere_config(cfg)
+        laeuft["an"] = True
+        btn_zuordnen.configure(state="disabled")
+        btn_export.configure(state="disabled")
+        status_var.set("Erstelle Pickliste + CSVs ...")
+        rechnungen_g = [r for r, _ in paare]
+        ergebnisse_g = [b for _, b in paare]
+        threading.Thread(target=arbeite_export,
+                         args=(rechnungen_g, ergebnisse_g, ausgabe_pfad, archiv_ordner,
+                               carrier_ordner),
+                         daemon=True).start()
+        root.after(100, abfrage_export)
+
+    def abfrage_export():
+        try:
+            while True:
+                m = q.get_nowait()
+                if m[0] == "export_fertig":
+                    bericht = m[1]
+                    laeuft["an"] = False
+                    btn_zuordnen.configure(state="normal")
+                    rechnungen_roh.clear()
+                    ergebnisse.clear()
+                    fuelle()
+                    aktualisiere_zaehler()
+                    status_var.set("Fertig: %d Rechnung(en) verarbeitet, %d archiviert." %
+                                   (bericht["anzahl"], bericht["archiviert"]))
+                    zeilen = ["Pickliste:        %s" % bericht["pickliste"],
+                             "Rechnungen:       %d" % bericht["anzahl"],
+                             "Archiviert:       %d -> %s" % (
+                                 bericht["archiviert"], bericht["archiv_ziel"] or "-")]
+                    if bericht["archiv_fehler"]:
+                        zeilen.append("NICHT archiviert (%d): %s" %
+                                      (len(bericht["archiv_fehler"]),
+                                       "; ".join(bericht["archiv_fehler"])))
+                    if bericht["carrier_dateien"]:
+                        zeilen.append("")
+                        zeilen.append("Carrier-CSVs:")
+                        zeilen += ["  %s (%d Rechnung(en))" % (os.path.basename(p), n)
+                                   for p, n in bericht["carrier_dateien"].items()]
+                    else:
+                        zeilen.append("")
+                        zeilen.append("Keine Carrier-CSV geschrieben (keine exportierbare "
+                                      "Rechnung dabei).")
+                    messagebox.showinfo("Carrier-Dashboard - Fertig", "\n".join(zeilen))
+                    return
+                elif m[0] == "export_abbruch":
+                    laeuft["an"] = False
+                    btn_zuordnen.configure(state="normal")
+                    btn_export.configure(state=("normal" if ergebnisse else "disabled"))
+                    status_var.set("ABBRUCH: %s" % m[1])
+                    messagebox.showerror("Carrier-Dashboard - Fehler", m[1])
+                    return
+        except queue.Empty:
+            pass
+        root.after(100, abfrage_export)
+
     btn_zuordnen.configure(command=starte)
+    btn_export.configure(command=starte_export)
     aktualisiere_zaehler()
     root.after(REFRESH_MS, tick)
     root.mainloop()

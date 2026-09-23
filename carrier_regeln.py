@@ -34,7 +34,7 @@ strikt). Alle Grenzen stehen unten als Konstanten.
 import html
 import re
 
-VERSION = "2026-09-23a"
+VERSION = "2026-09-23b"
 
 # --- Gewichtsgrenzen in kg (Klasse gilt bei Gewicht STRIKT UNTER der Grenze) -----
 G_BRIEF = 0.05
@@ -282,8 +282,12 @@ def bestimme_carrier(kennungen, gewicht, land):
         fehler.append("Sendungsgewicht ist 0")
     if fehler:
         return None, "", fehler, hinweise
-    if len(kenn) > 1:
-        hinweise.append("Mehrere Kennungen (%s) - höchste Klasse gilt" % ", ".join(kenn))
+    # Mehrere Kennungen auf einer Rechnung sind der Normalfall (fast jede
+    # Bestellung mischt Artikel mit unterschiedlicher Kennung) und die
+    # Hoechste-Klasse-gewinnt-Regel loest das zuverlaessig auf - dafuer KEIN
+    # Hinweis mehr (frueher hier, stufte den Status unnoetig auf "warn" hoch
+    # und musste ohne echten Mehrwert regelmaessig weggeklickt werden). Die
+    # gefundenen Kennungen bleiben trotzdem sichtbar, siehe "grund" unten.
     start = max((KENNUNG_KLASSE[k] for k in kenn), key=RANG.get)
     nach_gew = klasse_nach_gewicht(gewicht)
     klasse = start if RANG[start] >= RANG[nach_gew] else nach_gew
@@ -382,6 +386,10 @@ def selftest():
     check("brx1 Ausland 0,03", carrier(["brx1"], 0.03, "AT"), BRIEF)
     check("mehrere: pax1+wapo", carrier(["pax1", "wapo"], 0.2), DHL)
     check("mehrere: wapo+pox1", carrier(["wapo", "pox1"], 0.2), DPD)
+    check("mehrere Kennungen -> KEIN Hinweis mehr (Normalfall, Rechnung 1705553)",
+          bestimme_carrier(["brx1", "pox1", "pax1"], 0.3746, "DE")[3], [])
+    check("mehrere Kennungen -> Kennungen trotzdem im Grund sichtbar",
+          "brx1" in bestimme_carrier(["brx1", "pox1", "pax1"], 0.3746, "DE")[1], True)
     check("keine Kennung", carrier([], 0.2), None)
     check("kein Gewicht", carrier(["pax1"], None), None)
     check("Gewicht 0", carrier(["pax1"], 0), None)

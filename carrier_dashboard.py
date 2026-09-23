@@ -18,13 +18,16 @@ Carrier-CSVs tatsaechlich geschrieben und die eingelesenen PDFs archiviert.
       die eingelesenen Rechnungs-PDFs (packliste.archiviere). NUR Rechnungen
       mit carrier-status != "fehler" UND zugeordnetem Carrier landen in einer
       Carrier-CSV - alle anderen werden trotzdem gepackt (Pickliste), aber
-      NICHT automatisch exportiert (manuelle Nachbearbeitung noetig).
+      NICHT automatisch exportiert (manuelle Nachbearbeitung noetig). Bei
+      jedem Schritt-2-Lauf wird zusaetzlich automatisch eine Kg-Statistik je
+      Carrier mitgeschrieben (carrier_statistik.log_lauf) - Anzeige ueber den
+      Button "Statistik".
   Schritt 4 (spaeter, optional): Warnung in scan_druck.py bei Carrier-
       Abweichung zwischen Label und dieser Zuordnung.
 
 Die Regeln stehen in carrier_regeln.py, der CSV-Export in carrier_export.py,
-das Auslesen/die Pickliste in packliste.py - alle vier Dateien muessen im
-selben Ordner liegen.
+die Kg-Statistik in carrier_statistik.py, das Auslesen/die Pickliste in
+packliste.py - alle fuenf Dateien muessen im selben Ordner liegen.
 
 Start:  py carrier_dashboard.py  (oder per Carrier-Dashboard_starten.vbs)
 
@@ -46,7 +49,7 @@ from tkinter import messagebox, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-09-23a"
+VERSION = "2026-09-23b"
 
 # Fenster-/Taskleisten-Symbol (siehe gui() unten) - liegt im selben Ordner
 # wie dieses Skript, damit es unveraendert auch nach einem Umzug funktioniert.
@@ -128,6 +131,7 @@ def exportiere_alles(rechnungen, ergebnisse, ausgabe_pfad, archiv_ordner, carrie
     Gibt einen Berichts-dict zurueck; einzelne Archiv-Fehler werfen KEINE
     Exception, sondern stehen im Bericht (siehe packliste.archiviere)."""
     import carrier_export
+    import carrier_statistik
     import packliste
 
     out_dir = os.path.dirname(os.path.abspath(ausgabe_pfad))
@@ -149,6 +153,10 @@ def exportiere_alles(rechnungen, ergebnisse, ausgabe_pfad, archiv_ordner, carrie
         rechnungen, os.path.join(out_dir, "wc_bestellnummern.csv"))
 
     carrier_dateien = carrier_export.exportiere(ergebnisse, carrier_ordner)
+    # Kg-Statistik im Hintergrund mitschreiben (Nice-to-have, blockiert bei
+    # Schreibfehlern - z.B. Netzlaufwerk kurz weg - NIE den eigentlichen Export,
+    # siehe carrier_statistik.log_lauf()).
+    kg_geloggt = carrier_statistik.log_lauf(ergebnisse)
 
     verschoben, archiv_fehler, archiv_ziel = 0, [], None
     if archiv_ordner:
@@ -156,7 +164,7 @@ def exportiere_alles(rechnungen, ergebnisse, ausgabe_pfad, archiv_ordner, carrie
 
     return {
         "pickliste": ausgabe_pfad, "anzahl": len(rechnungen), "gruppen": gruppen,
-        "wc_neu": wc_neu, "carrier_dateien": carrier_dateien,
+        "wc_neu": wc_neu, "carrier_dateien": carrier_dateien, "kg_geloggt": kg_geloggt,
         "archiviert": verschoben, "archiv_fehler": archiv_fehler, "archiv_ziel": archiv_ziel,
     }
 
@@ -260,6 +268,12 @@ def gui():
     btn_zuordnen.pack(side="left")
     btn_export = ttk.Button(knoepfe, text="2. Pickliste + CSV erstellen", state="disabled")
     btn_export.pack(side="left", padx=8)
+
+    def zeige_statistik():
+        import carrier_statistik
+        messagebox.showinfo("Carrier-Dashboard - Kg-Statistik", carrier_statistik.statistik_text())
+
+    ttk.Button(knoepfe, text="Statistik", command=zeige_statistik).pack(side="left", padx=(0, 8))
     ttk.Label(knoepfe, textvariable=status_var).pack(side="left", padx=12)
     prog = ttk.Progressbar(root, mode="determinate")
     prog.pack(fill="x", padx=8, pady=(6, 0))
@@ -478,6 +492,9 @@ def gui():
                     if export_info["uebersprungen"]:
                         zeilen.append("UEBERSPRUNGEN (PDF nicht lesbar, liegen noch im "
                                       "Pool): %d" % export_info["uebersprungen"])
+                    if bericht["kg_geloggt"]:
+                        zeilen.append("Kg-Statistik: %d Rechnung(en) erfasst" %
+                                      bericht["kg_geloggt"])
                     if bericht["carrier_dateien"]:
                         zeilen.append("")
                         zeilen.append("Carrier-CSVs:")

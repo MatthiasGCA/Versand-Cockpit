@@ -34,7 +34,7 @@ strikt). Alle Grenzen stehen unten als Konstanten.
 import html
 import re
 
-VERSION = "2026-09-23c"
+VERSION = "2026-09-23d"
 
 # --- Gewichtsgrenzen in kg (Klasse gilt bei Gewicht STRIKT UNTER der Grenze) -----
 G_BRIEF = 0.05
@@ -135,9 +135,49 @@ _PLZ_ZEILE = re.compile(
     r"^\s*(?:(?P<pre>[A-Za-z]{1,3})\s?-?\s?)?(?P<plz>\d{4,5})(?!\d)\s*(?P<ort>.*?)\s*$")
 # Strasse + PLZ + Ort in EINER Zeile ("Laerchenweg 7 15518 Rauen")
 _PLZ_IN_ZEILE = re.compile(r"^(?P<vor>.*\S)\s+(?P<plz>\d{5})\s+(?P<ort>\S.*)$")
-# Strasse mit Hausnummer am Ende: "Hauptstr. 12", "Weg 15 B", "Ring 36/6", "Allee 12-14"
+# Strasse mit Hausnummer am Ende: "Hauptstr. 12", "Weg 15 B", "Ring 36/6",
+# "Allee 12-14". Trenner ist normalerweise ein Leerzeichen, real beobachtet
+# aber auch ein Doppelpunkt statt Leerzeichen ("Peheimer Str :11", Rechnung
+# 1705571) oder GAR KEIN Trenner - die Hausnummer direkt angeklebt
+# ("Rohrwangstr.3", Rechnung 1705548; "Heidelstein str.21", Rechnung 1705551) -
+# [\s:]* (0 bis n Zeichen) deckt alle drei Faelle ab. ".*?" ist bewusst
+# NICHT-gierig, damit bei mehreren Ziffern in der Zeile trotzdem nur die am
+# Ende als Hausnummer erkannt wird.
 _STRASSE_HNR = re.compile(
-    r"^(?P<str>.*?\S)\s+(?P<nr>\d+\s*[A-Za-z]?(?:\s*[-/]\s*\d+\s*[A-Za-z]?)?)[\s,.;]*$")
+    r"^(?P<str>.*?\S)[\s:]*(?P<nr>\d+\s*[A-Za-z]?(?:\s*[-/]\s*\d+\s*[A-Za-z]?)?)[\s,.;]*$")
+# Eine Zeile, die NUR aus der Hausnummer besteht (Strasse und Hausnummer auf
+# zwei eigenen Zeilen, real beobachtet an Rechnung 1705611/1705631: "Wiesenweg"
+# / "4", "lindenstrasse" / "8").
+_NUR_HAUSNUMMER = re.compile(r"^\d+\s*[A-Za-z]?$")
+
+
+def _finde_strasse(kandidaten):
+    """Ermittelt aus den Adresszeilen zwischen Name und PLZ-Zeile, welche die
+    Strasse(+Hausnummer) ist - der Rest wird Zusatz. NICHT einfach "die Zeile
+    direkt vor der PLZ" (der frueheren Annahme), weil Amicron dort manchmal
+    eine ZUSAeTZLICHE Zeile einschiebt: doppelte Strasse ohne Hausnummer,
+    Firmenname, Landkreis-Name (real beobachtet an Rechnung 1705605/1705563/
+    1705565 - dort stand die zusaetzliche Zeile jeweils NACH der echten
+    Strassenzeile, direkt vor der PLZ) - oder Strasse und Hausnummer auf ZWEI
+    eigene Zeilen aufteilt (Rechnung 1705611/1705631: "Wiesenweg" / "4").
+    Rueckgabe: (strasse_roh, zusatz_liste)."""
+    if not kandidaten:
+        return "", []
+    # 1) Rueckwaerts (naeher an der PLZ zuerst, das ist die ueblichere Position
+    #    der echten Strassenzeile) nach der ersten Zeile suchen, die schon fuer
+    #    sich allein wie "Strasse + Hausnummer" aussieht.
+    for k in range(len(kandidaten) - 1, -1, -1):
+        if _STRASSE_HNR.match(kandidaten[k]):
+            return kandidaten[k], kandidaten[:k] + kandidaten[k + 1:]
+    # 2) Keine Zeile passt einzeln - evtl. Strasse und Hausnummer auf zwei
+    #    eigenen Zeilen: ist die letzte Zeile NUR die Hausnummer, mit der Zeile
+    #    davor zur Strassenzeile verbinden.
+    if len(kandidaten) >= 2 and _NUR_HAUSNUMMER.match(kandidaten[-1]):
+        return "%s %s" % (kandidaten[-2], kandidaten[-1]), kandidaten[:-2]
+    # 3) Nichts erkannt (z.B. Hausnummer mit einem noch nicht abgedeckten
+    #    Trenner) - wie bisher die letzte Zeile nehmen, der Hausnummer-Hinweis
+    #    in analysiere_adresse() greift dann weiterhin.
+    return kandidaten[-1], kandidaten[:-1]
 
 
 def analysiere_adresse(zeilen):
@@ -181,8 +221,7 @@ def analysiere_adresse(zeilen):
         zusatz = zl[1:idx]
         out["hinweise"].append("PLZ/Ort stehen in der Strassenzeile - bitte prüfen")
     else:
-        strasse_roh = zl[idx - 1] if idx - 1 >= 1 else ""
-        zusatz = zl[1:idx - 1] if idx - 1 >= 1 else []
+        strasse_roh, zusatz = _finde_strasse(zl[1:idx])
     out["zusatz"] = zusatz
 
     # --- Land -----------------------------------------------------------------
@@ -446,6 +485,35 @@ def selftest():
     check("adr Hausnr 36/6", a["hausnr"], "36/6")
     a = analysiere_adresse(["X Y", "Hauptstr. 12 B", "12345 Ort"])
     check("adr Hausnr 12 B", a["hausnr"], "12 B")
+    # Zusaetzliche Zeile NACH der echten Strassenzeile (anders als "adr Zusatz"
+    # oben, wo die Zusatzzeile VOR der Strasse steht) - real beobachtet, siehe
+    # _finde_strasse()-Docstring.
+    a = analysiere_adresse(["Vötsch Thomas", "Wilhelmstraße 100", "Wilhelmstraße",
+                            "DE-72461 Albstadt"])
+    check("adr real 1705605 (doppelte Strasse ohne Hausnr danach)",
+          (a["strasse"], a["hausnr"], a["zusatz"], a["hinweise"]),
+          ("Wilhelmstraße", "100", ["Wilhelmstraße"], []))
+    a = analysiere_adresse(["Roman Schönfeld", "Gerhart-Hauptmann-Str. 13", "Braumanufaktur",
+                            "DE-35321 Laubach"])
+    check("adr real 1705563 (Zusatzzeile NACH der Strasse)",
+          (a["strasse"], a["hausnr"], a["zusatz"], a["hinweise"]),
+          ("Gerhart-Hauptmann-Str.", "13", ["Braumanufaktur"], []))
+    # Strasse und Hausnummer auf zwei eigenen Zeilen.
+    a = analysiere_adresse(["Kerekes Zoltan", "Wiesenweg", "4", "DE-85290 Geisenfeld"])
+    check("adr real 1705611 (Strasse/Hausnr auf zwei Zeilen)",
+          (a["strasse"], a["hausnr"], a["zusatz"], a["hinweise"]),
+          ("Wiesenweg", "4", [], []))
+    # Hausnummer mit Doppelpunkt statt Leerzeichen angeklebt.
+    a = analysiere_adresse(["Johannes Wanke", "Peheimer Str :11", "DE-49699 Lindern"])
+    check("adr real 1705571 (Hausnr mit Doppelpunkt angeklebt)",
+          (a["strasse"], a["hausnr"], a["hinweise"]), ("Peheimer Str", "11", []))
+    # Hausnummer OHNE jeden Trenner angeklebt.
+    a = analysiere_adresse(["Bahittin Doener", "Rohrwangstr.3", "DE-73430 AALEN"])
+    check("adr real 1705548 (Hausnr ohne Trenner angeklebt)",
+          (a["strasse"], a["hausnr"], a["hinweise"]), ("Rohrwangstr.", "3", []))
+    a = analysiere_adresse(["Gregor Worringen", "Heidelstein str.21", "DE-36043 Fulda"])
+    check("adr real 1705551 (Hausnr ohne Trenner angeklebt, mit Leerzeichen im Strassennamen)",
+          (a["strasse"], a["hausnr"], a["hinweise"]), ("Heidelstein str.", "21", []))
     a = analysiere_adresse(["X Y", "Hauptstr. 1"])
     check("adr ohne PLZ -> Fehler", bool(a["fehler"]), True)
     a = analysiere_adresse(["X Y", "Hauptstr. 1", "8330 Feldbach"])

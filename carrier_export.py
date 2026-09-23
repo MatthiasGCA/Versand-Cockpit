@@ -47,7 +47,7 @@ from datetime import datetime
 
 import carrier_regeln as regeln
 
-VERSION = "2026-09-23c"
+VERSION = "2026-09-23d"
 
 # ---------------------------------------------------------------------------
 # Absenderdaten (fest - aus den Musterdateien uebernommen; DHL/DPD nutzen
@@ -131,14 +131,16 @@ def _dhl_dpd_zeile(b, ist_dpd, gewicht=None):
 
 
 def _dhl_zeilen(b):
-    """Eine oder zwei DHL-Zeilen fuer b: normalerweise eine mit dem
-    Gesamtgewicht, bei manuell in zwei Pakete aufgeteilten Sendungen
-    (b["pakete"], siehe carrier_dashboard.paket_aufteilen() - Grund: Sendung
-    war ueber dem DHL-Maximalgewicht) zwei Zeilen mit je einem der beiden vorab
-    gewogenen Einzelgewichte. Beide Pakete tragen bewusst DIESELBE
-    Sendungsreferenz (Rechnungsnummer) - mit Matthias abgestimmt 2026-09-23,
-    sein DHL-Geschaeftskundenportal akzeptiert doppelte Sendungsreferenzen
-    innerhalb eines Import-Laufs."""
+    """Eine ODER MEHRERE DHL-Zeilen fuer b: normalerweise eine mit dem
+    Gesamtgewicht, bei manuell aufgeteilten Sendungen (b["pakete"], siehe
+    carrier_dashboard.paket_aufteilen() - Grund: Sendung war ueber dem
+    DHL-Maximalgewicht) eine Zeile PRO PAKET mit dem jeweiligen vorab
+    gewogenen Einzelgewicht - keine Obergrenze fuer die Paketanzahl (auch
+    sehr schwere Sendungen, die selbst in zwei Pakete a 31,5 kg nicht mehr
+    passen, z.B. Rechnung 1705548 mit 70,4 kg -> 3 Pakete noetig). Alle
+    Pakete tragen bewusst DIESELBE Sendungsreferenz (Rechnungsnummer) - mit
+    Matthias abgestimmt 2026-09-23, sein DHL-Geschaeftskundenportal
+    akzeptiert doppelte Sendungsreferenzen innerhalb eines Import-Laufs."""
     pakete = b.get("pakete")
     if not pakete:
         return [_dhl_dpd_zeile(b, False)]
@@ -276,23 +278,35 @@ def selftest():
     check("DHL DE: 32 Spalten", len(z), 32)
 
     # Manuell aufgeteilte Sendung (b["pakete"], siehe carrier_dashboard.
-    # paket_aufteilen() - Anlass Rechnung 1705548, 70,4 kg > DHL-Maximalgewicht)
-    # -> zwei Zeilen, je Einzelgewicht, gleiche Sendungsreferenz (mit Matthias
-    # abgestimmt 2026-09-23).
-    b_dhl_geteilt = _bsp("1705548", "pax1", 70.4, ["Bahittin Doener", "Rohrwangstr.3", "73430 AALEN"])
+    # paket_aufteilen()) - zwei Beispiele mit Einzelgewichten, die auch die
+    # GUI-Obergrenze (<=31,5 kg PRO Paket) einhalten wuerden.
+    b_dhl_geteilt2 = _bsp("1705500", "pax1", 50.0, ["A B", "Weg 1", "12345 Ort"])
+    b_dhl_geteilt2["pakete"] = [25.0, 25.0]
+    zeilen2 = _dhl_zeilen(b_dhl_geteilt2)
+    check("Aufgeteilte Sendung (2 Pakete): 2 Zeilen", len(zeilen2), 2)
+    check("Aufgeteilte Sendung (2 Pakete): beide gleiche Sendungsreferenz",
+          (zeilen2[0][0], zeilen2[1][0]), ("1705500", "1705500"))
+    check("Aufgeteilte Sendung (2 Pakete): Einzelgewichte",
+          (zeilen2[0][22], zeilen2[1][22]), ("25,0000", "25,0000"))
+
+    # Keine Obergrenze fuer die Paketanzahl - real beobachtet an Rechnung
+    # 1705548 (70,4 kg): passt selbst in ZWEI Pakete a 31,5 kg nicht mehr
+    # (2x31,5=63 < 70,4), braucht also mindestens DREI.
+    b_dhl_geteilt3 = _bsp("1705548", "pax1", 70.4, ["Bahittin Doener", "Rohrwangstr.3", "73430 AALEN"])
     check("Sendung vor Aufteilung -> Fehler (ueber DHL-Maximalgewicht)",
-          b_dhl_geteilt["status"], "fehler")
+          b_dhl_geteilt3["status"], "fehler")
     # Wie carrier_dashboard.paket_aufteilen(): Aufteilung eintragen, den
     # Gewichts-Fehler damit als geloest markieren.
-    b_dhl_geteilt["pakete"] = [40.0, 30.4]
-    b_dhl_geteilt["fehler"] = [f for f in b_dhl_geteilt["fehler"] if "DHL-Maximalgewicht" not in f]
-    b_dhl_geteilt["status"] = "ok" if not b_dhl_geteilt["fehler"] else "fehler"
-    zeilen_geteilt = _dhl_zeilen(b_dhl_geteilt)
-    check("Aufgeteilte Sendung: 2 Zeilen", len(zeilen_geteilt), 2)
-    check("Aufgeteilte Sendung: beide gleiche Sendungsreferenz",
-          (zeilen_geteilt[0][0], zeilen_geteilt[1][0]), ("1705548", "1705548"))
-    check("Aufgeteilte Sendung: Einzelgewichte", (zeilen_geteilt[0][22], zeilen_geteilt[1][22]),
-          ("40,0000", "30,4000"))
+    b_dhl_geteilt3["pakete"] = [25.0, 25.0, 20.4]
+    b_dhl_geteilt3["fehler"] = [f for f in b_dhl_geteilt3["fehler"] if "DHL-Maximalgewicht" not in f]
+    b_dhl_geteilt3["status"] = "ok" if not b_dhl_geteilt3["fehler"] else "fehler"
+    zeilen3 = _dhl_zeilen(b_dhl_geteilt3)
+    check("Aufgeteilte Sendung (3 Pakete, 70,4 kg passt in keine 2): 3 Zeilen", len(zeilen3), 3)
+    check("Aufgeteilte Sendung (3 Pakete): alle gleiche Sendungsreferenz",
+          [z[0] for z in zeilen3], ["1705548"] * 3)
+    check("Aufgeteilte Sendung (3 Pakete): Einzelgewichte, keins ueber 31,5 kg",
+          [z[22] for z in zeilen3], ["25,0000", "25,0000", "20,4000"])
+
     check("Unaufgeteilte Sendung: weiterhin genau 1 Zeile", len(_dhl_zeilen(b_dhl_de)), 1)
 
     b_dhl_at = _bsp("1703056", "pax1", 2.4, ["Michael Höfler", "Mühldorf 414", "AT-8330 Feldbach"])
@@ -371,17 +385,18 @@ def selftest():
         check("exportiere(): nach 'Quittieren' (status=ok) doch exportiert",
               len(geschrieben_quittiert), 1)
 
-        # exportiere() mit einer aufgeteilten Sendung: DHL-Datei bekommt ZWEI
-        # Datenzeilen fuer die eine Rechnung, "anzahl_rechnungen" bleibt 1.
-        geschrieben_geteilt = exportiere([b_dhl_geteilt], tmp, datetime(2026, 9, 22, 16, 12))
+        # exportiere() mit einer in DREI Pakete aufgeteilten Sendung: DHL-Datei
+        # bekommt DREI Datenzeilen fuer die eine Rechnung, "anzahl_rechnungen"
+        # bleibt 1.
+        geschrieben_geteilt = exportiere([b_dhl_geteilt3], tmp, datetime(2026, 9, 22, 16, 12))
         check("exportiere(): aufgeteilte Sendung zaehlt als 1 Rechnung",
               list(geschrieben_geteilt.values()), [1])
         [pfad_geteilt] = geschrieben_geteilt
         with open(pfad_geteilt, encoding="iso-8859-1", newline="") as f:
             rows_geteilt = list(csv.reader(f, delimiter=";"))
-        check("exportiere(): aufgeteilte Sendung schreibt 2 Datenzeilen", len(rows_geteilt), 3)
-        check("exportiere(): beide Zeilen dieselbe Rechnungsnummer",
-              (rows_geteilt[1][0], rows_geteilt[2][0]), ("1705548", "1705548"))
+        check("exportiere(): aufgeteilte Sendung schreibt 3 Datenzeilen", len(rows_geteilt), 4)
+        check("exportiere(): alle drei Zeilen dieselbe Rechnungsnummer",
+              [r[0] for r in rows_geteilt[1:]], ["1705548"] * 3)
         check("exportiere(): keine Post_Brief_Ausland-Datei (leere Gruppe)",
               os.path.exists(os.path.join(tmp, "Post_Brief_Ausland_2026-09-22_161000.csv")), False)
         with open(os.path.join(tmp, "DHL_2026-09-22_161000.csv"), encoding="iso-8859-1") as f:

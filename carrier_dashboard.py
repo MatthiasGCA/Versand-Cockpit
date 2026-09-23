@@ -43,13 +43,14 @@ Carrier-CSVs tatsaechlich geschrieben und die eingelesenen PDFs archiviert.
       GUI-Sitzung, bleibt aber ueber einen erneuten Schritt-1-Lauf hinweg
       erhalten (rnr-basiert). Button "Paket aufteilen": bei einer DHL-
       Sendung ueber dem Maximalgewicht (siehe G_DHL_MAX in carrier_regeln.py)
-      koennen zwei manuell gewogene Einzelgewichte eingetragen werden - loest
-      den Gewichts-Fehler auf (macht daraus einen quittierbaren Hinweis) und
-      erzeugt beim Export ZWEI DHL-CSV-Zeilen mit dem gleichen Sendungsbezug
-      (Matthias bestaetigt: beide Pakete tragen dieselbe Rechnungsnummer als
-      Sendungsreferenz). Die Pickliste bleibt unveraendert (EIN Packvorgang) -
-      die zwei Pakete werden vorab manuell gepackt/gewogen, die Software muss
-      nicht wissen, welcher Artikel in welches Paket kommt.
+      koennen beliebig viele (mindestens zwei) manuell gewogene Einzelgewichte
+      eingetragen werden - loest den Gewichts-Fehler auf (macht daraus einen
+      quittierbaren Hinweis) und erzeugt beim Export je EINE DHL-CSV-Zeile pro
+      Paket mit dem gleichen Sendungsbezug (Matthias bestaetigt: alle Pakete
+      tragen dieselbe Rechnungsnummer als Sendungsreferenz). Die Pickliste
+      bleibt unveraendert (EIN Packvorgang) - die Pakete werden vorab manuell
+      gepackt/gewogen, die Software muss nicht wissen, welcher Artikel in
+      welches Paket kommt.
   Schritt 4 (spaeter, optional): Warnung in scan_druck.py bei Carrier-
       Abweichung zwischen Label und dieser Zuordnung.
 
@@ -77,7 +78,7 @@ from tkinter import messagebox, simpledialog, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-09-23h"
+VERSION = "2026-09-23i"
 
 # Fenster-/Taskleisten-Symbol (siehe gui() unten) - liegt im selben Ordner
 # wie dieses Skript, damit es unveraendert auch nach einem Umzug funktioniert.
@@ -289,8 +290,9 @@ def detailtext(b):
     g = b["gewicht"]
     zeilen.append("Gewicht:   %s" % (("%.3f kg" % g).replace(".", ",") if g is not None else "-"))
     if b.get("pakete"):
-        zeilen.append("Pakete:    %s (2 DHL-Sendungen, gleiche Rechnungsnummer als Referenz)"
-                      % " + ".join(("%.3f kg" % p).replace(".", ",") for p in b["pakete"]))
+        zeilen.append("Pakete:    %s (%d DHL-Sendungen, gleiche Rechnungsnummer als Referenz)"
+                      % (" + ".join(("%.3f kg" % p).replace(".", ",") for p in b["pakete"]),
+                         len(b["pakete"])))
     zeilen.append("Carrier:   %s%s" % (
         b["carrier"] or "-", "  (Ausland)" if b["carrier"] and b["ausland"] else ""))
     if b["grund"]:
@@ -476,44 +478,67 @@ def gui():
         gesamt = b["gewicht"]
         gtxt = ("%.3f" % gesamt).replace(".", ",")
         maxtxt = ("%.1f" % regeln.G_DHL_MAX).replace(".", ",")
-        vorgabe1, vorgabe2 = b.get("pakete") or (None, None)
-        g1 = simpledialog.askfloat(
-            "Carrier-Dashboard - Paket aufteilen",
-            "Rechnung %s: Gesamtgewicht laut Rechnung %s kg "
-            "(DHL-Maximalgewicht %s kg).\n\nBeide Pakete vorab packen und "
-            "wiegen, dann hier eintragen.\n\nGewicht Paket 1 (kg):"
-            % (b["rnr"], gtxt, maxtxt),
-            parent=root, minvalue=0.001, maxvalue=regeln.G_DHL_MAX, initialvalue=vorgabe1)
-        if g1 is None:
-            return
-        g2 = simpledialog.askfloat(
-            "Carrier-Dashboard - Paket aufteilen",
-            "Gewicht Paket 2 (kg):",
-            parent=root, minvalue=0.001, maxvalue=regeln.G_DHL_MAX, initialvalue=vorgabe2)
-        if g2 is None:
-            return
-        summe_txt = ("%.3f" % (g1 + g2)).replace(".", ",")
+        vorgabe = b.get("pakete") or []
+        # Kein fest verdrahtetes Limit auf zwei Pakete - carrier_export.
+        # _dhl_zeilen()/carrier_statistik.log_lauf() verarbeiten b["pakete"]
+        # ohnehin als beliebig lange Liste (z.B. bei sehr schweren Sendungen,
+        # die selbst in zwei Pakete a 31,5 kg nicht mehr passen, real
+        # beobachtet an Rechnung 1705548 mit 70,4 kg -> 2x31,5=63 reicht nicht).
+        # Mindestens zwei Pakete werden immer verlangt (ein einzelnes Paket
+        # waere keine Aufteilung).
+        pakete = []
+        n = 1
+        while True:
+            if n == 1:
+                prompt = ("Rechnung %s: Gesamtgewicht laut Rechnung %s kg "
+                          "(DHL-Maximalgewicht %s kg PRO Paket).\n\nAlle Pakete "
+                          "vorab packen und wiegen, dann hier eintragen.\n\n"
+                          "Gewicht Paket 1 (kg):" % (b["rnr"], gtxt, maxtxt))
+            else:
+                prompt = "Gewicht Paket %d (kg):" % n
+            vorgabe_n = vorgabe[n - 1] if len(vorgabe) >= n else None
+            g = simpledialog.askfloat(
+                "Carrier-Dashboard - Paket aufteilen", prompt, parent=root,
+                minvalue=0.001, maxvalue=regeln.G_DHL_MAX, initialvalue=vorgabe_n)
+            if g is None:
+                return                          # Abbruch - nichts wird uebernommen
+            pakete.append(g)
+            summe = sum(pakete)
+            if n == 1:
+                n += 1
+                continue                        # immer mindestens 2 Pakete verlangen
+            reicht_aus = summe >= gesamt - 0.001
+            weiter = messagebox.askyesno(
+                "Carrier-Dashboard - Paket aufteilen",
+                "Bisher %d Pakete erfasst, Summe %s kg von %s kg laut Rechnung.\n\n"
+                "Noch ein weiteres Paket hinzufügen?"
+                % (n, ("%.3f" % summe).replace(".", ","), gtxt),
+                default=(messagebox.NO if reicht_aus else messagebox.YES))
+            if not weiter:
+                break
+            n += 1
+
+        summe = sum(pakete)
+        summe_txt = ("%.3f" % summe).replace(".", ",")
         # Grobe Plausibilitaetspruefung (kein hartes Blockieren - laut Matthias
         # ist eine exakt gleiche/passende Aufteilung nicht immer moeglich,
         # z.B. wegen Verpackungsmaterial) - faengt aber Tippfehler ab (z.B.
         # Gramm statt Kilogramm eingetragen).
-        abweichung = abs((g1 + g2) - gesamt)
+        abweichung = abs(summe - gesamt)
         if abweichung > max(2.0, gesamt * 0.1):
             if not messagebox.askyesno(
                 "Carrier-Dashboard - Gewicht prüfen",
-                "Summe der beiden Pakete (%s kg) weicht deutlich vom "
-                "Rechnungsgewicht (%s kg) ab. Trotzdem übernehmen?"
-                % (summe_txt, gtxt), icon="warning", default=messagebox.NO):
+                "Summe der %d Pakete (%s kg) weicht deutlich vom Rechnungsgewicht "
+                "(%s kg) ab. Trotzdem übernehmen?" % (len(pakete), summe_txt, gtxt),
+                icon="warning", default=messagebox.NO):
                 return
-        b["pakete"] = [g1, g2]
+        b["pakete"] = pakete
         b["fehler"] = [f for f in b["fehler"] if "DHL-Maximalgewicht" not in f]
-        b["hinweise"] = [h for h in b["hinweise"]
-                         if not h.startswith("Sendung manuell in 2 Pakete")]
-        g1txt = ("%.3f" % g1).replace(".", ",")
-        g2txt = ("%.3f" % g2).replace(".", ",")
+        b["hinweise"] = [h for h in b["hinweise"] if not h.startswith("Sendung manuell in")]
+        pakete_txt = " + ".join(("%.3f" % g).replace(".", ",") for g in pakete)
         b["hinweise"].append(
-            "Sendung manuell in 2 Pakete aufgeteilt: %s kg + %s kg (Summe %s kg, "
-            "Rechnung: %s kg)" % (g1txt, g2txt, summe_txt, gtxt))
+            "Sendung manuell in %d Pakete aufgeteilt: %s kg (Summe %s kg, "
+            "Rechnung: %s kg)" % (len(pakete), pakete_txt, summe_txt, gtxt))
         b["quittiert"] = False                  # neue Aufteilung -> erneut quittieren
         quittiert.discard(b["rnr"])
         b["status"] = "fehler" if b["fehler"] else ("warn" if b["hinweise"] else "ok")
@@ -546,7 +571,7 @@ def gui():
             g = b["gewicht"]
             gtxt = ("%.3f" % g).replace(".", ",") if g is not None else "-"
             if b.get("pakete"):
-                gtxt += " (2 Pakete)"
+                gtxt += " (%d Pakete)" % len(b["pakete"])
             c = b["carrier"] or "-"
             if b["carrier"] in (regeln.BRIEF, regeln.GROSSBRIEF):
                 c += " Ausland" if b["ausland"] else " Inland"

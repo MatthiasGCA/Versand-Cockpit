@@ -30,7 +30,7 @@ import os
 from collections import Counter, defaultdict
 from datetime import datetime
 
-VERSION = "2026-09-23d"
+VERSION = "2026-09-23e"
 
 STATISTIK_DATEI = r"\\DESKTOP-N2H75H\Netzwerk\Paketscheine\carrier_statistik.csv"
 ARTIKEL_STATISTIK_DATEI = r"\\DESKTOP-N2H75H\Netzwerk\Paketscheine\artikel_statistik.csv"
@@ -48,13 +48,13 @@ def _de(x):
 def log_lauf(ergebnisse, pfad=STATISTIK_DATEI, jetzt=None):
     """Haengt fuer jede TATSAECHLICH exportierte Rechnung (status == 'ok' UND
     Carrier zugeordnet - dieselbe Bedingung wie carrier_export.exportiere())
-    eine Zeile an pfad an. Eine manuell in zwei Pakete aufgeteilte DHL-Sendung
-    (b["pakete"], ueber dem DHL-Maximalgewicht) erzeugt ZWEI Zeilen mit je
-    einem Einzelgewicht - reale Paketzahl statt nur des Rechnungsgewichts, das
-    macht die Statistik fuer Mengenrabatt-Gespraeche genauer. Legt Datei+
-    Kopfzeile bei Bedarf an. Rueckgabe: Anzahl geloggter Zeilen (0 bei leerer
-    Liste ODER Schreibfehler - Fehler werden bewusst verschluckt, siehe
-    Modul-Kopf)."""
+    eine Zeile an pfad an. Eine manuell aufgeteilte DHL-Sendung (b["pakete"],
+    ueber dem DHL-Maximalgewicht) erzeugt EINE ZEILE PRO PAKET mit dessen
+    Einzelgewicht (keine Obergrenze fuer die Paketanzahl) - reale Paketzahl
+    statt nur des Rechnungsgewichts, das macht die Statistik fuer
+    Mengenrabatt-Gespraeche genauer. Legt Datei+Kopfzeile bei Bedarf an.
+    Rueckgabe: Anzahl geloggter Zeilen (0 bei leerer Liste ODER Schreibfehler
+    - Fehler werden bewusst verschluckt, siehe Modul-Kopf)."""
     kandidaten = [b for b in ergebnisse if b["status"] == "ok" and b["carrier"]]
     if not kandidaten:
         return 0

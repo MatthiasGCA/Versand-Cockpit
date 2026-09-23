@@ -84,7 +84,7 @@ from tkinter import messagebox, simpledialog, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-09-23j"
+VERSION = "2026-09-23k"
 
 # Fenster-/Taskleisten-Symbol (siehe gui() unten) - liegt im selben Ordner
 # wie dieses Skript, damit es unveraendert auch nach einem Umzug funktioniert.
@@ -385,6 +385,37 @@ def detailtext(b):
     return "\n".join(zeilen)
 
 
+def _frage_gewicht(root, titel, prompt, minvalue, maxvalue, initialvalue=None):
+    """Fragt ein Gewicht in kg ab - anders als simpledialog.askfloat() (das
+    NUR den englischen Punkt als Dezimaltrennzeichen versteht und bei einem
+    deutschen Komma die kryptische Meldung "Not a floating point value"
+    zeigt) akzeptiert dieser Dialog sowohl Komma als auch Punkt. Fragt bei
+    ungueltiger Eingabe (kein Zahlenformat ODER ausserhalb min/max) mit einer
+    klaren deutschen Fehlermeldung erneut, bis eine gueltige Zahl eingegeben
+    oder abgebrochen wird (dann None)."""
+    vorgabe = ("%.3f" % initialvalue).replace(".", ",") if initialvalue is not None else None
+    while True:
+        text = simpledialog.askstring(titel, prompt, parent=root, initialvalue=vorgabe)
+        if text is None:
+            return None
+        text_bereinigt = text.strip().replace(",", ".")
+        try:
+            wert = float(text_bereinigt)
+        except ValueError:
+            messagebox.showerror(titel,
+                                 "\"%s\" ist keine gültige Zahl. Bitte z.B. 25,5 oder "
+                                 "25.5 eingeben." % text)
+            vorgabe = text
+            continue
+        if wert < minvalue or wert > maxvalue:
+            messagebox.showerror(
+                titel, "Wert muss zwischen %s und %s kg liegen."
+                % (("%.3f" % minvalue).replace(".", ","), ("%.1f" % maxvalue).replace(".", ",")))
+            vorgabe = text
+            continue
+        return wert
+
+
 # ==========================================================================
 # GUI
 # ==========================================================================
@@ -573,8 +604,8 @@ def gui():
             else:
                 prompt = "Gewicht Paket %d (kg):" % n
             vorgabe_n = vorgabe[n - 1] if len(vorgabe) >= n else None
-            g = simpledialog.askfloat(
-                "Carrier-Dashboard - Paket aufteilen", prompt, parent=root,
+            g = _frage_gewicht(
+                root, "Carrier-Dashboard - Paket aufteilen", prompt,
                 minvalue=0.001, maxvalue=regeln.G_DHL_MAX, initialvalue=vorgabe_n)
             if g is None:
                 return                          # Abbruch - nichts wird uebernommen

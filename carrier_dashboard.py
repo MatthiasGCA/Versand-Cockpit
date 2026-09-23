@@ -16,9 +16,11 @@ Carrier-CSVs tatsaechlich geschrieben und die eingelesenen PDFs archiviert.
       packliste.baue_pdf) + die fuenf Bruecken-CSVs (wie packliste.main()),
       schreibt die Carrier-CSVs (carrier_export.exportiere) und archiviert
       die eingelesenen Rechnungs-PDFs (packliste.archiviere). NUR Rechnungen
-      mit carrier-status != "fehler" UND zugeordnetem Carrier landen in einer
-      Carrier-CSV - alle anderen werden trotzdem gepackt (Pickliste), aber
-      NICHT automatisch exportiert (manuelle Nachbearbeitung noetig). Bei
+      mit status == "ok" UND zugeordnetem Carrier landen in einer Carrier-CSV
+      - Fehler UND noch nicht quittierte Hinweise blockieren das gleichermassen
+      (siehe Button "Hinweis quittieren"); alle anderen werden trotzdem
+      gepackt (Pickliste), aber NICHT automatisch exportiert (manuelle
+      Nachbearbeitung noetig). Bei
       jedem Schritt-2-Lauf werden zusaetzlich automatisch eine Kg-Statistik je
       Carrier (carrier_statistik.log_lauf) UND eine Artikelanzahl-Statistik
       je Bestellung (carrier_statistik.log_artikel) mitgeschrieben - Anzeige
@@ -67,7 +69,7 @@ from tkinter import messagebox, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-09-23f"
+VERSION = "2026-09-23g"
 
 # Fenster-/Taskleisten-Symbol (siehe gui() unten) - liegt im selben Ordner
 # wie dieses Skript, damit es unveraendert auch nach einem Umzug funktioniert.
@@ -632,6 +634,10 @@ def gui():
                                  "im Quelltext (carrier_dashboard.py, Kopf) korrigieren.")
             return
         n_fehler = sum(1 for _, b in paare if b["status"] == "fehler")
+        # Offener (NICHT quittierter) Hinweis blockiert den Carrier-Export
+        # GENAUSO wie ein Fehler (siehe carrier_export.exportiere(): nur
+        # status "ok" wird exportiert) - Rechnung wird trotzdem gepackt.
+        n_hinweis_offen = sum(1 for _, b in paare if hat_offenen_hinweis(b))
         os.makedirs(ausgabe_ordner, exist_ok=True)
         # Sekundengenauer, kollisionssicherer Dateiname (dateiname() haengt bei
         # Bedarf _2/_3/... an) - eine Minute allein reichte nicht aus und liess
@@ -641,18 +647,23 @@ def gui():
                           "Carrier-CSV geschrieben (Zuordnungsfehler, siehe Tabelle) - "
                           "diese muessen manuell nachbearbeitet werden." % n_fehler
                           ) if n_fehler else ""
+        hinweis_offen_txt = ("\n\n%d davon haben einen noch NICHT quittierten Hinweis und "
+                             "werden zwar gepackt, aber ebenfalls NICHT in eine Carrier-CSV "
+                             "geschrieben - erst \"Hinweis quittieren\" (oder beheben) und "
+                             "danach erneut verarbeiten." % n_hinweis_offen
+                             ) if n_hinweis_offen else ""
         hinweis_uebersprungen = ("\n\n%d Rechnung(en) konnten gar nicht gelesen werden "
                                  "(siehe Fehlermeldung in der Tabelle) und werden JETZT NICHT "
                                  "gepackt oder verschoben - sie bleiben unveraendert im "
                                  "Pool-Ordner liegen und muessen manuell geprueft werden."
                                  % len(uebersprungen)) if uebersprungen else ""
-        frage = ("%d Rechnung(en) werden verarbeitet:%s%s\n\n"
+        frage = ("%d Rechnung(en) werden verarbeitet:%s%s%s\n\n"
                 "Pickliste + Bruecken-CSVs -> %s\n"
                 "Carrier-CSVs -> %s\n"
                 "Die eingelesenen PDFs werden anschliessend NACH %s VERSCHOBEN "
                 "(nicht kopiert).\n\nJetzt ausfuehren?"
-                % (len(paare), hinweis_fehler, hinweis_uebersprungen, ausgabe_ordner,
-                   carrier_ordner, archiv_ordner or "(nicht archiviert)"))
+                % (len(paare), hinweis_fehler, hinweis_offen_txt, hinweis_uebersprungen,
+                   ausgabe_ordner, carrier_ordner, archiv_ordner or "(nicht archiviert)"))
         if not messagebox.askyesno("Carrier-Dashboard", frage):
             return
         export_info["uebersprungen"] = len(uebersprungen)

@@ -7,8 +7,10 @@ bewerteten Rechnungen die Import-CSVs fuer die Versanddienstleister nach
 C:\\Carrier_Export. Reine Schreiblogik ohne GUI - Selbsttest via
 py carrier_export.py.
 
-Exportiert wird NUR, was carrier_dashboard.py als nicht blockiert einstuft
-(status != "fehler") UND eine Carrier-Zuordnung hat - siehe exportiere().
+Exportiert wird NUR, was status == "ok" UND eine Carrier-Zuordnung hat - siehe
+exportiere(). Sowohl ein Fehler als auch ein noch nicht quittierter Hinweis
+(status "fehler" bzw. "warn") blockieren den Export, bis sie behoben bzw. im
+Dashboard ueber "Hinweis quittieren" bestaetigt wurden.
 
 Dateinamen (mit Matthias abgestimmt, 2026-09-22): <Praefix>_<JJJJ-MM-TT>_<HHMM>.csv,
 z.B. DHL_2026-09-22_161000.csv, Post_Brief_Ausland_2026-09-22_161000.csv. Jeder Lauf
@@ -45,7 +47,7 @@ from datetime import datetime
 
 import carrier_regeln as regeln
 
-VERSION = "2026-09-23a"
+VERSION = "2026-09-23b"
 
 # ---------------------------------------------------------------------------
 # Absenderdaten (fest - aus den Musterdateien uebernommen; DHL/DPD nutzen
@@ -172,11 +174,16 @@ def _schreibe_csv(pfad, header, zeilen):
 
 def exportiere(ergebnisse, ziel_ordner, jetzt=None):
     """Schreibt alle Carrier-CSVs fuer die exportierbaren Ergebnisse (status
-    != 'fehler' UND Carrier zugeordnet) nach ziel_ordner (wird ggf. angelegt).
-    Rueckgabe: {dateipfad: anzahl_rechnungen}, nur tatsaechlich geschriebene
-    Dateien (leere Gruppen erzeugen keine Datei)."""
+    == 'ok' UND Carrier zugeordnet) nach ziel_ordner (wird ggf. angelegt).
+    status == 'ok' schliesst sowohl 'fehler' (blockiert) als auch offene,
+    NICHT quittierte Hinweise ('warn') aus - ein Hinweis (z.B. unsichere
+    Laendererkennung) blockiert den Export also genau wie ein Fehler, bis er
+    im Dashboard ueber "Hinweis quittieren" bestaetigt wurde (das setzt
+    status auf 'ok', siehe carrier_dashboard.quittiere_auswahl()). Rueckgabe:
+    {dateipfad: anzahl_rechnungen}, nur tatsaechlich geschriebene Dateien
+    (leere Gruppen erzeugen keine Datei)."""
     os.makedirs(ziel_ordner, exist_ok=True)
-    exportierbar = [b for b in ergebnisse if b["status"] != "fehler" and b["carrier"]]
+    exportierbar = [b for b in ergebnisse if b["status"] == "ok" and b["carrier"]]
     geschrieben = {}
 
     dhl = [b for b in exportierbar if b["carrier"] == regeln.DHL]
@@ -286,6 +293,13 @@ def selftest():
     b_fehler = _bsp("1700099", "pax1", 1.0, ["X Y", "Hauptstr. 1"])
     check("Fehlerhafte Rechnung -> status fehler", b_fehler["status"], "fehler")
 
+    # status "warn" (offener, NICHT quittierter Hinweis) blockiert den Export
+    # GENAUSO wie "fehler" - b_dpd_ohne_kdnr hat wegen der fehlenden
+    # Kundennummer status "warn" (siehe check oben) und darf hier NICHT
+    # mitgezaehlt werden.
+    check("DPD ohne Kundennummer -> status warn (offener Hinweis)",
+          b_dpd_ohne_kdnr["status"], "warn")
+
     # --- exportiere(): echte Dateien in ein Temp-Verzeichnis schreiben ------
     tmp = tempfile.mkdtemp(prefix="carrier_export_test_")
     try:
@@ -294,11 +308,24 @@ def selftest():
         geschrieben = exportiere(alle, tmp, jetzt)
         erwartet_dateien = {
             os.path.join(tmp, "DHL_2026-09-22_161000.csv"): 2,
-            os.path.join(tmp, "DPD_2026-09-22_161000.csv"): 2,
+            os.path.join(tmp, "DPD_2026-09-22_161000.csv"): 1,
             os.path.join(tmp, "Post_Brief_Inland_2026-09-22_161000.csv"): 1,
             os.path.join(tmp, "Post_Grossbrief_Ausland_2026-09-22_161000.csv"): 1,
         }
-        check("exportiere(): erzeugte Dateien+Zeilenzahl", geschrieben, erwartet_dateien)
+        check("exportiere(): erzeugte Dateien+Zeilenzahl (warn-Rechnung fehlt, siehe oben)",
+              geschrieben, erwartet_dateien)
+        with open(os.path.join(tmp, "DPD_2026-09-22_161000.csv"), encoding="iso-8859-1") as f:
+            check("exportiere(): warn-Rechnung (offener Hinweis) nicht exportiert",
+                  "1705332" not in f.read(), True)
+
+        # Quittieren (Dashboard setzt status manuell auf "ok", siehe
+        # carrier_dashboard.quittiere_auswahl()) macht die Rechnung
+        # exportierbar - exportiere() selbst kennt den Begriff "quittiert"
+        # nicht, prueft nur status.
+        b_dpd_quittiert = dict(b_dpd_ohne_kdnr, status="ok")
+        geschrieben_quittiert = exportiere([b_dpd_quittiert], tmp, datetime(2026, 9, 22, 16, 11))
+        check("exportiere(): nach 'Quittieren' (status=ok) doch exportiert",
+              len(geschrieben_quittiert), 1)
         check("exportiere(): keine Post_Brief_Ausland-Datei (leere Gruppe)",
               os.path.exists(os.path.join(tmp, "Post_Brief_Ausland_2026-09-22_161000.csv")), False)
         with open(os.path.join(tmp, "DHL_2026-09-22_161000.csv"), encoding="iso-8859-1") as f:

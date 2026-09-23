@@ -41,7 +41,7 @@ einen schweren "2-Fach-Artikel"-Doppelpack mit "1-je-Paket").
 import html
 import re
 
-VERSION = "2026-09-23f"
+VERSION = "2026-09-23g"
 
 # --- Gewichtsgrenzen in kg (Klasse gilt bei Gewicht STRIKT UNTER der Grenze) -----
 G_BRIEF = 0.05
@@ -400,15 +400,27 @@ def je_paket_aufteilung(r, gewicht):
     """(pakete|None, grund_zusatz|None) - automatische Paketaufteilung fuer
     eine Rechnung mit GENAU EINER echten Position, die mit "<N>-je-Paket"
     markiert ist (siehe packliste.JE_PAKET_RE, mit Matthias abgestimmt
-    2026-09-23). Die effektive Stueckzahl (Menge * Fach-Artikel-Faktor -
-    deckt z.B. einen als "2-Fach-Artikel" gefuehrten schweren Doppelpack ab,
-    der dann IMMER auf 2 Pakete aufgeteilt wird) wird moeglichst GLEICHMAESSIG
-    auf so viele Pakete verteilt, dass keins mehr als N Stueck enthaelt (z.B.
-    4 Kartons bei "3-je-Paket" -> 2+2, nicht 3+1). Das Gewicht je Paket wird
-    aus dem Rechnungs-Sendungsgewicht abgeleitet (gewicht / effektive
-    Stueckzahl) - setzt voraus, dass die Rechnung AUSSCHLIESSLICH diesen
-    einen Artikel enthaelt (Versandkosten-Zeilen zaehlen nicht mit), sonst
-    laesst sich das Gewicht nicht zuverlaessig zuordnen.
+    2026-09-23). N bezieht sich auf die EFFEKTIVE Stueckzahl (Menge *
+    Fach-Artikel-Faktor). Zwei Faelle, je nachdem ob N kleiner oder
+    groesser/gleich dem Fach-Artikel-Faktor ist:
+
+    1) N < Fach-Faktor (z.B. "1-je-Paket" bei "2-Fach-Artikel"): der
+       Fach-Artikel-Satz selbst wird aufgebrochen und STUECKWEISE verteilt -
+       z.B. ein schwerer Doppelpack wird IMMER auf 2 Einzelpakete aufgeteilt.
+    2) N >= Fach-Faktor, als Vielfaches gedacht (z.B. "72-je-Paket" bei
+       "24-Fach-Artikel" = 3 ganze Kartons je Paket): ganze Kartons werden
+       NIE aufgebrochen, nur gebuendelt. Verteilt wird deshalb in ganzen
+       Mengen-Einheiten (Kartons), nicht in effektiven Einzelstuecken -
+       sonst koennte bei einer ungeraden Kartonzahl ein rechnerischer
+       "2,5-Kartons"-Split herauskommen, der physisch nicht packbar ist
+       (z.B. 5 Kartons bei "3-je-Paket" -> 3+2 Kartons, NICHT 2,5+2,5).
+
+    In beiden Faellen wird moeglichst GLEICHMAESSIG verteilt (z.B. 4 Kartons
+    bei "3-je-Paket" -> 2+2, nicht 3+1). Das Gewicht je Paket wird aus dem
+    Rechnungs-Sendungsgewicht abgeleitet - setzt voraus, dass die Rechnung
+    AUSSCHLIESSLICH diesen einen Artikel enthaelt (Versandkosten-Zeilen
+    zaehlen nicht mit), sonst laesst sich das Gewicht nicht zuverlaessig
+    zuordnen.
 
     (None, None), wenn keine automatische Aufteilung anwendbar/noetig ist -
     u.a. wenn ein Einzelpaket dabei selbst ueber dem DHL-Maximalgewicht laege
@@ -427,12 +439,31 @@ def je_paket_aufteilung(r, gewicht):
         return None, None
     if abs(menge - round(menge)) > 1e-6:
         return None, None            # keine ganzzahlige Menge - Sonderfall
-    effektiv = int(round(menge)) * (p.get("fach") or 1)
-    n_pakete = (effektiv + je_paket - 1) // je_paket     # aufgerundete Ganzzahl-Division
-    if n_pakete <= 1:
-        return None, None            # passt ohnehin in ein Paket
-    basis, rest = divmod(effektiv, n_pakete)
-    stueckzahlen = [basis + 1] * rest + [basis] * (n_pakete - rest)
+    menge_i = int(round(menge))
+    fach = p.get("fach") or 1
+    effektiv = menge_i * fach
+
+    if je_paket < fach:
+        # Fall 1: der Fach-Artikel-Satz wird selbst aufgebrochen -
+        # auf effektiver Einzelstueck-Ebene verteilen.
+        n_pakete = (effektiv + je_paket - 1) // je_paket
+        if n_pakete <= 1:
+            return None, None        # passt ohnehin in ein Paket
+        basis, rest = divmod(effektiv, n_pakete)
+        stueckzahlen = [basis + 1] * rest + [basis] * (n_pakete - rest)
+    else:
+        # Fall 2: "<N>-je-Paket" = N/Fach ganze Mengen-Einheiten (Kartons)
+        # je Paket - in ganzen Kartons verteilen, nie aufbrechen.
+        kartons_je_paket = je_paket // fach
+        if kartons_je_paket < 1:
+            return None, None
+        n_pakete = (menge_i + kartons_je_paket - 1) // kartons_je_paket
+        if n_pakete <= 1:
+            return None, None        # passt ohnehin in ein Paket
+        basis, rest = divmod(menge_i, n_pakete)
+        kartons_verteilung = [basis + 1] * rest + [basis] * (n_pakete - rest)
+        stueckzahlen = [k * fach for k in kartons_verteilung]
+
     stueckgewicht = gewicht / effektiv
     pakete = [s * stueckgewicht for s in stueckzahlen]
     if any(g > G_DHL_MAX for g in pakete):
@@ -721,6 +752,27 @@ def selftest():
                       sendungsgewicht=6.0)
     check("3 Kartons bei 3-je-Paket -> passt in 1 Paket, keine Aufteilung",
           bewerte_rechnung(r_3kartons)["pakete"], None)
+
+    # Kombination Fach-Artikel + je-Paket (Brennpasten-Beispiel, mit Matthias
+    # verifiziert 2026-09-23: 1 Karton = 24-Fach-Artikel, 3 Kartons pro Paket
+    # buendelbar -> "72-je-Paket"). Wichtig: bei 5 bestellten Kartons MUSS in
+    # ganzen Kartons (3+2) verteilt werden, NICHT in effektiven Einzelstuecken
+    # (das ergaebe rechnerisch 2,5+2,5 Kartons - physisch nicht packbar; das
+    # war ein Bug in der ersten Fassung dieser Funktion).
+    r_brennpaste = {"rnr": "1700907", "datei": "x.pdf", "sendungsgewicht": 50.0,
+                    "adresse_zeilen": ["A B", "Weg 1", "12345 Ort"],
+                    "positionen": [_pos("BP24", 5.0, je_paket=72, fach=24, bez="Brennpaste 24er")],
+                    "zeilen_ok": True, "summe_ok": True, "vollstaendig_ok": True}
+    # 50,0 kg / 120 Stueck = 0,41(6) kg/Stueck; Kartons [3,2] -> [72,48] Stueck
+    # -> Paketgewichte [30.0, 20.0] (3/5 bzw. 2/5 von 50 kg, ganze Kartons)
+    check("5 Kartons Brennpaste (24-Fach-Artikel) bei 72-je-Paket -> 3+2 Kartons",
+          bewerte_rechnung(r_brennpaste)["pakete"], [30.0, 20.0])
+
+    r_brennpaste_3 = dict(r_brennpaste, rnr="1700908",
+                          positionen=[_pos("BP24", 3.0, je_paket=72, fach=24, bez="Brennpaste 24er")],
+                          sendungsgewicht=30.0)
+    check("3 Kartons Brennpaste bei 72-je-Paket -> passt genau in 1 Paket",
+          bewerte_rechnung(r_brennpaste_3)["pakete"], None)
 
     # Mischbestellung (Einzelversand-Artikel + weiterer echter Artikel) -> KEINE
     # automatische Aufteilung, da sich das Gesamtgewicht nicht zuverlaessig

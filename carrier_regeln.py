@@ -34,12 +34,15 @@ strikt). Alle Grenzen stehen unten als Konstanten.
 import html
 import re
 
-VERSION = "2026-09-23d"
+VERSION = "2026-09-23e"
 
 # --- Gewichtsgrenzen in kg (Klasse gilt bei Gewicht STRIKT UNTER der Grenze) -----
 G_BRIEF = 0.05
 G_GROSSBRIEF = 0.6
 G_DPD = 1.1
+# DHL-Paket-Maximalgewicht (Matthias bestaetigt) - darueber kann DHL die
+# Sendung nicht annehmen, blockiert also den Export (siehe bestimme_carrier()).
+G_DHL_MAX = 31.5
 
 BRIEF = "Post Brief"
 GROSSBRIEF = "Post Großbrief"
@@ -348,6 +351,13 @@ def bestimme_carrier(kennungen, gewicht, land, packstation=False):
         # DPD->DHL-Umschreibung oben) - bei DHL-Packstationszustellung muss das
         # Produkt im DHL-System manuell auf "Kleinpaket" umgestellt werden.
         hinweise.append("Achtung bei DHL auf Kleinpaket abändern")
+    if klasse == DHL and gewicht > G_DHL_MAX:
+        # DHL nimmt schwerere Pakete nicht an (Matthias bestaetigt) - blockiert
+        # den Export, carrier/grund bleiben aber informativ auf DHL stehen
+        # (zeigt, wohin es OHNE das Gewichtsproblem gegangen waere); manuelle
+        # Nachbearbeitung noetig (z.B. Spedition oder Aufteilen der Sendung).
+        fehler.append("Sendungsgewicht %s kg überschreitet das DHL-Maximalgewicht von %s kg"
+                      % (gtxt, ("%.1f" % G_DHL_MAX).replace(".", ",")))
     return klasse, grund, fehler, hinweise
 
 
@@ -445,6 +455,19 @@ def selftest():
     check("Gewicht 0", carrier(["pax1"], 0), None)
     check("Grund pox1 aufgestiegen",
           "Gewicht" in bestimme_carrier(["pox1"], 0.7, "DE")[1], True)
+
+    # DHL-Maximalgewicht 31,5 kg (Kundenvorgabe) - darueber blockiert Fehler
+    # den Export, Carrier bleibt informativ auf DHL stehen (real getestet an
+    # Rechnung 1705548, Pax1 70,4 kg).
+    carrier_schwer, _, fehler_schwer, _ = bestimme_carrier(["pax1"], 70.4, "DE")
+    check("pax1 70,4 kg -> ueber DHL-Maximalgewicht -> Fehler, Carrier bleibt DHL",
+          (carrier_schwer, bool(fehler_schwer)), (DHL, True))
+    check("DHL-Maximalgewicht genau 31,5 kg -> noch OK (Grenze gilt NICHT strikt ueberschritten)",
+          bestimme_carrier(["pax1"], 31.5, "DE")[2], [])
+    check("DHL-Maximalgewicht 31,6 kg -> Fehler",
+          bool(bestimme_carrier(["pax1"], 31.6, "DE")[2]), True)
+    check("DPD/Post unterhalb 31,5 kg unbetroffen (kein DHL)",
+          bestimme_carrier(["wapo"], 1.0, "DE")[2], [])
 
     # Packstation/Postfach: DPD kann dort nicht zustellen -> DHL, mit Hinweis
     # auf "Kleinpaket" (real getestet an Rechnung 1705540, Wapo 0,2512 kg)

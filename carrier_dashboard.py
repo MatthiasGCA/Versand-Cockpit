@@ -22,7 +22,11 @@ Carrier-CSVs tatsaechlich geschrieben und die eingelesenen PDFs archiviert.
       jedem Schritt-2-Lauf werden zusaetzlich automatisch eine Kg-Statistik je
       Carrier (carrier_statistik.log_lauf) UND eine Artikelanzahl-Statistik
       je Bestellung (carrier_statistik.log_artikel) mitgeschrieben - Anzeige
-      ueber den Button "Statistik".
+      ueber den Button "Statistik". Sicherung gegen Doppel-Verarbeitung:
+      kommt eine Rechnungsnummer mehrfach im aktuellen Pool ODER laut
+      Statistik-Historie schon in einem frueheren Lauf vor, verlangt Schritt 2
+      eine EXPLIZITE Bestaetigung (Vorbelegung "Nein"), bevor irgendetwas
+      gepackt/exportiert/archiviert wird.
   Schritt 4 (spaeter, optional): Warnung in scan_druck.py bei Carrier-
       Abweichung zwischen Label und dieser Zuordnung.
 
@@ -50,7 +54,7 @@ from tkinter import messagebox, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-09-23c"
+VERSION = "2026-09-23d"
 
 # Fenster-/Taskleisten-Symbol (siehe gui() unten) - liegt im selben Ordner
 # wie dieses Skript, damit es unveraendert auch nach einem Umzug funktioniert.
@@ -118,7 +122,27 @@ def lese_pool(ordner, melde=None):
         b["quelle"] = pfad
         treffer.append((r, b))
     treffer.sort(key=lambda t: (not t[1]["rnr"], t[1]["rnr"], t[1]["datei"]))
-    return [t[0] for t in treffer], [t[1] for t in treffer]
+    ergebnisse = [t[1] for t in treffer]
+    _markiere_pool_duplikate(ergebnisse)
+    return [t[0] for t in treffer], ergebnisse
+
+
+def _markiere_pool_duplikate(ergebnisse):
+    """Haengt an jede Rechnung, deren Rechnungsnummer MEHRFACH (mit
+    unterschiedlichen Dateien) im selben Pool vorkommt, einen Hinweis an -
+    schon in der Schritt-1-Tabelle sichtbar, statt erst bei der Schritt-2-
+    Bestaetigung zu ueberraschen (siehe dort: starte_export())."""
+    import carrier_statistik
+    doppelt = carrier_statistik.doppelte_im_lauf([b["rnr"] for b in ergebnisse])
+    if not doppelt:
+        return
+    for b in ergebnisse:
+        if b["rnr"] in doppelt:
+            b["hinweise"].append(
+                "ACHTUNG: Rechnungsnummer kommt %dx im Pool vor (mögliche "
+                "Doppel-Verarbeitung)" % doppelt[b["rnr"]])
+            if b["status"] == "ok":
+                b["status"] = "warn"
 
 
 def exportiere_alles(rechnungen, ergebnisse, ausgabe_pfad, archiv_ordner, carrier_ordner):
@@ -415,6 +439,7 @@ def gui():
         if laeuft["an"]:
             return
         import carrier_export
+        import carrier_statistik
         paare = [(r, b) for r, b in zip(rechnungen_roh, ergebnisse) if r is not None]
         # Rechnungen, deren PDF gar nicht erst gelesen werden konnte (kein Positionen
         # erkannt / PDF nicht lesbar) - die werden von Schritt 2 komplett uebersprungen
@@ -425,6 +450,32 @@ def gui():
                                 "Keine gueltigen Rechnungen zum Verarbeiten - bitte zuerst "
                                 "Schritt 1 erneut ausfuehren.")
             return
+
+        # Sicherung gegen Doppel-Verarbeitung: dieselbe Rechnungsnummer zweimal
+        # im aktuellen Pool ODER laut Statistik-Historie schon einmal in einem
+        # frueheren Schritt-2-Lauf verarbeitet - beides nur mit EXPLIZITER
+        # Bestaetigung (Vorbelegung "Nein"), sonst kompletter Abbruch (nichts
+        # wird gepackt/exportiert/archiviert).
+        rnr_liste = [r.get("rnr") or "" for r, _ in paare]
+        doppelt_intern = carrier_statistik.doppelte_im_lauf(rnr_liste)
+        doppelt_historie = carrier_statistik.bereits_verarbeitet(rnr_liste)
+        if doppelt_intern or doppelt_historie:
+            warnung = ["MÖGLICHE DOPPEL-VERARBEITUNG ERKANNT:", ""]
+            if doppelt_intern:
+                warnung.append("Rechnungsnummer(n) mehrfach im aktuellen Pool:")
+                warnung += ["  %s (%dx)" % (rnr, n) for rnr, n in sorted(doppelt_intern.items())]
+                warnung.append("")
+            if doppelt_historie:
+                warnung.append("Rechnungsnummer(n) laut Statistik bereits früher verarbeitet:")
+                warnung += ["  %s (zuletzt %s)" % (rnr, max(daten))
+                            for rnr, daten in sorted(doppelt_historie.items())]
+                warnung.append("")
+            warnung.append("Trotzdem mit Schritt 2 fortfahren?")
+            if not messagebox.askyesno("Carrier-Dashboard - Doppel-Verarbeitung?",
+                                       "\n".join(warnung), icon="warning",
+                                       default=messagebox.NO):
+                return
+
         ausgabe_ordner = AUSGABE_ORDNER
         archiv_ordner = ARCHIV_ORDNER
         carrier_ordner = CARRIER_EXPORT_ORDNER

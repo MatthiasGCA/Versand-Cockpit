@@ -17,13 +17,20 @@ einzelnen PC (Faktura-PC) gebunden.
 Das Loggen ist ein Nice-to-have und darf den eigentlichen Export/die
 Archivierung NIE blockieren - log_lauf() faengt Schreibfehler (z.B.
 Netzlaufwerk kurz nicht erreichbar) ab und wirft keine Exception.
+
+Doppel-Verarbeitung: doppelte_im_lauf() findet Rechnungsnummern, die
+MEHRFACH im selben Pool vorkommen (zwei Dateien, gleiche Nummer);
+bereits_verarbeitet() findet Rechnungsnummern, die laut Artikel-Statistik-CSV
+schon in einem FRUEHEREN Schritt-2-Lauf verarbeitet wurden. Beides nutzt
+carrier_dashboard.py, um vor einer moeglichen Doppel-Verarbeitung eine
+explizite Bestaetigung zu verlangen (siehe dortige starte_export()).
 """
 
 import os
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime
 
-VERSION = "2026-09-23b"
+VERSION = "2026-09-23c"
 
 STATISTIK_DATEI = r"\\DESKTOP-N2H75H\Netzwerk\Paketscheine\carrier_statistik.csv"
 ARTIKEL_STATISTIK_DATEI = r"\\DESKTOP-N2H75H\Netzwerk\Paketscheine\artikel_statistik.csv"
@@ -107,6 +114,32 @@ def log_artikel(rechnungen, pfad=ARTIKEL_STATISTIK_DATEI, jetzt=None):
     except OSError:
         return 0
     return len(rechnungen)
+
+
+def doppelte_im_lauf(rnr_liste):
+    """{rnr: anzahl} fuer jede Rechnungsnummer, die MEHRFACH (mit
+    unterschiedlichen Dateien) in derselben rnr_liste vorkommt (anzahl > 1).
+    Leere/None-Werte werden ignoriert. rnr_liste darf Duplikate enthalten -
+    typischerweise die rnr aller Rechnungen EINES Schritt-2-Laufs."""
+    z = Counter(r for r in rnr_liste if r)
+    return {rnr: n for rnr, n in z.items() if n > 1}
+
+
+def bereits_verarbeitet(rnr_liste, pfad=ARTIKEL_STATISTIK_DATEI):
+    """{rnr: [Datum, ...]} fuer jede Rechnungsnummer aus rnr_liste, die laut
+    Artikel-Statistik-CSV schon in einem FRUEHEREN Schritt-2-Lauf verarbeitet
+    wurde (ein oder mehrere Daten, falls mehrfach). Nur Rechnungsnummern, die
+    tatsaechlich in der Historie auftauchen, sind im Ergebnis enthalten. Faengt
+    nur Laeufe ab dem Einfuehrungsdatum dieser Statistik (2026-09-23) - keine
+    rueckwirkende Erkennung fuer aeltere, schon vorher verarbeitete Rechnungen."""
+    gesucht = {r for r in rnr_liste if r}
+    if not gesucht:
+        return {}
+    treffer = defaultdict(list)
+    for t in _lies_artikel(pfad):
+        if t[1] in gesucht:
+            treffer[t[1]].append(t[0])
+    return dict(treffer)
 
 
 def _lies(pfad):
@@ -344,6 +377,21 @@ def selftest():
         text2 = statistik_text(pfad, artikel_pfad, jahr=2026)
         check("statistik_text: enthaelt Artikel-Block", "Artikel-Statistik" in text2, True)
         check("statistik_text: Bestellungen im Text", "Bestellungen:      3" in text2, True)
+
+        # --- Doppel-Verarbeitung --------------------------------------------
+        check("doppelte_im_lauf(): keine Duplikate", doppelte_im_lauf(["A", "B", "C"]), {})
+        check("doppelte_im_lauf(): eine rnr 3x, leere Werte ignoriert",
+              doppelte_im_lauf(["A", "B", "A", "", None, "A"]), {"A": 3})
+
+        # artikel_pfad enthaelt bereits 1705500/1705501 (Maerz) und 1705600 (August),
+        # jeweils 2026 - genau die Faelle fuer bereits_verarbeitet()
+        check("bereits_verarbeitet(): bekannte rnr gefunden",
+              bereits_verarbeitet(["1705500", "9999999"], artikel_pfad),
+              {"1705500": ["2026-03-10"]})
+        check("bereits_verarbeitet(): unbekannte rnr -> leeres dict",
+              bereits_verarbeitet(["9999999"], artikel_pfad), {})
+        check("bereits_verarbeitet(): leere Liste -> leeres dict, kein Datei-Zugriff noetig",
+              bereits_verarbeitet([], artikel_pfad), {})
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

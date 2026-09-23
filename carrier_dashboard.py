@@ -46,7 +46,7 @@ from tkinter import messagebox, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-09-22c"
+VERSION = "2026-09-23a"
 
 # Fenster-/Taskleisten-Symbol (siehe gui() unten) - liegt im selben Ordner
 # wie dieses Skript, damit es unveraendert auch nach einem Umzug funktioniert.
@@ -228,6 +228,7 @@ def gui():
     rechnungen_roh = []
     q = queue.Queue()
     laeuft = {"an": False}
+    export_info = {"uebersprungen": 0}
 
     # --- Kopf: Pool-Ordner (fest, nur zur Information) + Zaehler -------------
     # Die Ordner sind bewusst NICHT hier waehlbar, siehe Modul-Kopf/Konstanten
@@ -393,7 +394,12 @@ def gui():
     def starte_export():
         if laeuft["an"]:
             return
+        import carrier_export
         paare = [(r, b) for r, b in zip(rechnungen_roh, ergebnisse) if r is not None]
+        # Rechnungen, deren PDF gar nicht erst gelesen werden konnte (kein Positionen
+        # erkannt / PDF nicht lesbar) - die werden von Schritt 2 komplett uebersprungen
+        # (nicht gepackt, nicht archiviert) und bleiben unveraendert im Pool liegen.
+        uebersprungen = [b for r, b in zip(rechnungen_roh, ergebnisse) if r is None]
         if not paare:
             messagebox.showinfo("Carrier-Dashboard",
                                 "Keine gueltigen Rechnungen zum Verarbeiten - bitte zuerst "
@@ -411,21 +417,30 @@ def gui():
                                  "im Quelltext (carrier_dashboard.py, Kopf) korrigieren.")
             return
         n_fehler = sum(1 for _, b in paare if b["status"] == "fehler")
-        stamp = datetime.now().strftime("%Y-%m-%d_%H%M")
-        ausgabe_pfad = os.path.join(ausgabe_ordner, "Pickliste_%s.pdf" % stamp)
+        os.makedirs(ausgabe_ordner, exist_ok=True)
+        # Sekundengenauer, kollisionssicherer Dateiname (dateiname() haengt bei
+        # Bedarf _2/_3/... an) - eine Minute allein reichte nicht aus und liess
+        # zwei Laeufe binnen derselben Minute die vorige Pickliste ueberschreiben.
+        ausgabe_pfad = carrier_export.dateiname(ausgabe_ordner, "Pickliste", ext="pdf")
         hinweis_fehler = ("\n\n%d davon werden zwar gepackt, aber NICHT in eine "
                           "Carrier-CSV geschrieben (Zuordnungsfehler, siehe Tabelle) - "
                           "diese muessen manuell nachbearbeitet werden." % n_fehler
                           ) if n_fehler else ""
-        frage = ("%d Rechnung(en) werden verarbeitet:%s\n\n"
+        hinweis_uebersprungen = ("\n\n%d Rechnung(en) konnten gar nicht gelesen werden "
+                                 "(siehe Fehlermeldung in der Tabelle) und werden JETZT NICHT "
+                                 "gepackt oder verschoben - sie bleiben unveraendert im "
+                                 "Pool-Ordner liegen und muessen manuell geprueft werden."
+                                 % len(uebersprungen)) if uebersprungen else ""
+        frage = ("%d Rechnung(en) werden verarbeitet:%s%s\n\n"
                 "Pickliste + Bruecken-CSVs -> %s\n"
                 "Carrier-CSVs -> %s\n"
                 "Die eingelesenen PDFs werden anschliessend NACH %s VERSCHOBEN "
                 "(nicht kopiert).\n\nJetzt ausfuehren?"
-                % (len(paare), hinweis_fehler, ausgabe_ordner, carrier_ordner,
-                   archiv_ordner or "(nicht archiviert)"))
+                % (len(paare), hinweis_fehler, hinweis_uebersprungen, ausgabe_ordner,
+                   carrier_ordner, archiv_ordner or "(nicht archiviert)"))
         if not messagebox.askyesno("Carrier-Dashboard", frage):
             return
+        export_info["uebersprungen"] = len(uebersprungen)
         laeuft["an"] = True
         btn_zuordnen.configure(state="disabled")
         btn_export.configure(state="disabled")
@@ -460,6 +475,9 @@ def gui():
                         zeilen.append("NICHT archiviert (%d): %s" %
                                       (len(bericht["archiv_fehler"]),
                                        "; ".join(bericht["archiv_fehler"])))
+                    if export_info["uebersprungen"]:
+                        zeilen.append("UEBERSPRUNGEN (PDF nicht lesbar, liegen noch im "
+                                      "Pool): %d" % export_info["uebersprungen"])
                     if bericht["carrier_dateien"]:
                         zeilen.append("")
                         zeilen.append("Carrier-CSVs:")

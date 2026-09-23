@@ -34,7 +34,7 @@ strikt). Alle Grenzen stehen unten als Konstanten.
 import html
 import re
 
-VERSION = "2026-09-21a"
+VERSION = "2026-09-23a"
 
 # --- Gewichtsgrenzen in kg (Klasse gilt bei Gewicht STRIKT UNTER der Grenze) -----
 G_BRIEF = 0.05
@@ -104,11 +104,18 @@ def bereinige(s):
     """Text fuer einen CSV-Export saeubern: HTML-Entities aufloesen (real im
     Amicron-Export gesehen: '&#34;' im Firmennamen - das enthaltene Semikolon
     zerriss die Zeile und verschob alle Folgespalten), Semikolons und
-    Steuerzeichen entfernen, Leerraum zusammenfassen."""
+    Steuerzeichen entfernen, Leerraum zusammenfassen. Beginnt das Ergebnis mit
+    einem Formel-Ausloeser (=, +, -, @), wird ein Apostroph vorangestellt -
+    schuetzt vor CSV-/Formel-Injection, falls jemand die Export-Datei zur
+    Kontrolle in Excel oeffnet (Namen/Adressen stammen letztlich aus
+    Kundeneingaben im Onlineshop)."""
     s = html.unescape(s or "")
     s = s.replace(";", ",")
     s = re.sub(r"[\x00-\x1f\x7f]", " ", s)
-    return re.sub(r"\s+", " ", s).strip()
+    s = re.sub(r"\s+", " ", s).strip()
+    if s and s[0] in "=+-@":
+        s = "'" + s
+    return s
 
 
 def _norm_land(txt):
@@ -422,6 +429,9 @@ def selftest():
                             "Am Stadion 1", "06242 Braunsbedra"])
     check("HTML-Entity/Semikolon bereinigt", ";" in a["name"] or "&#" in a["name"], False)
     check("bereinige Semikolon", bereinige("A; B"), "A, B")
+    check("bereinige Formel-Injection =", bereinige("=HYPERLINK(\"x\")"), "'=HYPERLINK(\"x\")")
+    check("bereinige Formel-Injection @", bereinige("@SUM(1)"), "'@SUM(1)")
+    check("bereinige normaler Name unveraendert", bereinige("Müller GmbH"), "Müller GmbH")
 
     # Rechnung komplett (wie parse_pdf sie liefert)
     r = {"rnr": "1705050", "datei": "x.pdf", "sendungsgewicht": 0.34,

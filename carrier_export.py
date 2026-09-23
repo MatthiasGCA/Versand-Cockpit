@@ -11,7 +11,7 @@ Exportiert wird NUR, was carrier_dashboard.py als nicht blockiert einstuft
 (status != "fehler") UND eine Carrier-Zuordnung hat - siehe exportiere().
 
 Dateinamen (mit Matthias abgestimmt, 2026-09-22): <Praefix>_<JJJJ-MM-TT>_<HHMM>.csv,
-z.B. DHL_2026-09-22_1610.csv, Post_Brief_Ausland_2026-09-22_1610.csv. Jeder Lauf
+z.B. DHL_2026-09-22_161000.csv, Post_Brief_Ausland_2026-09-22_161000.csv. Jeder Lauf
 legt neue Dateien an (Zeitstempel im Namen) - nichts wird ueberschrieben oder
 gemergt. Eine leere Gruppe erzeugt keine Datei.
 
@@ -45,7 +45,7 @@ from datetime import datetime
 
 import carrier_regeln as regeln
 
-VERSION = "2026-09-22a"
+VERSION = "2026-09-23a"
 
 # ---------------------------------------------------------------------------
 # Absenderdaten (fest - aus den Musterdateien uebernommen; DHL/DPD nutzen
@@ -124,7 +124,10 @@ def _dhl_dpd_zeile(b, ist_dpd):
 
 
 def _post_zeile(a, rnr):
-    zusatz = "; ".join(a.get("zusatz") or [])
+    # ", " statt "; " - ein rohes Semikolon im Feldwert ist genau das Muster,
+    # das bereinige() im Rest der Datei bewusst vermeidet (siehe dortiger
+    # Kommentar zur zerrissenen Zeile durch ein Semikolon im Firmennamen).
+    zusatz = ", ".join(a.get("zusatz") or [])
     return [a["name"], zusatz, a["strasse"], a["hausnr"], a["plz"], a["ort"],
             a["land"], "HOUSE", rnr]
 
@@ -135,16 +138,32 @@ def _post_absenderzeile():
             ap["ort"], ap["land"], "HOUSE", ""]
 
 
-def dateiname(ziel_ordner, praefix, jetzt=None):
-    stamp = (jetzt or datetime.now()).strftime("%Y-%m-%d_%H%M")
-    return os.path.join(ziel_ordner, "%s_%s.csv" % (praefix, stamp))
+def dateiname(ziel_ordner, praefix, jetzt=None, ext="csv"):
+    """Eindeutiger Pfad <Praefix>_<JJJJ-MM-TT>_<HHMMSS>.<ext> in ziel_ordner.
+    Sekundengenauer Stempel PLUS Kollisions-Suffix (_2, _3, ...), falls im
+    Ordner schon eine Datei mit demselben Stempel liegt (z.B. zwei Laeufe
+    binnen derselben Sekunde) - vorher reichte die Minute (HHMM) allein nicht,
+    ein zweiter Lauf in derselben Minute hat eine bereits geschriebene Datei
+    (Carrier-CSV oder Pickliste) still ueberschrieben."""
+    stamp = (jetzt or datetime.now()).strftime("%Y-%m-%d_%H%M%S")
+    basis = "%s_%s" % (praefix, stamp)
+    pfad = os.path.join(ziel_ordner, "%s.%s" % (basis, ext))
+    n = 2
+    while os.path.exists(pfad):
+        pfad = os.path.join(ziel_ordner, "%s_%d.%s" % (basis, n, ext))
+        n += 1
+    return pfad
 
 
 def _schreibe_csv(pfad, header, zeilen):
     # ISO-8859-1/CRLF wie die Amicron-Musterdateien; errors="replace" als
     # letzte Sicherung, falls ein Zeichen ausserhalb Latin-1 durchrutscht -
     # der eigentliche Hinweis dazu kommt schon aus analysiere_adresse().
-    with open(pfad, "w", encoding="iso-8859-1", errors="replace", newline="") as f:
+    # "x" statt "w": dateiname() liefert zwar bereits einen freien Pfad, aber
+    # "x" schlaegt hart fehl statt eine inzwischen doch vorhandene Datei
+    # stillschweigend zu ueberschreiben (Restrisiko bei zwei Laeufen exakt
+    # zeitgleich).
+    with open(pfad, "x", encoding="iso-8859-1", errors="replace", newline="") as f:
         w = csv.writer(f, delimiter=";", lineterminator="\r\n")
         w.writerow(header)
         for z in zeilen:
@@ -274,26 +293,48 @@ def selftest():
         jetzt = datetime(2026, 9, 22, 16, 10)
         geschrieben = exportiere(alle, tmp, jetzt)
         erwartet_dateien = {
-            os.path.join(tmp, "DHL_2026-09-22_1610.csv"): 2,
-            os.path.join(tmp, "DPD_2026-09-22_1610.csv"): 2,
-            os.path.join(tmp, "Post_Brief_Inland_2026-09-22_1610.csv"): 1,
-            os.path.join(tmp, "Post_Grossbrief_Ausland_2026-09-22_1610.csv"): 1,
+            os.path.join(tmp, "DHL_2026-09-22_161000.csv"): 2,
+            os.path.join(tmp, "DPD_2026-09-22_161000.csv"): 2,
+            os.path.join(tmp, "Post_Brief_Inland_2026-09-22_161000.csv"): 1,
+            os.path.join(tmp, "Post_Grossbrief_Ausland_2026-09-22_161000.csv"): 1,
         }
         check("exportiere(): erzeugte Dateien+Zeilenzahl", geschrieben, erwartet_dateien)
         check("exportiere(): keine Post_Brief_Ausland-Datei (leere Gruppe)",
-              os.path.exists(os.path.join(tmp, "Post_Brief_Ausland_2026-09-22_1610.csv")), False)
-        with open(os.path.join(tmp, "DHL_2026-09-22_1610.csv"), encoding="iso-8859-1") as f:
+              os.path.exists(os.path.join(tmp, "Post_Brief_Ausland_2026-09-22_161000.csv")), False)
+        with open(os.path.join(tmp, "DHL_2026-09-22_161000.csv"), encoding="iso-8859-1") as f:
             check("exportiere(): fehlerhafte Rechnung nicht exportiert",
                   "1700099" not in f.read(), True)
-        with open(os.path.join(tmp, "DHL_2026-09-22_1610.csv"), encoding="iso-8859-1", newline="") as f:
+        with open(os.path.join(tmp, "DHL_2026-09-22_161000.csv"), encoding="iso-8859-1", newline="") as f:
             rows = list(csv.reader(f, delimiter=";"))
         check("DHL-Datei: Header + 2 Datenzeilen", len(rows), 3)
         check("DHL-Datei: Header exakt", rows[0], DHL_DPD_SPALTEN)
-        with open(os.path.join(tmp, "Post_Grossbrief_Ausland_2026-09-22_1610.csv"),
+        with open(os.path.join(tmp, "Post_Grossbrief_Ausland_2026-09-22_161000.csv"),
                   encoding="iso-8859-1", newline="") as f:
             rows = list(csv.reader(f, delimiter=";"))
         check("Post-Datei: Absenderzeile zuerst", rows[1][0], "Gasecenter Augsburg")
         check("Post-Datei: 1 Absender + 1 Rechnung", len(rows), 3)
+
+        # dateiname(): zwei Aufrufe mit demselben Zeitstempel (zwei Laeufe binnen
+        # derselben Sekunde) duerfen NIE denselben Pfad liefern - siehe Kollisions-
+        # Suffix in dateiname(). Vorher (nur HHMM) waere das ueberschrieben worden.
+        tmp2 = os.path.join(tmp, "kollision")
+        os.makedirs(tmp2)
+        p1 = dateiname(tmp2, "DHL", jetzt)
+        open(p1, "w").close()
+        p2 = dateiname(tmp2, "DHL", jetzt)
+        check("dateiname(): Kollision bekommt eigenen Pfad", p1 != p2, True)
+        check("dateiname(): Kollisions-Suffix", os.path.basename(p2), "DHL_2026-09-22_161000_2.csv")
+        check("dateiname(): ext-Parameter (z.B. fuer Pickliste-PDF)",
+              os.path.basename(dateiname(tmp2, "Pickliste", jetzt, ext="pdf")),
+              "Pickliste_2026-09-22_161000.pdf")
+
+        # _post_zeile(): Zusatz-Trenner darf KEIN Semikolon enthalten (Finding:
+        # "; " zerriss die Post-CSV-Zeile genau wie das &#34;-Beispiel oben).
+        a_zwei_zusatz = regeln.analysiere_adresse(
+            ["Firma AB", "c/o Mueller", "Zweigstelle Nord", "Hauptstr. 1", "12345 Ort"])
+        zp2 = _post_zeile(a_zwei_zusatz, "1700100")
+        check("Post-Zusatz: kein Semikolon im Feld", ";" in zp2[1], False)
+        check("Post-Zusatz: mit Komma verbunden", zp2[1], "c/o Mueller, Zweigstelle Nord")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

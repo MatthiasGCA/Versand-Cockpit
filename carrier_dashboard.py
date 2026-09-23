@@ -50,7 +50,12 @@ Carrier-CSVs tatsaechlich geschrieben und die eingelesenen PDFs archiviert.
       tragen dieselbe Rechnungsnummer als Sendungsreferenz). Die Pickliste
       bleibt unveraendert (EIN Packvorgang) - die Pakete werden vorab manuell
       gepackt/gewogen, die Software muss nicht wissen, welcher Artikel in
-      welches Paket kommt.
+      welches Paket kommt. Zusaetzlich AUTOMATISCH (kein Knopfdruck noetig):
+      Artikel mit der Markierung "<N>-je-Paket" (packliste.JE_PAKET_RE) werden
+      von carrier_regeln.je_paket_aufteilung() eigenstaendig auf mehrere
+      DHL-Pakete verteilt (gleichmaessig, inkl. Fach-Artikel-Faktor), sofern
+      die Rechnung ausschliesslich diesen einen Artikel enthaelt - siehe
+      carrier_regeln.py Modulkopf.
   Schritt 4 (spaeter, optional): Warnung in scan_druck.py bei Carrier-
       Abweichung zwischen Label und dieser Zuordnung.
 
@@ -84,7 +89,7 @@ from tkinter import messagebox, simpledialog, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-09-23k"
+VERSION = "2026-09-23l"
 
 # Fenster-/Taskleisten-Symbol (siehe gui() unten) - liegt im selben Ordner
 # wie dieses Skript, damit es unveraendert auch nach einem Umzug funktioniert.
@@ -331,7 +336,8 @@ def _fehlerzeile(datei, text, rnr=""):
     adr = regeln.analysiere_adresse([])
     return {"rnr": rnr, "datei": datei, "adresse": adr, "kennungen": [],
             "gewicht": None, "carrier": None, "ausland": False, "grund": "",
-            "fehler": [text], "hinweise": [], "status": "fehler", "quelle": ""}
+            "fehler": [text], "hinweise": [], "status": "fehler", "quelle": "",
+            "pakete": None}
 
 
 def zaehle(ergebnisse):

@@ -29,12 +29,19 @@ DPD waere, geht per DHL. Deutsche Post Brief/Grossbrief gibt es fuer Inland UND
 Ausland (getrennte CSV-Dateien, siehe carrier_dashboard.py).
 Grenzwert selbst (z.B. genau 1,1 kg) gehoert zur HOEHEREN Klasse ("unter" gilt
 strikt). Alle Grenzen stehen unten als Konstanten.
+
+DHL-Maximalgewicht G_DHL_MAX (31,5 kg): darueber blockiert ein Fehler den
+Export. "<N>-je-Paket"-markierte Artikel (packliste.JE_PAKET_RE, 2026-09-23)
+werden davon automatisch ausgenommen: je_paket_aufteilung() teilt eine
+Rechnung mit GENAU EINEM so markierten Artikel automatisch in mehrere
+DHL-Pakete auf (gleichmaessig verteilt, inkl. Fach-Artikel-Faktor fuer z.B.
+einen schweren "2-Fach-Artikel"-Doppelpack mit "1-je-Paket").
 """
 
 import html
 import re
 
-VERSION = "2026-09-23e"
+VERSION = "2026-09-23f"
 
 # --- Gewichtsgrenzen in kg (Klasse gilt bei Gewicht STRIKT UNTER der Grenze) -----
 G_BRIEF = 0.05
@@ -376,6 +383,65 @@ def kennungen_der_rechnung(r):
     return kenn
 
 
+def _ist_versandposition(p):
+    """Lokale Kopie von packliste.ist_versand() - carrier_regeln.py bleibt
+    bewusst frei von PDF-Abhaengigkeiten (siehe Modulkopf), deshalb hier
+    dupliziert statt importiert. Bei Aenderungen an packliste.ist_versand()
+    HIER NACHZIEHEN."""
+    art, bez = p.get("art"), p.get("bez")
+    if "versandkosten" in (bez or "").lower():
+        return True
+    if not art and not (bez or "").strip():
+        return True
+    return False
+
+
+def je_paket_aufteilung(r, gewicht):
+    """(pakete|None, grund_zusatz|None) - automatische Paketaufteilung fuer
+    eine Rechnung mit GENAU EINER echten Position, die mit "<N>-je-Paket"
+    markiert ist (siehe packliste.JE_PAKET_RE, mit Matthias abgestimmt
+    2026-09-23). Die effektive Stueckzahl (Menge * Fach-Artikel-Faktor -
+    deckt z.B. einen als "2-Fach-Artikel" gefuehrten schweren Doppelpack ab,
+    der dann IMMER auf 2 Pakete aufgeteilt wird) wird moeglichst GLEICHMAESSIG
+    auf so viele Pakete verteilt, dass keins mehr als N Stueck enthaelt (z.B.
+    4 Kartons bei "3-je-Paket" -> 2+2, nicht 3+1). Das Gewicht je Paket wird
+    aus dem Rechnungs-Sendungsgewicht abgeleitet (gewicht / effektive
+    Stueckzahl) - setzt voraus, dass die Rechnung AUSSCHLIESSLICH diesen
+    einen Artikel enthaelt (Versandkosten-Zeilen zaehlen nicht mit), sonst
+    laesst sich das Gewicht nicht zuverlaessig zuordnen.
+
+    (None, None), wenn keine automatische Aufteilung anwendbar/noetig ist -
+    u.a. wenn ein Einzelpaket dabei selbst ueber dem DHL-Maximalgewicht laege
+    (echter Speditionsfall, keine automatische Loesung moeglich). Dann greift
+    weiterhin die normale Gewichtspruefung in bestimme_carrier() plus ggf.
+    "Paket aufteilen" von Hand im Dashboard."""
+    positionen = [p for p in (r.get("positionen") or []) if not _ist_versandposition(p)]
+    if len(positionen) != 1:
+        return None, None
+    p = positionen[0]
+    je_paket = p.get("je_paket")
+    menge = p.get("menge")
+    if not je_paket or je_paket < 1 or not menge or menge <= 0:
+        return None, None
+    if gewicht is None or gewicht <= 0:
+        return None, None
+    if abs(menge - round(menge)) > 1e-6:
+        return None, None            # keine ganzzahlige Menge - Sonderfall
+    effektiv = int(round(menge)) * (p.get("fach") or 1)
+    n_pakete = (effektiv + je_paket - 1) // je_paket     # aufgerundete Ganzzahl-Division
+    if n_pakete <= 1:
+        return None, None            # passt ohnehin in ein Paket
+    basis, rest = divmod(effektiv, n_pakete)
+    stueckzahlen = [basis + 1] * rest + [basis] * (n_pakete - rest)
+    stueckgewicht = gewicht / effektiv
+    pakete = [s * stueckgewicht for s in stueckzahlen]
+    if any(g > G_DHL_MAX for g in pakete):
+        return None, None            # selbst aufgeteilt zu schwer fuer DHL
+    grund_zusatz = ("%d-je-Paket (%s) → automatisch %d Pakete"
+                    % (je_paket, p.get("art") or "?", n_pakete))
+    return pakete, grund_zusatz
+
+
 def bewerte_rechnung(r):
     """Ergebnis-dict fuer eine geparste Rechnung (siehe carrier_dashboard.py).
     status: 'ok' | 'warn' (Hinweise, Export moeglich) | 'fehler' (blockiert)."""
@@ -391,6 +457,16 @@ def bewerte_rechnung(r):
     carrier, grund, f2, h2 = bestimme_carrier(kenn, gewicht, adr["land"], adr["packstation"])
     fehler += f2
     hinweise += h2
+    # "<N>-je-Paket"-markierte Artikel (siehe je_paket_aufteilung()) automatisch
+    # in mehrere DHL-Pakete aufteilen - loest dabei ggf. den Uebergewichts-
+    # Fehler, den bestimme_carrier() oben anhand des GESAMTgewichts gesetzt
+    # hat (der einzelne Pakete koennten ja problemlos unter dem Limit liegen).
+    pakete = None
+    if carrier == DHL:
+        pakete, je_paket_grund = je_paket_aufteilung(r, gewicht)
+        if pakete is not None:
+            fehler = [f for f in fehler if "DHL-Maximalgewicht" not in f]
+            grund += ", " + je_paket_grund
     if not (r.get("zeilen_ok", True) and r.get("summe_ok", True)
             and r.get("vollstaendig_ok", True)):
         hinweise.append("Rechnungsprüfung (Beträge/Vollständigkeit) nicht bestanden")
@@ -406,6 +482,7 @@ def bewerte_rechnung(r):
         "kennungen": sorted(kenn), "gewicht": gewicht, "kdnr": kdnr,
         "carrier": carrier, "ausland": bool(adr["land"]) and adr["land"] != "DE",
         "grund": grund, "fehler": fehler, "hinweise": hinweise, "status": status,
+        "pakete": pakete,
     }
 
 
@@ -595,6 +672,79 @@ def selftest():
           (DHL, "warn"))
     check("Rechnung 1705540 -> Kleinpaket-Hinweis dabei",
           "Achtung bei DHL auf Kleinpaket abändern" in b6["hinweise"], True)
+
+    # --- "<N>-je-Paket" automatische Paketaufteilung (2026-09-23, mit
+    # Matthias abgestimmt: Doppelpack-Artikel IMMER einzeln, Kartons-Artikel
+    # zu mehreren buendelbar, aber gleichmaessig statt gierig aufgeteilt) ---
+    def _pos(art, menge, je_paket=None, fach=None, bez="Artikel"):
+        return {"art": art, "bez": bez, "menge": menge, "kennungen": ["pax1"],
+                "lagerorte": [], "fach": fach, "je_paket": je_paket}
+
+    r_doppelpack = {"rnr": "1700900", "datei": "x.pdf", "sendungsgewicht": 40.0,
+                    "adresse_zeilen": ["A B", "Weg 1", "12345 Ort"],
+                    "positionen": [_pos("DP1", 1.0, je_paket=1, fach=2, bez="Schwerer Doppelpack")],
+                    "zeilen_ok": True, "summe_ok": True, "vollstaendig_ok": True}
+    b_dp = bewerte_rechnung(r_doppelpack)
+    check("Doppelpack (1-je-Paket, 2-Fach-Artikel) -> automatisch 2 Pakete",
+          b_dp.get("pakete"), [20.0, 20.0])
+    check("Doppelpack -> kein Uebergewichts-Fehler mehr (jedes Paket 20 kg)",
+          b_dp["fehler"], [])
+    check("Doppelpack -> Grund nennt die Aufteilung", "je-Paket" in b_dp["grund"], True)
+
+    # Kartons-Artikel, "3-je-Paket": 4 Kartons -> 2+2 (nicht 3+1), auch wenn
+    # das Gesamtgewicht (hier klein) gar keinen Fehler ausgeloest haette.
+    r_4kartons = {"rnr": "1700901", "datei": "x.pdf", "sendungsgewicht": 8.0,
+                 "adresse_zeilen": ["A B", "Weg 1", "12345 Ort"],
+                 "positionen": [_pos("KA1", 4.0, je_paket=3, bez="Karton-Artikel")],
+                 "zeilen_ok": True, "summe_ok": True, "vollstaendig_ok": True}
+    # sendungsgewicht=8,0 kg / 4 Kartons = 2,0 kg/Karton -> Stueckzahlen [2,2]
+    # (gleichmaessig, NICHT [3,1]) -> Paketgewichte je 2x2,0 kg = [4.0, 4.0]
+    check("4 Kartons bei 3-je-Paket -> 2+2 Stueck (gleichmaessig, nicht 3+1)",
+          bewerte_rechnung(r_4kartons)["pakete"], [4.0, 4.0])
+
+    r_6kartons = dict(r_4kartons, rnr="1700902",
+                      positionen=[_pos("KA1", 6.0, je_paket=3, bez="Karton-Artikel")],
+                      sendungsgewicht=12.0)
+    # 12,0 kg / 6 Kartons = 2,0 kg/Karton, Stueckzahlen [3,3] -> [6.0, 6.0]
+    check("6 Kartons bei 3-je-Paket -> 3+3 Stueck", bewerte_rechnung(r_6kartons)["pakete"],
+          [6.0, 6.0])
+
+    r_5kartons = dict(r_4kartons, rnr="1700903",
+                      positionen=[_pos("KA1", 5.0, je_paket=3, bez="Karton-Artikel")],
+                      sendungsgewicht=10.0)
+    # 10,0 kg / 5 Kartons = 2,0 kg/Karton, Stueckzahlen [3,2] -> [6.0, 4.0]
+    check("5 Kartons bei 3-je-Paket -> 3+2 Stueck", bewerte_rechnung(r_5kartons)["pakete"],
+          [6.0, 4.0])
+
+    r_3kartons = dict(r_4kartons, rnr="1700904",
+                      positionen=[_pos("KA1", 3.0, je_paket=3, bez="Karton-Artikel")],
+                      sendungsgewicht=6.0)
+    check("3 Kartons bei 3-je-Paket -> passt in 1 Paket, keine Aufteilung",
+          bewerte_rechnung(r_3kartons)["pakete"], None)
+
+    # Mischbestellung (Einzelversand-Artikel + weiterer echter Artikel) -> KEINE
+    # automatische Aufteilung, da sich das Gesamtgewicht nicht zuverlaessig
+    # zuordnen laesst.
+    r_misch = {"rnr": "1700905", "datei": "x.pdf", "sendungsgewicht": 45.0,
+              "adresse_zeilen": ["A B", "Weg 1", "12345 Ort"],
+              "positionen": [_pos("DP1", 1.0, je_paket=1, fach=2, bez="Doppelpack"),
+                            _pos("K2", 1.0, bez="Kleinteil")],
+              "zeilen_ok": True, "summe_ok": True, "vollstaendig_ok": True}
+    b_misch = bewerte_rechnung(r_misch)
+    check("Mischbestellung mit je-Paket-Artikel -> KEINE Auto-Aufteilung",
+          b_misch.get("pakete"), None)
+    check("Mischbestellung -> bleibt reeller Uebergewichts-Fehler (45 kg > 31,5 kg)",
+          bool(b_misch["fehler"]), True)
+
+    # Selbst aufgeteilt noch zu schwer fuer DHL -> keine automatische Loesung,
+    # bleibt Fehler (echter Speditionsfall).
+    r_zuschwer = {"rnr": "1700906", "datei": "x.pdf", "sendungsgewicht": 100.0,
+                 "adresse_zeilen": ["A B", "Weg 1", "12345 Ort"],
+                 "positionen": [_pos("DP1", 1.0, je_paket=1, fach=2, bez="Riesending")],
+                 "zeilen_ok": True, "summe_ok": True, "vollstaendig_ok": True}
+    b_zuschwer = bewerte_rechnung(r_zuschwer)
+    check("Auch aufgeteilt (50+50 kg) noch ueber DHL-Maximalgewicht -> Fehler bleibt",
+          (b_zuschwer.get("pakete"), bool(b_zuschwer["fehler"])), (None, True))
 
     if n_fail:
         print("SELBSTTEST FEHLGESCHLAGEN (%d von %d):" % (len(n_fail), n_ok + len(n_fail)))

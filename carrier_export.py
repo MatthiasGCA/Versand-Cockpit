@@ -47,7 +47,7 @@ from datetime import datetime
 
 import carrier_regeln as regeln
 
-VERSION = "2026-09-23d"
+VERSION = "2026-09-23e"
 
 # ---------------------------------------------------------------------------
 # Absenderdaten (fest - aus den Musterdateien uebernommen; DHL/DPD nutzen
@@ -132,11 +132,12 @@ def _dhl_dpd_zeile(b, ist_dpd, gewicht=None):
 
 def _dhl_zeilen(b):
     """Eine ODER MEHRERE DHL-Zeilen fuer b: normalerweise eine mit dem
-    Gesamtgewicht, bei manuell aufgeteilten Sendungen (b["pakete"], siehe
-    carrier_dashboard.paket_aufteilen() - Grund: Sendung war ueber dem
-    DHL-Maximalgewicht) eine Zeile PRO PAKET mit dem jeweiligen vorab
-    gewogenen Einzelgewicht - keine Obergrenze fuer die Paketanzahl (auch
-    sehr schwere Sendungen, die selbst in zwei Pakete a 31,5 kg nicht mehr
+    Gesamtgewicht, bei aufgeteilten Sendungen (b["pakete"] - entweder manuell
+    via carrier_dashboard.paket_aufteilen() bei Uebergewicht, oder automatisch
+    via carrier_regeln.je_paket_aufteilung() fuer "<N>-je-Paket"-markierte
+    Artikel) eine Zeile PRO PAKET mit dem jeweiligen Einzelgewicht - keine
+    Obergrenze fuer die Paketanzahl (auch sehr schwere Sendungen, die selbst
+    in zwei Pakete a 31,5 kg nicht mehr
     passen, z.B. Rechnung 1705548 mit 70,4 kg -> 3 Pakete noetig). Alle
     Pakete tragen bewusst DIESELBE Sendungsreferenz (Rechnungsnummer) - mit
     Matthias abgestimmt 2026-09-23, sein DHL-Geschaeftskundenportal

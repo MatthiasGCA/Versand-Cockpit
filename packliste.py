@@ -67,7 +67,15 @@ from reportlab.graphics.shapes import Drawing
 # KONFIGURATION
 # ----------------------------------------------------------------------------
 
-VERSION = "2026-09-23a"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+VERSION = "2026-09-23b"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+# 2026-09-23b: Neue Markierungszeile "<N>-je-Paket" (z.B. "1-je-Paket",
+#   "3-je-Paket", JE_PAKET_RE) - wie Lagerort/Fach-Artikel/Kennung eine eigene
+#   linksbuendige Zeile im Positionsblock, NICHT Teil der Bezeichnung. Neues
+#   Feld "je_paket" je Position. Rein additiv (Pickliste/Bruecken-CSVs
+#   unveraendert) - ausgewertet vom Carrier-Dashboard (carrier_regeln.
+#   je_paket_aufteilung()) fuer automatische DHL-Paketaufteilung bei
+#   Artikeln, die aus Gewichtsgruenden nicht beliebig gebuendelt werden
+#   duerfen. Mit Matthias abgestimmt.
 # 2026-09-23a: kdnr-Erkennung priorisiert jetzt WC-Bestellnummer (4-6 Ziffern)
 #   bzw. Amazon-Bestellnummer ("nnn-nnnnnnn-nnnnnnn") vor einem sonstigen
 #   Marktplatz-Namen (z.B. eBay-Name), falls mehrere Fremdbeleg-Zeilen unter
@@ -547,6 +555,19 @@ MULTIPACK_RE = re.compile(r"(\d+(?:,\d+)?)\s*kg-Multipack", re.IGNORECASE)
 # wertet carrier_regeln.py ueber die Lagerort-Werte aus.)
 KENNUNG_RE = re.compile(r"^\s*(pax1|pox1|brx1|wapo)\s*$", re.IGNORECASE)
 
+# "<N>-je-Paket" (z.B. "1-je-Paket", "3-je-Paket"): wie Lagerort/Fach-Artikel/
+# Kennung eine EIGENE, linksbuendige Zeile im Positionsblock - markiert einen
+# Artikel, der aus Gewichts-/Groessengruenden NICHT beliebig in einem
+# DHL-Paket gebuendelt werden darf. N = maximale (effektive, also inkl.
+# Fach-Artikel-Faktor) Stueckzahl je Paket - "1-je-Paket" fuer Artikel, die
+# IMMER einzeln verschickt werden muessen (z.B. ein schwerer 2-Fach-Artikel-
+# Doppelpack -> 2 Pakete), "3-je-Paket" fuer Artikel, die zu bis zu drei
+# Kartons gebuendelt werden koennen. Wird NICHT in die Bezeichnung
+# uebernommen; ausgewertet vom Carrier-Dashboard (carrier_regeln.
+# je_paket_aufteilung()), die Pickliste selbst nutzt sie nicht - mit
+# Matthias abgestimmt 2026-09-23.
+JE_PAKET_RE = re.compile(r"(\d+)-je-Paket", re.IGNORECASE)
+
 
 # ----------------------------------------------------------------------------
 # KATEGORIE-ZUORDNUNG (allein aus dem Lagerort)
@@ -788,6 +809,7 @@ def parse_block(words):
     fach = None
     gewicht = None
     kennungen = []
+    je_paket = None
 
     # Menge / Einzelpreis / G-Preis aus der Hauptzeile (rechts verankert).
     if main:
@@ -864,6 +886,13 @@ def parse_block(words):
             kennungen.append(m_ken.group(1).lower())
             i += 1
             continue
+        m_je_paket = JE_PAKET_RE.search(txt)
+        if m_je_paket:
+            # "<N>-je-Paket"-Zeile: wie Lagerort/Fach-Artikel/Kennung eine
+            # eigene Zeile, NICHT Teil der Bezeichnung - siehe JE_PAKET_RE.
+            je_paket = int(m_je_paket.group(1))
+            i += 1
+            continue
         links = [w for w in sorted(ln, key=lambda w: w["x0"])
                  if w["x0"] < ART_MAX and w["text"] != "."]
         if links and not art_done:                          # erste Positionszeile
@@ -894,6 +923,7 @@ def parse_block(words):
         "fach": fach,
         "gewicht": gewicht,
         "kennungen": kennungen,
+        "je_paket": je_paket,
     }
 
 

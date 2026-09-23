@@ -19,9 +19,10 @@ Carrier-CSVs tatsaechlich geschrieben und die eingelesenen PDFs archiviert.
       mit carrier-status != "fehler" UND zugeordnetem Carrier landen in einer
       Carrier-CSV - alle anderen werden trotzdem gepackt (Pickliste), aber
       NICHT automatisch exportiert (manuelle Nachbearbeitung noetig). Bei
-      jedem Schritt-2-Lauf wird zusaetzlich automatisch eine Kg-Statistik je
-      Carrier mitgeschrieben (carrier_statistik.log_lauf) - Anzeige ueber den
-      Button "Statistik".
+      jedem Schritt-2-Lauf werden zusaetzlich automatisch eine Kg-Statistik je
+      Carrier (carrier_statistik.log_lauf) UND eine Artikelanzahl-Statistik
+      je Bestellung (carrier_statistik.log_artikel) mitgeschrieben - Anzeige
+      ueber den Button "Statistik".
   Schritt 4 (spaeter, optional): Warnung in scan_druck.py bei Carrier-
       Abweichung zwischen Label und dieser Zuordnung.
 
@@ -49,7 +50,7 @@ from tkinter import messagebox, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-09-23b"
+VERSION = "2026-09-23c"
 
 # Fenster-/Taskleisten-Symbol (siehe gui() unten) - liegt im selben Ordner
 # wie dieses Skript, damit es unveraendert auch nach einem Umzug funktioniert.
@@ -153,10 +154,14 @@ def exportiere_alles(rechnungen, ergebnisse, ausgabe_pfad, archiv_ordner, carrie
         rechnungen, os.path.join(out_dir, "wc_bestellnummern.csv"))
 
     carrier_dateien = carrier_export.exportiere(ergebnisse, carrier_ordner)
-    # Kg-Statistik im Hintergrund mitschreiben (Nice-to-have, blockiert bei
-    # Schreibfehlern - z.B. Netzlaufwerk kurz weg - NIE den eigentlichen Export,
-    # siehe carrier_statistik.log_lauf()).
+    # Kg-/Artikel-Statistik im Hintergrund mitschreiben (Nice-to-have, blockiert
+    # bei Schreibfehlern - z.B. Netzlaufwerk kurz weg - NIE den eigentlichen
+    # Export, siehe carrier_statistik.log_lauf()/log_artikel()). Kg nur fuer die
+    # carrier-zugeordneten Rechnungen (dieselbe Basis wie die Carrier-CSVs),
+    # Artikelanzahl fuer ALLE verarbeiteten Rechnungen (ein Adressfehler
+    # aendert nichts an der bestellten Menge).
     kg_geloggt = carrier_statistik.log_lauf(ergebnisse)
+    artikel_geloggt = carrier_statistik.log_artikel(rechnungen)
 
     verschoben, archiv_fehler, archiv_ziel = 0, [], None
     if archiv_ordner:
@@ -165,6 +170,7 @@ def exportiere_alles(rechnungen, ergebnisse, ausgabe_pfad, archiv_ordner, carrie
     return {
         "pickliste": ausgabe_pfad, "anzahl": len(rechnungen), "gruppen": gruppen,
         "wc_neu": wc_neu, "carrier_dateien": carrier_dateien, "kg_geloggt": kg_geloggt,
+        "artikel_geloggt": artikel_geloggt,
         "archiviert": verschoben, "archiv_fehler": archiv_fehler, "archiv_ziel": archiv_ziel,
     }
 
@@ -495,6 +501,9 @@ def gui():
                     if bericht["kg_geloggt"]:
                         zeilen.append("Kg-Statistik: %d Rechnung(en) erfasst" %
                                       bericht["kg_geloggt"])
+                    if bericht["artikel_geloggt"]:
+                        zeilen.append("Artikel-Statistik: %d Rechnung(en) erfasst" %
+                                      bericht["artikel_geloggt"])
                     if bericht["carrier_dateien"]:
                         zeilen.append("")
                         zeilen.append("Carrier-CSVs:")

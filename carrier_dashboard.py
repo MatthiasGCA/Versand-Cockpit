@@ -36,12 +36,20 @@ Carrier-CSVs tatsaechlich geschrieben und die eingelesenen PDFs archiviert.
       soll) - alles andere bleibt unveraendert in der Tabelle/im Pool stehen
       und kann spaeter in einem weiteren Lauf verarbeitet werden. Button
       "Hinweis quittieren": markiert die ausgewaehlte Zeile mit offenem
-      Hinweis als geprueft - sie zaehlt danach nicht mehr in der Hinweise-
-      Kachel/im Hinweise-Filter (Meldungstext bleibt mit "[Quittiert]"-
-      Praefix sichtbar), blockiert aber weiterhin NICHT den Export (Hinweise
-      taten das ohnehin nie, nur Fehler tun das). Gilt nur fuer die laufende
+      Hinweis als geprueft (setzt status auf "ok") - sie zaehlt danach nicht
+      mehr in der Hinweise-Kachel/im Hinweise-Filter (Meldungstext bleibt mit
+      "[Quittiert]"-Praefix sichtbar) UND wird dadurch erst carrier-
+      exportierbar (siehe carrier_export.py). Gilt nur fuer die laufende
       GUI-Sitzung, bleibt aber ueber einen erneuten Schritt-1-Lauf hinweg
-      erhalten (rnr-basiert).
+      erhalten (rnr-basiert). Button "Paket aufteilen": bei einer DHL-
+      Sendung ueber dem Maximalgewicht (siehe G_DHL_MAX in carrier_regeln.py)
+      koennen zwei manuell gewogene Einzelgewichte eingetragen werden - loest
+      den Gewichts-Fehler auf (macht daraus einen quittierbaren Hinweis) und
+      erzeugt beim Export ZWEI DHL-CSV-Zeilen mit dem gleichen Sendungsbezug
+      (Matthias bestaetigt: beide Pakete tragen dieselbe Rechnungsnummer als
+      Sendungsreferenz). Die Pickliste bleibt unveraendert (EIN Packvorgang) -
+      die zwei Pakete werden vorab manuell gepackt/gewogen, die Software muss
+      nicht wissen, welcher Artikel in welches Paket kommt.
   Schritt 4 (spaeter, optional): Warnung in scan_druck.py bei Carrier-
       Abweichung zwischen Label und dieser Zuordnung.
 
@@ -65,11 +73,11 @@ import sys
 import threading
 import tkinter as tk
 from datetime import datetime
-from tkinter import messagebox, ttk
+from tkinter import messagebox, simpledialog, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-09-23g"
+VERSION = "2026-09-23h"
 
 # Fenster-/Taskleisten-Symbol (siehe gui() unten) - liegt im selben Ordner
 # wie dieses Skript, damit es unveraendert auch nach einem Umzug funktioniert.
@@ -117,6 +125,16 @@ def hat_offenen_hinweis(b):
     im Ergebnis-dict erhalten (Meldungstext/Detailansicht) - er zaehlt nur
     nicht mehr fuer die Hinweise-Kachel/den Hinweise-Filter."""
     return bool(b["hinweise"]) and not b.get("quittiert")
+
+
+def braucht_paketaufteilung(b):
+    """True, wenn b eine DHL-Sendung ueber dem Maximalgewicht ist (siehe
+    regeln.G_DHL_MAX) - unabhaengig davon, ob schon eine Aufteilung
+    (b["pakete"]) eingetragen wurde, damit der Button "Paket aufteilen" auch
+    zum NACHTRAEGLICHEN Anpassen einer bereits eingetragenen Aufteilung
+    nutzbar bleibt. b["gewicht"] ist immer das GESAMTgewicht laut Rechnung,
+    das bleibt beim Aufteilen unveraendert (siehe paket_aufteilen())."""
+    return b.get("carrier") == regeln.DHL and (b.get("gewicht") or 0) > regeln.G_DHL_MAX
 
 
 def filter_treffer(schluessel, b):
@@ -270,6 +288,9 @@ def detailtext(b):
     zeilen.append("Kennung:   %s" % (", ".join(b["kennungen"]) or "-"))
     g = b["gewicht"]
     zeilen.append("Gewicht:   %s" % (("%.3f kg" % g).replace(".", ",") if g is not None else "-"))
+    if b.get("pakete"):
+        zeilen.append("Pakete:    %s (2 DHL-Sendungen, gleiche Rechnungsnummer als Referenz)"
+                      % " + ".join(("%.3f kg" % p).replace(".", ",") for p in b["pakete"]))
     zeilen.append("Carrier:   %s%s" % (
         b["carrier"] or "-", "  (Ausland)" if b["carrier"] and b["ausland"] else ""))
     if b["grund"]:
@@ -367,6 +388,8 @@ def gui():
 
     btn_quittieren = ttk.Button(knoepfe, text="Hinweis quittieren", state="disabled")
     btn_quittieren.pack(side="left", padx=(0, 8))
+    btn_aufteilen = ttk.Button(knoepfe, text="Paket aufteilen", state="disabled")
+    btn_aufteilen.pack(side="left", padx=(0, 8))
     ttk.Label(knoepfe, textvariable=status_var).pack(side="left", padx=12)
     prog = ttk.Progressbar(root, mode="determinate")
     prog.pack(fill="x", padx=8, pady=(6, 0))
@@ -421,6 +444,7 @@ def gui():
         # quittierten) Hinweis hat - ein Fehler blockiert weiterhin den
         # Export und wird hier bewusst NICHT wegquittierbar gemacht.
         btn_quittieren.configure(state=("normal" if hat_offenen_hinweis(b) else "disabled"))
+        btn_aufteilen.configure(state=("normal" if braucht_paketaufteilung(b) else "disabled"))
 
     tv.bind("<<TreeviewSelect>>", zeige_detail)
 
@@ -441,6 +465,62 @@ def gui():
 
     btn_quittieren.configure(command=quittiere_auswahl)
 
+    def paket_aufteilen():
+        sel = tv.selection()
+        if not sel:
+            return
+        idx = int(sel[0])
+        b = ergebnisse[idx]
+        if not braucht_paketaufteilung(b):
+            return
+        gesamt = b["gewicht"]
+        gtxt = ("%.3f" % gesamt).replace(".", ",")
+        maxtxt = ("%.1f" % regeln.G_DHL_MAX).replace(".", ",")
+        vorgabe1, vorgabe2 = b.get("pakete") or (None, None)
+        g1 = simpledialog.askfloat(
+            "Carrier-Dashboard - Paket aufteilen",
+            "Rechnung %s: Gesamtgewicht laut Rechnung %s kg "
+            "(DHL-Maximalgewicht %s kg).\n\nBeide Pakete vorab packen und "
+            "wiegen, dann hier eintragen.\n\nGewicht Paket 1 (kg):"
+            % (b["rnr"], gtxt, maxtxt),
+            parent=root, minvalue=0.001, maxvalue=regeln.G_DHL_MAX, initialvalue=vorgabe1)
+        if g1 is None:
+            return
+        g2 = simpledialog.askfloat(
+            "Carrier-Dashboard - Paket aufteilen",
+            "Gewicht Paket 2 (kg):",
+            parent=root, minvalue=0.001, maxvalue=regeln.G_DHL_MAX, initialvalue=vorgabe2)
+        if g2 is None:
+            return
+        summe_txt = ("%.3f" % (g1 + g2)).replace(".", ",")
+        # Grobe Plausibilitaetspruefung (kein hartes Blockieren - laut Matthias
+        # ist eine exakt gleiche/passende Aufteilung nicht immer moeglich,
+        # z.B. wegen Verpackungsmaterial) - faengt aber Tippfehler ab (z.B.
+        # Gramm statt Kilogramm eingetragen).
+        abweichung = abs((g1 + g2) - gesamt)
+        if abweichung > max(2.0, gesamt * 0.1):
+            if not messagebox.askyesno(
+                "Carrier-Dashboard - Gewicht prüfen",
+                "Summe der beiden Pakete (%s kg) weicht deutlich vom "
+                "Rechnungsgewicht (%s kg) ab. Trotzdem übernehmen?"
+                % (summe_txt, gtxt), icon="warning", default=messagebox.NO):
+                return
+        b["pakete"] = [g1, g2]
+        b["fehler"] = [f for f in b["fehler"] if "DHL-Maximalgewicht" not in f]
+        b["hinweise"] = [h for h in b["hinweise"]
+                         if not h.startswith("Sendung manuell in 2 Pakete")]
+        g1txt = ("%.3f" % g1).replace(".", ",")
+        g2txt = ("%.3f" % g2).replace(".", ",")
+        b["hinweise"].append(
+            "Sendung manuell in 2 Pakete aufgeteilt: %s kg + %s kg (Summe %s kg, "
+            "Rechnung: %s kg)" % (g1txt, g2txt, summe_txt, gtxt))
+        b["quittiert"] = False                  # neue Aufteilung -> erneut quittieren
+        quittiert.discard(b["rnr"])
+        b["status"] = "fehler" if b["fehler"] else ("warn" if b["hinweise"] else "ok")
+        fuelle()
+
+    btn_aufteilen.configure(command=paket_aufteilen)
+
     def wende_filter(schluessel):
         filter_state["schluessel"] = schluessel
         fuelle()
@@ -448,6 +528,7 @@ def gui():
     def fuelle():
         tv.delete(*tv.get_children())
         btn_quittieren.configure(state="disabled")     # Auswahl ist durch delete() weg
+        btn_aufteilen.configure(state="disabled")
         schluessel = filter_state["schluessel"]
         angezeigt = 0
         for i, b in enumerate(ergebnisse):
@@ -463,12 +544,14 @@ def gui():
             else:
                 meldung = b["grund"]
             g = b["gewicht"]
+            gtxt = ("%.3f" % g).replace(".", ",") if g is not None else "-"
+            if b.get("pakete"):
+                gtxt += " (2 Pakete)"
             c = b["carrier"] or "-"
             if b["carrier"] in (regeln.BRIEF, regeln.GROSSBRIEF):
                 c += " Ausland" if b["ausland"] else " Inland"
             tv.insert("", "end", iid=str(i), tags=(b["status"],), values=(
-                b["rnr"] or "?", c, b["adresse"]["land"] or "?",
-                ("%.3f" % g).replace(".", ",") if g is not None else "-",
+                b["rnr"] or "?", c, b["adresse"]["land"] or "?", gtxt,
                 ",".join(b["kennungen"]) or "-",
                 {"ok": "OK", "warn": "Hinweis", "fehler": "FEHLER"}[b["status"]], meldung))
         z, fehler, hinweise = zaehle(ergebnisse)

@@ -30,7 +30,7 @@ import os
 from collections import Counter, defaultdict
 from datetime import datetime
 
-VERSION = "2026-09-23c"
+VERSION = "2026-09-23d"
 
 STATISTIK_DATEI = r"\\DESKTOP-N2H75H\Netzwerk\Paketscheine\carrier_statistik.csv"
 ARTIKEL_STATISTIK_DATEI = r"\\DESKTOP-N2H75H\Netzwerk\Paketscheine\artikel_statistik.csv"
@@ -46,14 +46,23 @@ def _de(x):
 
 
 def log_lauf(ergebnisse, pfad=STATISTIK_DATEI, jetzt=None):
-    """Haengt fuer jede exportierte Rechnung (status != 'fehler' UND Carrier
-    zugeordnet) eine Zeile an pfad an. Legt Datei+Kopfzeile bei Bedarf an.
-    Rueckgabe: Anzahl geloggter Zeilen (0 bei leerer Liste ODER Schreibfehler -
-    Fehler werden bewusst verschluckt, siehe Modul-Kopf)."""
-    zeilen = [b for b in ergebnisse if b["status"] != "fehler" and b["carrier"]]
-    if not zeilen:
+    """Haengt fuer jede TATSAECHLICH exportierte Rechnung (status == 'ok' UND
+    Carrier zugeordnet - dieselbe Bedingung wie carrier_export.exportiere())
+    eine Zeile an pfad an. Eine manuell in zwei Pakete aufgeteilte DHL-Sendung
+    (b["pakete"], ueber dem DHL-Maximalgewicht) erzeugt ZWEI Zeilen mit je
+    einem Einzelgewicht - reale Paketzahl statt nur des Rechnungsgewichts, das
+    macht die Statistik fuer Mengenrabatt-Gespraeche genauer. Legt Datei+
+    Kopfzeile bei Bedarf an. Rueckgabe: Anzahl geloggter Zeilen (0 bei leerer
+    Liste ODER Schreibfehler - Fehler werden bewusst verschluckt, siehe
+    Modul-Kopf)."""
+    kandidaten = [b for b in ergebnisse if b["status"] == "ok" and b["carrier"]]
+    if not kandidaten:
         return 0
     jetzt = jetzt or datetime.now()
+    zeilen = []                            # (carrier, gewicht) je tatsaechlichem Paket
+    for b in kandidaten:
+        for g in (b.get("pakete") or [b["gewicht"]]):
+            zeilen.append((b, g))
     try:
         ordner = os.path.dirname(pfad)
         if ordner:
@@ -62,8 +71,8 @@ def log_lauf(ergebnisse, pfad=STATISTIK_DATEI, jetzt=None):
         with open(pfad, "a", encoding="utf-8", newline="") as f:
             if neu:
                 f.write(_HEADER)
-            for b in zeilen:
-                gtxt = ("%.4f" % (b["gewicht"] or 0)).replace(".", ",")
+            for b, gewicht in zeilen:
+                gtxt = ("%.4f" % (gewicht or 0)).replace(".", ",")
                 f.write("%s;%s;%s;%s;%s;%s\n" % (
                     jetzt.strftime("%Y-%m-%d"), b["carrier"], gtxt,
                     b["adresse"]["land"] or "", "1" if b["ausland"] else "0",
@@ -291,9 +300,12 @@ def selftest():
         else:
             n_fail.append("%s: erwartet %r, war %r" % (name, soll, ist))
 
-    def _b(carrier, gewicht, rnr, status="ok", land="DE", ausland=False):
-        return {"status": status, "carrier": carrier, "gewicht": gewicht, "rnr": rnr,
-                "adresse": {"land": land}, "ausland": ausland}
+    def _b(carrier, gewicht, rnr, status="ok", land="DE", ausland=False, pakete=None):
+        d = {"status": status, "carrier": carrier, "gewicht": gewicht, "rnr": rnr,
+             "adresse": {"land": land}, "ausland": ausland}
+        if pakete:
+            d["pakete"] = pakete
+        return d
 
     tmp = tempfile.mkdtemp(prefix="carrier_statistik_test_")
     try:
@@ -319,18 +331,32 @@ def selftest():
         lauf3 = [_b("DHL", 10.0, "1600001")]
         log_lauf(lauf3, pfad, datetime(2025, 12, 1))       # anderes Jahr
 
+        # Aufgeteilte Sendung (b["pakete"]) -> ZWEI Zeilen mit derselben
+        # Rechnungsnummer, je Einzelgewicht (siehe carrier_dashboard.
+        # paket_aufteilen()).
+        lauf4 = [_b("DHL", 70.4, "1705548", pakete=[40.0, 30.4])]
+        n4 = log_lauf(lauf4, pfad, datetime(2026, 9, 10))
+        check("log_lauf(): aufgeteilte Sendung -> 2 geloggte Zeilen", n4, 2)
+
         with open(pfad, encoding="utf-8") as f:
             inhalt = f.read()
         check("CSV: Header exakt einmal", inhalt.count("Datum;Carrier;"), 1)
-        check("CSV: 7 Datenzeilen (4+2+1)", inhalt.count("\n") - 1, 7)
+        check("CSV: 9 Datenzeilen (4+2+1+2)", inhalt.count("\n") - 1, 9)
+        check("CSV: beide Paket-Gewichte einzeln vorhanden (nicht die Summe)",
+              ("40,0000" in inhalt, "30,4000" in inhalt, "70,4000" in inhalt),
+              (True, True, False))
 
         daten_2026 = kg_je_carrier_monat(pfad, 2026)
-        check("kg_je_carrier_monat: nur 2026", sorted(daten_2026), ["2026-03", "2026-08"])
+        check("kg_je_carrier_monat: nur 2026", sorted(daten_2026),
+              ["2026-03", "2026-08", "2026-09"])
         check("kg_je_carrier_monat: DHL Maerz = 4.3", round(daten_2026["2026-03"]["DHL"], 2), 4.3)
         check("kg_je_carrier_monat: DPD Maerz = 1.0", daten_2026["2026-03"]["DPD"], 1.0)
+        check("kg_je_carrier_monat: DHL September = 70,4 (aus 2 Paketen)",
+              round(daten_2026["2026-09"]["DHL"], 2), 70.4)
         check("kg_je_carrier_monat: 2025 nicht enthalten", "2025" in str(daten_2026), False)
 
-        check("kg_jahr(2026) = Summe aller Carrier/Monate", round(kg_jahr(pfad, 2026), 2), 10.03)
+        check("kg_jahr(2026) = Summe aller Carrier/Monate (inkl. aufgeteilter Sendung)",
+              round(kg_jahr(pfad, 2026), 2), 80.43)
         check("kg_jahr(2025) getrennt", round(kg_jahr(pfad, 2025), 2), 10.0)
 
         text = statistik_text(pfad, jahr=2026)

@@ -32,7 +32,14 @@ Carrier-CSVs tatsaechlich geschrieben und die eingelesenen PDFs archiviert.
       Filter aktiv, verarbeitet Schritt 2 NUR die sichtbaren Zeilen (mit
       eigener Bestaetigung, Vorbelegung "Nein", da das die Ausnahme sein
       soll) - alles andere bleibt unveraendert in der Tabelle/im Pool stehen
-      und kann spaeter in einem weiteren Lauf verarbeitet werden.
+      und kann spaeter in einem weiteren Lauf verarbeitet werden. Button
+      "Hinweis quittieren": markiert die ausgewaehlte Zeile mit offenem
+      Hinweis als geprueft - sie zaehlt danach nicht mehr in der Hinweise-
+      Kachel/im Hinweise-Filter (Meldungstext bleibt mit "[Quittiert]"-
+      Praefix sichtbar), blockiert aber weiterhin NICHT den Export (Hinweise
+      taten das ohnehin nie, nur Fehler tun das). Gilt nur fuer die laufende
+      GUI-Sitzung, bleibt aber ueber einen erneuten Schritt-1-Lauf hinweg
+      erhalten (rnr-basiert).
   Schritt 4 (spaeter, optional): Warnung in scan_druck.py bei Carrier-
       Abweichung zwischen Label und dieser Zuordnung.
 
@@ -60,7 +67,7 @@ from tkinter import messagebox, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-09-23e"
+VERSION = "2026-09-23f"
 
 # Fenster-/Taskleisten-Symbol (siehe gui() unten) - liegt im selben Ordner
 # wie dieses Skript, damit es unveraendert auch nach einem Umzug funktioniert.
@@ -102,6 +109,14 @@ def gruppen_schluessel(b):
     return c
 
 
+def hat_offenen_hinweis(b):
+    """True, wenn b einen Hinweis hat, der noch NICHT quittiert wurde (siehe
+    Button 'Hinweis quittieren' im Dashboard). Ein quittierter Hinweis bleibt
+    im Ergebnis-dict erhalten (Meldungstext/Detailansicht) - er zaehlt nur
+    nicht mehr fuer die Hinweise-Kachel/den Hinweise-Filter."""
+    return bool(b["hinweise"]) and not b.get("quittiert")
+
+
 def filter_treffer(schluessel, b):
     """True, wenn Ergebnis b zum Filter-Schluessel passt (fuer die klickbaren
     Kacheln in der Zusammenfassung). schluessel None = kein Filter, alles
@@ -112,7 +127,7 @@ def filter_treffer(schluessel, b):
     if schluessel == "FEHLER":
         return b["status"] == "fehler"
     if schluessel == "HINWEISE":
-        return bool(b["hinweise"])
+        return hat_offenen_hinweis(b)
     return gruppen_schluessel(b) == schluessel
 
 
@@ -232,7 +247,8 @@ def _fehlerzeile(datei, text, rnr=""):
 def zaehle(ergebnisse):
     """(z, fehler, hinweise) - z ist {gruppen_schluessel: anzahl}, fehler/
     hinweise sind Gesamtzahlen. Eine Rechnung kann in fehler UND hinweise
-    gleichzeitig gezaehlt werden (siehe filter_treffer())."""
+    gleichzeitig gezaehlt werden (siehe filter_treffer()); quittierte
+    Hinweise (siehe hat_offenen_hinweis()) zaehlen nicht mehr mit."""
     z = {k: 0 for k, _ in GRUPPEN}
     fehler = hinweise = 0
     for b in ergebnisse:
@@ -241,7 +257,7 @@ def zaehle(ergebnisse):
             fehler += 1
         else:
             z[k] = z.get(k, 0) + 1
-        if b["hinweise"]:
+        if hat_offenen_hinweis(b):
             hinweise += 1
     return z, fehler, hinweise
 
@@ -269,7 +285,8 @@ def detailtext(b):
         zeilen += ["  - " + f for f in b["fehler"]]
     if b["hinweise"]:
         zeilen.append("")
-        zeilen.append("Hinweise:")
+        zeilen.append("Hinweise (quittiert - vom Nutzer bestätigt):"
+                      if b.get("quittiert") else "Hinweise:")
         zeilen += ["  - " + h for h in b["hinweise"]]
     return "\n".join(zeilen)
 
@@ -296,6 +313,12 @@ def gui():
     laeuft = {"an": False}
     export_info = {"uebersprungen": 0, "verarbeitete_indizes": set()}
     filter_state = {"schluessel": None}
+    # Rechnungsnummern, deren Hinweis der Nutzer per Button quittiert hat -
+    # bleibt ueber einen erneuten Schritt-1-Lauf hinweg erhalten (wird nach
+    # jedem Lese-Lauf erneut angewendet, siehe abfrage()), damit ein Nachlade-
+    # Lauf mit neuen PDFs nicht bereits quittierte Hinweise wieder aufleben
+    # laesst. Nur fuer die aktuelle GUI-Sitzung (kein Speichern auf Platte).
+    quittiert = set()
 
     # --- Kopf: Pool-Ordner (fest, nur zur Information) + Zaehler -------------
     # Die Ordner sind bewusst NICHT hier waehlbar, siehe Modul-Kopf/Konstanten
@@ -339,6 +362,9 @@ def gui():
 
     ttk.Button(knoepfe, text="Alle anzeigen", command=filter_zuruecksetzen).pack(
         side="left", padx=(0, 8))
+
+    btn_quittieren = ttk.Button(knoepfe, text="Hinweis quittieren", state="disabled")
+    btn_quittieren.pack(side="left", padx=(0, 8))
     ttk.Label(knoepfe, textvariable=status_var).pack(side="left", padx=12)
     prog = ttk.Progressbar(root, mode="determinate")
     prog.pack(fill="x", padx=8, pady=(6, 0))
@@ -381,14 +407,37 @@ def gui():
     def zeige_detail(_evt=None):
         sel = tv.selection()
         if not sel:
+            btn_quittieren.configure(state="disabled")
             return
         idx = int(sel[0])
+        b = ergebnisse[idx]
         detail.configure(state="normal")
         detail.delete("1.0", "end")
-        detail.insert("1.0", detailtext(ergebnisse[idx]))
+        detail.insert("1.0", detailtext(b))
         detail.configure(state="disabled")
+        # Nur quittierbar, wenn die Zeile gerade einen offenen (noch nicht
+        # quittierten) Hinweis hat - ein Fehler blockiert weiterhin den
+        # Export und wird hier bewusst NICHT wegquittierbar gemacht.
+        btn_quittieren.configure(state=("normal" if hat_offenen_hinweis(b) else "disabled"))
 
     tv.bind("<<TreeviewSelect>>", zeige_detail)
+
+    def quittiere_auswahl():
+        sel = tv.selection()
+        if not sel:
+            return
+        idx = int(sel[0])
+        b = ergebnisse[idx]
+        if not hat_offenen_hinweis(b):
+            return
+        b["quittiert"] = True
+        if b["status"] == "warn":
+            b["status"] = "ok"
+        if b["rnr"]:
+            quittiert.add(b["rnr"])
+        fuelle()
+
+    btn_quittieren.configure(command=quittiere_auswahl)
 
     def wende_filter(schluessel):
         filter_state["schluessel"] = schluessel
@@ -396,6 +445,7 @@ def gui():
 
     def fuelle():
         tv.delete(*tv.get_children())
+        btn_quittieren.configure(state="disabled")     # Auswahl ist durch delete() weg
         schluessel = filter_state["schluessel"]
         angezeigt = 0
         for i, b in enumerate(ergebnisse):
@@ -406,6 +456,8 @@ def gui():
                 meldung = "; ".join(b["fehler"])
             elif b["hinweise"]:
                 meldung = b["grund"] + "  |  " + "; ".join(b["hinweise"])
+                if b.get("quittiert"):
+                    meldung = "[Quittiert] " + meldung
             else:
                 meldung = b["grund"]
             g = b["gewicht"]
@@ -462,6 +514,16 @@ def gui():
                 elif m[0] == "fertig":
                     rechnungen_roh[:] = m[1]
                     ergebnisse[:] = m[2]
+                    # Frueher (in dieser Sitzung) quittierte Hinweise wieder
+                    # anwenden, falls die betroffene Rechnung erneut auftaucht
+                    # (z.B. weil zwischenzeitlich neue PDFs dazukamen und
+                    # Schritt 1 nochmal gelaufen ist) - sonst muesste man
+                    # dieselbe Rechnung jedes Mal neu quittieren.
+                    for b in ergebnisse:
+                        if b["rnr"] in quittiert and b["hinweise"]:
+                            b["quittiert"] = True
+                            if b["status"] == "warn":
+                                b["status"] = "ok"
                     filter_state["schluessel"] = None     # frischer Lauf -> kein alter Filter
                     fuelle()
                     laeuft["an"] = False
@@ -623,6 +685,7 @@ def gui():
                     rechnungen_roh[:] = [r for i, r in enumerate(rechnungen_roh)
                                          if i not in verarbeitet]
                     ergebnisse[:] = [b for i, b in enumerate(ergebnisse) if i not in verarbeitet]
+                    quittiert &= {b["rnr"] for b in ergebnisse}   # nicht mehr vorhandene aufraeumen
                     filter_state["schluessel"] = None    # Indizes verschoben -> Filter zuruecksetzen
                     fuelle()
                     # Bleiben Zeilen stehen (Filter/uebersprungen), kann direkt ein

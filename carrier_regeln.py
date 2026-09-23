@@ -34,7 +34,7 @@ strikt). Alle Grenzen stehen unten als Konstanten.
 import html
 import re
 
-VERSION = "2026-09-23b"
+VERSION = "2026-09-23c"
 
 # --- Gewichtsgrenzen in kg (Klasse gilt bei Gewicht STRIKT UNTER der Grenze) -----
 G_BRIEF = 0.05
@@ -150,7 +150,7 @@ def analysiere_adresse(zeilen):
     zl = [bereinige(z) for z in (zeilen or [])]
     zl = [z for z in zl if z]
     out = {"name": "", "zusatz": [], "strasse": "", "hausnr": "", "plz": "",
-           "ort": "", "land": "", "fehler": [], "hinweise": []}
+           "ort": "", "land": "", "fehler": [], "hinweise": [], "packstation": False}
     if not zl:
         out["fehler"].append("Keine Adresse auf der Rechnung erkannt")
         return out
@@ -240,6 +240,7 @@ def analysiere_adresse(zeilen):
             out["strasse"] = strasse_roh
             out["hinweise"].append("Keine Hausnummer erkannt (%s)" % strasse_roh)
         if re.search(r"packstation|postfach|postnummer", strasse_roh, re.I):
+            out["packstation"] = True
             out["hinweise"].append("Packstation/Postfach - bitte manuell prüfen")
 
     # --- Feld-Pruefungen ------------------------------------------------------
@@ -270,7 +271,7 @@ def klasse_nach_gewicht(gewicht):
     return DHL
 
 
-def bestimme_carrier(kennungen, gewicht, land):
+def bestimme_carrier(kennungen, gewicht, land, packstation=False):
     """(carrier|None, grund, fehler, hinweise). carrier ist einer aus KLASSEN."""
     kenn = sorted({k.lower() for k in (kennungen or []) if k and k.lower() in KENNUNG_KLASSE})
     fehler, hinweise = [], []
@@ -295,9 +296,19 @@ def bestimme_carrier(kennungen, gewicht, land):
     grund = "Kennung %s → %s" % ("+".join(kenn), start)
     if klasse != start:
         grund += ", Gewicht %s kg → %s" % (gtxt, klasse)
+    if klasse == DPD and packstation:
+        # DPD liefert nicht an Packstationen/Postfaecher - Matthias bestaetigt
+        # (Rechnung 1705540, Wapo -> waere DPD, Packstation -> auf DHL um).
+        klasse = DHL
+        grund += ", Packstation/Postfach - DPD nicht möglich → DHL"
     if klasse == DPD and land != "DE":
         klasse = DHL
         grund += ", DPD nur Deutschland → DHL"
+    if klasse == DHL and packstation:
+        # Gilt unabhaengig davon, WARUM es DHL wurde (Kennung Pax1 direkt oder
+        # DPD->DHL-Umschreibung oben) - bei DHL-Packstationszustellung muss das
+        # Produkt im DHL-System manuell auf "Kleinpaket" umgestellt werden.
+        hinweise.append("Achtung bei DHL auf Kleinpaket abändern")
     return klasse, grund, fehler, hinweise
 
 
@@ -328,7 +339,7 @@ def bewerte_rechnung(r):
     hinweise += adr["hinweise"]
     kenn = kennungen_der_rechnung(r)
     gewicht = r.get("sendungsgewicht")
-    carrier, grund, f2, h2 = bestimme_carrier(kenn, gewicht, adr["land"])
+    carrier, grund, f2, h2 = bestimme_carrier(kenn, gewicht, adr["land"], adr["packstation"])
     fehler += f2
     hinweise += h2
     if not (r.get("zeilen_ok", True) and r.get("summe_ok", True)
@@ -396,6 +407,19 @@ def selftest():
     check("Grund pox1 aufgestiegen",
           "Gewicht" in bestimme_carrier(["pox1"], 0.7, "DE")[1], True)
 
+    # Packstation/Postfach: DPD kann dort nicht zustellen -> DHL, mit Hinweis
+    # auf "Kleinpaket" (real getestet an Rechnung 1705540, Wapo 0,2512 kg)
+    carrier_ps, grund_ps, _, hinweise_ps = bestimme_carrier(["wapo"], 0.2512, "DE", packstation=True)
+    check("wapo Packstation -> DHL statt DPD", carrier_ps, DHL)
+    check("wapo Packstation -> Grund nennt Umschreibung", "Packstation" in grund_ps, True)
+    check("wapo Packstation -> Kleinpaket-Hinweis", hinweise_ps,
+          ["Achtung bei DHL auf Kleinpaket abändern"])
+    check("wapo OHNE Packstation -> weiterhin DPD, kein Hinweis",
+          bestimme_carrier(["wapo"], 0.2512, "DE", packstation=False), (DPD, "Kennung wapo → DPD", [], []))
+    carrier_pax_ps, _, _, hinweise_pax_ps = bestimme_carrier(["pax1"], 3.0, "DE", packstation=True)
+    check("pax1 Packstation -> bleibt DHL, aber trotzdem Kleinpaket-Hinweis",
+          (carrier_pax_ps, hinweise_pax_ps), (DHL, ["Achtung bei DHL auf Kleinpaket abändern"]))
+
     # Adresse (Faelle aus echten Rechnungen)
     a = analysiere_adresse(["Evi Schmid", "Jägerwirth 122", "DE-94081 Fürstenzell"])
     check("adr1", (a["name"], a["strasse"], a["hausnr"], a["plz"], a["ort"], a["land"],
@@ -440,6 +464,15 @@ def selftest():
     check("bereinige Formel-Injection =", bereinige("=HYPERLINK(\"x\")"), "'=HYPERLINK(\"x\")")
     check("bereinige Formel-Injection @", bereinige("@SUM(1)"), "'@SUM(1)")
     check("bereinige normaler Name unveraendert", bereinige("Müller GmbH"), "Müller GmbH")
+    a = analysiere_adresse(["Christopher Beck", "867653498", "Packstation 105",
+                            "DE-68307 Mannheim"])
+    check("adr real 1705540 (Packstation) -> packstation=True",
+          (a["land"], a["plz"], a["ort"], a["packstation"], a["fehler"]),
+          ("DE", "68307", "Mannheim", True, []))
+    a = analysiere_adresse(["X Y", "Postfach 12", "12345 Ort"])
+    check("adr Postfach -> packstation=True", a["packstation"], True)
+    a = analysiere_adresse(["Evi Schmid", "Jägerwirth 122", "DE-94081 Fürstenzell"])
+    check("adr normale Strasse -> packstation=False", a["packstation"], False)
 
     # Rechnung komplett (wie parse_pdf sie liefert)
     r = {"rnr": "1705050", "datei": "x.pdf", "sendungsgewicht": 0.34,
@@ -460,6 +493,17 @@ def selftest():
     r5 = dict(r4, kdnr="")
     b5 = bewerte_rechnung(r5)
     check("DPD ohne Kundennummer -> warn, kdnr leer", (b5["status"], b5["kdnr"]), ("warn", ""))
+
+    r6 = {"rnr": "1705540", "datei": "x.pdf", "sendungsgewicht": 0.2512,
+          "adresse_zeilen": ["Christopher Beck", "867653498", "Packstation 105",
+                             "DE-68307 Mannheim"],
+          "positionen": [{"kennungen": ["wapo"], "lagerorte": ["Regal 8, E0"]}],
+          "zeilen_ok": True, "summe_ok": True, "vollstaendig_ok": True}
+    b6 = bewerte_rechnung(r6)
+    check("Rechnung 1705540 (Packstation) -> DHL statt DPD, warn", (b6["carrier"], b6["status"]),
+          (DHL, "warn"))
+    check("Rechnung 1705540 -> Kleinpaket-Hinweis dabei",
+          "Achtung bei DHL auf Kleinpaket abändern" in b6["hinweise"], True)
 
     if n_fail:
         print("SELBSTTEST FEHLGESCHLAGEN (%d von %d):" % (len(n_fail), n_ok + len(n_fail)))

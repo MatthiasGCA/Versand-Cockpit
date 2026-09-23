@@ -26,7 +26,13 @@ Carrier-CSVs tatsaechlich geschrieben und die eingelesenen PDFs archiviert.
       kommt eine Rechnungsnummer mehrfach im aktuellen Pool ODER laut
       Statistik-Historie schon in einem frueheren Lauf vor, verlangt Schritt 2
       eine EXPLIZITE Bestaetigung (Vorbelegung "Nein"), bevor irgendetwas
-      gepackt/exportiert/archiviert wird.
+      gepackt/exportiert/archiviert wird. Filter: die Kacheln in der
+      Zusammenfassung (DHL/DPD/.../Fehler/Hinweise) sind klickbar und
+      schraenken die Tabelle ein ("Alle anzeigen" setzt zurueck). Ist ein
+      Filter aktiv, verarbeitet Schritt 2 NUR die sichtbaren Zeilen (mit
+      eigener Bestaetigung, Vorbelegung "Nein", da das die Ausnahme sein
+      soll) - alles andere bleibt unveraendert in der Tabelle/im Pool stehen
+      und kann spaeter in einem weiteren Lauf verarbeitet werden.
   Schritt 4 (spaeter, optional): Warnung in scan_druck.py bei Carrier-
       Abweichung zwischen Label und dieser Zuordnung.
 
@@ -54,7 +60,7 @@ from tkinter import messagebox, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-09-23d"
+VERSION = "2026-09-23e"
 
 # Fenster-/Taskleisten-Symbol (siehe gui() unten) - liegt im selben Ordner
 # wie dieses Skript, damit es unveraendert auch nach einem Umzug funktioniert.
@@ -81,6 +87,9 @@ GRUPPEN = [
     ("Post Brief|DE", "Brief Inland"),
     ("Post Brief|AUS", "Brief Ausland"),
 ]
+# Zusaetzliche, nicht-carrier-spezifische Filter/Zusammenfassungs-Kacheln -
+# zusammen mit GRUPPEN die Basis fuer die klickbaren Filter im Dashboard.
+FILTER_TITEL = dict(GRUPPEN, FEHLER="Fehler", HINWEISE="Hinweise")
 
 
 def gruppen_schluessel(b):
@@ -91,6 +100,20 @@ def gruppen_schluessel(b):
     if c in (regeln.BRIEF, regeln.GROSSBRIEF):
         return "%s|%s" % (c, "AUS" if b["ausland"] else "DE")
     return c
+
+
+def filter_treffer(schluessel, b):
+    """True, wenn Ergebnis b zum Filter-Schluessel passt (fuer die klickbaren
+    Kacheln in der Zusammenfassung). schluessel None = kein Filter, alles
+    passt. 'HINWEISE' ist unabhaengig von 'FEHLER' (eine Rechnung kann beides
+    gleichzeitig haben)."""
+    if schluessel is None:
+        return True
+    if schluessel == "FEHLER":
+        return b["status"] == "fehler"
+    if schluessel == "HINWEISE":
+        return bool(b["hinweise"])
+    return gruppen_schluessel(b) == schluessel
 
 
 def lese_pool(ordner, melde=None):
@@ -207,15 +230,20 @@ def _fehlerzeile(datei, text, rnr=""):
 
 
 def zaehle(ergebnisse):
+    """(z, fehler, hinweise) - z ist {gruppen_schluessel: anzahl}, fehler/
+    hinweise sind Gesamtzahlen. Eine Rechnung kann in fehler UND hinweise
+    gleichzeitig gezaehlt werden (siehe filter_treffer())."""
     z = {k: 0 for k, _ in GRUPPEN}
-    fehler = 0
+    fehler = hinweise = 0
     for b in ergebnisse:
         k = gruppen_schluessel(b)
         if k is None:
             fehler += 1
         else:
             z[k] = z.get(k, 0) + 1
-    return z, fehler
+        if b["hinweise"]:
+            hinweise += 1
+    return z, fehler, hinweise
 
 
 def detailtext(b):
@@ -266,7 +294,8 @@ def gui():
     rechnungen_roh = []
     q = queue.Queue()
     laeuft = {"an": False}
-    export_info = {"uebersprungen": 0}
+    export_info = {"uebersprungen": 0, "verarbeitete_indizes": set()}
+    filter_state = {"schluessel": None}
 
     # --- Kopf: Pool-Ordner (fest, nur zur Information) + Zaehler -------------
     # Die Ordner sind bewusst NICHT hier waehlbar, siehe Modul-Kopf/Konstanten
@@ -304,18 +333,27 @@ def gui():
         messagebox.showinfo("Carrier-Dashboard - Kg-Statistik", carrier_statistik.statistik_text())
 
     ttk.Button(knoepfe, text="Statistik", command=zeige_statistik).pack(side="left", padx=(0, 8))
+
+    def filter_zuruecksetzen():
+        wende_filter(None)
+
+    ttk.Button(knoepfe, text="Alle anzeigen", command=filter_zuruecksetzen).pack(
+        side="left", padx=(0, 8))
     ttk.Label(knoepfe, textvariable=status_var).pack(side="left", padx=12)
     prog = ttk.Progressbar(root, mode="determinate")
     prog.pack(fill="x", padx=8, pady=(6, 0))
 
-    # --- Zusammenfassung ----------------------------------------------------
+    # --- Zusammenfassung (Kacheln sind klickbar -> Filter, siehe fuelle()) --
     zf = ttk.LabelFrame(root, text="Zuordnung", padding=6)
     zf.pack(fill="x", padx=8, pady=8)
     zlabels = {}
-    for i, (k, titel) in enumerate(GRUPPEN + [("FEHLER", "Fehler")]):
-        ttk.Label(zf, text=titel).grid(row=0, column=i, padx=10)
-        lb = tk.Label(zf, text="-", font=("Segoe UI", 16, "bold"))
+    for i, (k, titel) in enumerate(GRUPPEN + [("FEHLER", "Fehler"), ("HINWEISE", "Hinweise")]):
+        titel_lbl = ttk.Label(zf, text=titel, cursor="hand2")
+        titel_lbl.grid(row=0, column=i, padx=10)
+        lb = tk.Label(zf, text="-", font=("Segoe UI", 16, "bold"), cursor="hand2")
         lb.grid(row=1, column=i, padx=10)
+        for w in (titel_lbl, lb):
+            w.bind("<Button-1>", lambda _evt, s=k: wende_filter(s))
         zlabels[k] = lb
         zf.columnconfigure(i, weight=1)
 
@@ -352,9 +390,18 @@ def gui():
 
     tv.bind("<<TreeviewSelect>>", zeige_detail)
 
+    def wende_filter(schluessel):
+        filter_state["schluessel"] = schluessel
+        fuelle()
+
     def fuelle():
         tv.delete(*tv.get_children())
+        schluessel = filter_state["schluessel"]
+        angezeigt = 0
         for i, b in enumerate(ergebnisse):
+            if not filter_treffer(schluessel, b):
+                continue
+            angezeigt += 1
             if b["fehler"]:
                 meldung = "; ".join(b["fehler"])
             elif b["hinweise"]:
@@ -370,10 +417,17 @@ def gui():
                 ("%.3f" % g).replace(".", ",") if g is not None else "-",
                 ",".join(b["kennungen"]) or "-",
                 {"ok": "OK", "warn": "Hinweis", "fehler": "FEHLER"}[b["status"]], meldung))
-        z, fehler = zaehle(ergebnisse)
+        z, fehler, hinweise = zaehle(ergebnisse)
         for k, _ in GRUPPEN:
             zlabels[k].configure(text=str(z.get(k, 0)), fg="black")
         zlabels["FEHLER"].configure(text=str(fehler), fg=("#b00000" if fehler else "black"))
+        zlabels["HINWEISE"].configure(text=str(hinweise), fg=("#8a6d00" if hinweise else "black"))
+        if schluessel is None:
+            zf.configure(text="Zuordnung")
+        else:
+            zf.configure(text="Zuordnung  -  Filter: %s (%d von %d angezeigt) - "
+                              "\"Alle anzeigen\" setzt zurueck"
+                         % (FILTER_TITEL.get(schluessel, schluessel), angezeigt, len(ergebnisse)))
 
     # --- Schritt 1 im Hintergrund --------------------------------------------
     def arbeite(ordner):
@@ -408,11 +462,12 @@ def gui():
                 elif m[0] == "fertig":
                     rechnungen_roh[:] = m[1]
                     ergebnisse[:] = m[2]
+                    filter_state["schluessel"] = None     # frischer Lauf -> kein alter Filter
                     fuelle()
                     laeuft["an"] = False
                     btn_zuordnen.configure(state="normal")
                     btn_export.configure(state=("normal" if ergebnisse else "disabled"))
-                    z, fehler = zaehle(ergebnisse)
+                    z, fehler, _ = zaehle(ergebnisse)
                     status_var.set("Fertig: %d Rechnung(en), %d Fehler. Es wurde nichts "
                                    "geschrieben oder verschoben." % (len(ergebnisse), fehler))
                     aktualisiere_zaehler()
@@ -440,16 +495,43 @@ def gui():
             return
         import carrier_export
         import carrier_statistik
-        paare = [(r, b) for r, b in zip(rechnungen_roh, ergebnisse) if r is not None]
+        # Schritt 2 verarbeitet NUR, was gerade in der Tabelle sichtbar ist -
+        # bei aktivem Filter (siehe wende_filter()) also nur der Ausschnitt.
+        # Alles andere bleibt unveraendert in rechnungen_roh/ergebnisse liegen
+        # (siehe export_fertig-Behandlung unten), nicht nur im Pool-Ordner.
+        sichtbare_indizes = {int(iid) for iid in tv.get_children()}
+        alle = list(enumerate(zip(rechnungen_roh, ergebnisse)))
+        paare = [(r, b) for i, (r, b) in alle if r is not None and i in sichtbare_indizes]
         # Rechnungen, deren PDF gar nicht erst gelesen werden konnte (kein Positionen
         # erkannt / PDF nicht lesbar) - die werden von Schritt 2 komplett uebersprungen
         # (nicht gepackt, nicht archiviert) und bleiben unveraendert im Pool liegen.
-        uebersprungen = [b for r, b in zip(rechnungen_roh, ergebnisse) if r is None]
+        uebersprungen = [b for i, (r, b) in alle if r is None and i in sichtbare_indizes]
+        verarbeitete_indizes = {i for i, (r, _) in alle if r is not None and i in sichtbare_indizes}
         if not paare:
             messagebox.showinfo("Carrier-Dashboard",
                                 "Keine gueltigen Rechnungen zum Verarbeiten - bitte zuerst "
                                 "Schritt 1 erneut ausfuehren.")
             return
+
+        # Sicherung gegen Teilverarbeitung: ist ein Filter aktiv, wird nur der
+        # sichtbare Ausschnitt verarbeitet - das ist laut Matthias die
+        # Ausnahme, deshalb eine eigene, explizite Bestaetigung (Vorbelegung
+        # "Nein") VOR der normalen Bestaetigung weiter unten.
+        if len(sichtbare_indizes) < len(ergebnisse):
+            rest = len(ergebnisse) - len(sichtbare_indizes)
+            frage_teil = (
+                "Es ist ein Filter aktiv: \"%s\".\n\n"
+                "Nur %d von %d Rechnung(en) werden JETZT verarbeitet. Die "
+                "restlichen %d bleiben UNVERAENDERT liegen (weder gepackt "
+                "noch exportiert noch archiviert) und muessen spaeter separat "
+                "verarbeitet werden.\n\n"
+                "Das ist normalerweise NICHT gewuenscht - trotzdem nur diesen "
+                "Ausschnitt jetzt verarbeiten?"
+                % (FILTER_TITEL.get(filter_state["schluessel"], filter_state["schluessel"]),
+                   len(sichtbare_indizes), len(ergebnisse), rest))
+            if not messagebox.askyesno("Carrier-Dashboard - Nur Teil des Laufs verarbeiten?",
+                                       frage_teil, icon="warning", default=messagebox.NO):
+                return
 
         # Sicherung gegen Doppel-Verarbeitung: dieselbe Rechnungsnummer zweimal
         # im aktuellen Pool ODER laut Statistik-Historie schon einmal in einem
@@ -512,6 +594,7 @@ def gui():
         if not messagebox.askyesno("Carrier-Dashboard", frage):
             return
         export_info["uebersprungen"] = len(uebersprungen)
+        export_info["verarbeitete_indizes"] = verarbeitete_indizes
         laeuft["an"] = True
         btn_zuordnen.configure(state="disabled")
         btn_export.configure(state="disabled")
@@ -532,12 +615,26 @@ def gui():
                     bericht = m[1]
                     laeuft["an"] = False
                     btn_zuordnen.configure(state="normal")
-                    rechnungen_roh.clear()
-                    ergebnisse.clear()
+                    # NUR die tatsaechlich verarbeiteten Indizes entfernen - alles
+                    # andere (uebersprungene PDFs UND durch einen Filter nicht
+                    # sichtbare Zeilen) bleibt in der Tabelle stehen, weil es
+                    # weder gepackt noch archiviert wurde (siehe starte_export()).
+                    verarbeitet = export_info["verarbeitete_indizes"]
+                    rechnungen_roh[:] = [r for i, r in enumerate(rechnungen_roh)
+                                         if i not in verarbeitet]
+                    ergebnisse[:] = [b for i, b in enumerate(ergebnisse) if i not in verarbeitet]
+                    filter_state["schluessel"] = None    # Indizes verschoben -> Filter zuruecksetzen
                     fuelle()
+                    # Bleiben Zeilen stehen (Filter/uebersprungen), kann direkt ein
+                    # weiterer Teil-Lauf gestartet werden, ohne erst Schritt 1 neu
+                    # auszufuehren - Button muss dafuer wieder aktiv sein.
+                    btn_export.configure(state=("normal" if ergebnisse else "disabled"))
                     aktualisiere_zaehler()
-                    status_var.set("Fertig: %d Rechnung(en) verarbeitet, %d archiviert." %
-                                   (bericht["anzahl"], bericht["archiviert"]))
+                    verbleibend = len(ergebnisse)
+                    status_var.set("Fertig: %d Rechnung(en) verarbeitet, %d archiviert%s." %
+                                   (bericht["anzahl"], bericht["archiviert"],
+                                    (", %d verbleiben in der Tabelle" % verbleibend)
+                                    if verbleibend else ""))
                     zeilen = ["Pickliste:        %s" % bericht["pickliste"],
                              "Rechnungen:       %d" % bericht["anzahl"],
                              "Archiviert:       %d -> %s" % (
@@ -549,6 +646,9 @@ def gui():
                     if export_info["uebersprungen"]:
                         zeilen.append("UEBERSPRUNGEN (PDF nicht lesbar, liegen noch im "
                                       "Pool): %d" % export_info["uebersprungen"])
+                    if verbleibend:
+                        zeilen.append("Verbleibend in der Tabelle (nicht verarbeitet, z.B. "
+                                      "wegen aktivem Filter oder Lesefehler): %d" % verbleibend)
                     if bericht["kg_geloggt"]:
                         zeilen.append("Kg-Statistik: %d Rechnung(en) erfasst" %
                                       bericht["kg_geloggt"])

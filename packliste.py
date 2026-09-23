@@ -67,7 +67,17 @@ from reportlab.graphics.shapes import Drawing
 # KONFIGURATION
 # ----------------------------------------------------------------------------
 
-VERSION = "2026-09-21d"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+VERSION = "2026-09-23a"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+# 2026-09-23a: kdnr-Erkennung priorisiert jetzt WC-Bestellnummer (4-6 Ziffern)
+#   bzw. Amazon-Bestellnummer ("nnn-nnnnnnn-nnnnnnn") vor einem sonstigen
+#   Marktplatz-Namen (z.B. eBay-Name), falls mehrere Fremdbeleg-Zeilen unter
+#   "Rechnung Nr." stehen. Anlass: Rechnung 1705582 - Kunde hat Historie auf
+#   Amazon UND eBay, Amicron druckt dann beide Zeilen (erst eBay-Name, dann
+#   Amazon-Bestellnummer); die alte Logik nahm einfach die erste Zeile und
+#   waehlte damit den weniger eindeutigen eBay-Namen statt der Bestellnummer.
+#   Ohne mehrere Kandidatenzeilen (Normalfall) unveraendertes Verhalten -
+#   gegen alle 145 echten Test-Rechnungen im Carrier-Dashboard-Pool
+#   gegengeprueft (111 Amazon-Bestellnummern, 34 sonstige Namen, 0 Fehler).
 # 2026-09-21d: Carrier-Dashboard (neu: carrier_dashboard.py/carrier_regeln.py). parse_pdf()
 #   liefert zusaetzlich "sendungsgewicht" (kg, Kopfzeile "Sendungsgewicht"), "adresse_zeilen"
 #   (alle Zeilen der Lieferadresse, sonst Rechnungsadresse) und je Position "kennungen"
@@ -1008,10 +1018,25 @@ def parse_pdf(path):
     # Kundenmail wird zusaetzlich als "email" gemerkt - beides zusammen erlaubt
     # schreibe_wc_bestellnummern_csv(), echte Onlineshop-Rechnungen sauber von
     # Amazon/eBay/Theke zu trennen.
+    # Bei Kunden mit Mehrfach-Marktplatz-Historie (z.B. schon mal per eBay,
+    # jetzt per Amazon bestellt) druckt Amicron MEHRERE Fremdbeleg-Zeilen
+    # untereinander (Rechnung 1705582: erst der eBay-Name "*coyote86*", dann
+    # die Amazon-Bestellnummer). Ohne Priorisierung haette die erste (hier: der
+    # Name) gewonnen - Amazon-/WC-Bestellnummer sind aber die eindeutigeren,
+    # fuer den Abgleich nuetzlicheren Kennungen und werden deshalb bevorzugt;
+    # ein reiner Marktplatz-Name (eBay etc.) ist nur der Rueckfallwert.
+    def _kdnr_prioritaet(cand):
+        if re.fullmatch(r"\d{4,6}", cand):                        # WC-Bestellnummer
+            return 0
+        if re.fullmatch(r"\d{3}-\d{7}-\d{7}", cand):               # Amazon-Bestellnummer
+            return 1
+        return 2                                                   # sonstiges (z.B. eBay-Name)
+
     kdnr = ""
     email = ""
     for i, z in enumerate(zeilen):
         if re.search(r"Rechnung\s*Nr", z):
+            kandidaten = []
             for j in range(i + 1, min(i + 5, len(zeilen))):
                 cand = zeilen[j].strip()
                 if not cand:
@@ -1021,8 +1046,10 @@ def parse_pdf(path):
                     if not email:
                         email = em.group(0)
                     continue
-                if not kdnr and cand != rnr:
-                    kdnr = cand
+                if cand != rnr:
+                    kandidaten.append(cand)
+            if kandidaten:
+                kdnr = min(kandidaten, key=_kdnr_prioritaet)
             break
 
     md = re.search(r"(\d{2}\.\d{2}\.\d{4})", full)

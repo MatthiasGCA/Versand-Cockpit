@@ -58,6 +58,12 @@ Die Regeln stehen in carrier_regeln.py, der CSV-Export in carrier_export.py,
 die Kg-Statistik in carrier_statistik.py, das Auslesen/die Pickliste in
 packliste.py - alle fuenf Dateien muessen im selben Ordner liegen.
 
+Darkmode (auf Kundenwunsch, 2026-09-23): Fenster + Windows-Titelleiste dunkel
+(angelehnt an die Farbpalette aus scan_druck.py fuer ein einheitliches Bild
+zwischen Carrier-Dashboard und Versand-Cockpit), Ladebalken in Orange
+(#F38808, aus Carrier-Dashboard.ico ausgezaehlt). Siehe _dunkles_theme()/
+_dunkle_titelleiste() am Modulkopf.
+
 Start:  py carrier_dashboard.py  (oder per Carrier-Dashboard_starten.vbs)
 
 Die Ordner (Pool/Ausgabe/Archiv/Carrier-Export) sind bewusst FEST im Code
@@ -78,11 +84,74 @@ from tkinter import messagebox, simpledialog, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-09-23i"
+VERSION = "2026-09-23j"
 
 # Fenster-/Taskleisten-Symbol (siehe gui() unten) - liegt im selben Ordner
 # wie dieses Skript, damit es unveraendert auch nach einem Umzug funktioniert.
 ICON_PFAD = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Carrier-Dashboard.ico")
+
+# ----------------------------------------------------------------------------
+# DARKMODE-Farben - angelehnt an die Palette aus scan_druck.py (BG/CARD/FG/
+# MUTED/ROT), damit Carrier-Dashboard und Versand-Cockpit einheitlich
+# aussehen. ORANGE ist die tatsaechliche Farbe aus Carrier-Dashboard.ico
+# (per Pixel-Auszaehlung ermittelt, 2026-09-23), fuer den Ladebalken.
+# ----------------------------------------------------------------------------
+BG = "#1E1E24"
+CARD = "#2A2A33"
+FG = "#ECECEC"
+MUTED = "#9AA0A6"
+BORDER = "#3A3A45"
+ROT = "#E53935"
+ROT_ZEILE = "#4A2020"
+GOLD = "#FFD54F"
+GOLD_ZEILE = "#4A3A12"
+ORANGE = "#F38808"
+
+
+def _dunkle_titelleiste(root):
+    """Dunkler Windows-Fenstertitel (Windows 10 1809+/11) - rein kosmetisch,
+    schlaegt auf aelteren Windows-Versionen/anderen Betriebssystemen still
+    fehl, das Fenster laeuft dann trotzdem (nur mit hellem Titelbalken)."""
+    try:
+        import ctypes
+        hwnd = ctypes.windll.user32.GetParent(root.winfo_id())
+        wert = ctypes.c_int(1)
+        for attr in (20, 19):        # DWMWA_USE_IMMERSIVE_DARK_MODE: neu/alt
+            if ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                    hwnd, attr, ctypes.byref(wert), ctypes.sizeof(wert)) == 0:
+                break
+    except Exception:
+        pass
+
+
+def _dunkles_theme(root):
+    """ttk-Style auf Darkmode umstellen (Theme "clam", einziges eingebautes
+    Theme, das Farb-Overrides auf Windows tatsaechlich anwendet - "vista"/
+    "winnative" ignorieren die meisten davon). Rueckgabe: die Style-Instanz,
+    falls weitere Styles gebraucht werden (siehe ORANGE-Ladebalken unten)."""
+    style = ttk.Style(root)
+    style.theme_use("clam")
+    style.configure(".", background=BG, foreground=FG, fieldbackground=CARD,
+                    bordercolor=BORDER, lightcolor=BG, darkcolor=BG)
+    style.configure("TFrame", background=BG)
+    style.configure("TLabel", background=BG, foreground=FG)
+    style.configure("TLabelframe", background=BG, foreground=FG, bordercolor=BORDER)
+    style.configure("TLabelframe.Label", background=BG, foreground=FG)
+    style.configure("TButton", background=CARD, foreground=FG, bordercolor=BORDER,
+                    focuscolor=BG)
+    style.map("TButton", background=[("active", BORDER), ("disabled", BG)],
+              foreground=[("disabled", MUTED)])
+    style.configure("TPanedwindow", background=BG)
+    style.configure("Treeview", background=CARD, foreground=FG, fieldbackground=CARD,
+                    bordercolor=BORDER, rowheight=22)
+    style.configure("Treeview.Heading", background=BG, foreground=FG, bordercolor=BORDER)
+    style.map("Treeview.Heading", background=[("active", BORDER)])
+    style.map("Treeview", background=[("selected", ORANGE)], foreground=[("selected", BG)])
+    style.configure("TScrollbar", background=CARD, troughcolor=BG, bordercolor=BORDER,
+                    arrowcolor=FG)
+    style.configure("Orange.Horizontal.TProgressbar", troughcolor=CARD, background=ORANGE,
+                    bordercolor=BORDER, lightcolor=ORANGE, darkcolor=ORANGE)
+    return style
 
 # ----------------------------------------------------------------------------
 # ORDNER - hier fest eintragen, nicht im Dashboard waehlbar (die Ordner
@@ -324,6 +393,9 @@ def gui():
     root = tk.Tk()
     root.title("Carrier-Dashboard  (Version %s / Regeln %s)" % (VERSION, regeln.VERSION))
     root.geometry("1100x720")
+    root.configure(bg=BG)
+    _dunkle_titelleiste(root)
+    _dunkles_theme(root)
     if os.path.exists(ICON_PFAD):
         try:
             root.iconbitmap(ICON_PFAD)
@@ -351,9 +423,10 @@ def gui():
     kopf = ttk.Frame(root, padding=8)
     kopf.pack(fill="x")
     ttk.Label(kopf, text="Pool-Ordner: %s" % POOL_ORDNER,
-              foreground="#555555").pack(anchor="w")
+              foreground=MUTED).pack(anchor="w")
 
-    zaehler = tk.Label(kopf, textvariable=pool_anz, font=("Segoe UI", 18, "bold"), anchor="w")
+    zaehler = tk.Label(kopf, textvariable=pool_anz, font=("Segoe UI", 18, "bold"),
+                       anchor="w", bg=BG, fg=FG)
     zaehler.pack(anchor="w", pady=(8, 0))
 
     def aktualisiere_zaehler():
@@ -393,7 +466,7 @@ def gui():
     btn_aufteilen = ttk.Button(knoepfe, text="Paket aufteilen", state="disabled")
     btn_aufteilen.pack(side="left", padx=(0, 8))
     ttk.Label(knoepfe, textvariable=status_var).pack(side="left", padx=12)
-    prog = ttk.Progressbar(root, mode="determinate")
+    prog = ttk.Progressbar(root, mode="determinate", style="Orange.Horizontal.TProgressbar")
     prog.pack(fill="x", padx=8, pady=(6, 0))
 
     # --- Zusammenfassung (Kacheln sind klickbar -> Filter, siehe fuelle()) --
@@ -403,7 +476,8 @@ def gui():
     for i, (k, titel) in enumerate(GRUPPEN + [("FEHLER", "Fehler"), ("HINWEISE", "Hinweise")]):
         titel_lbl = ttk.Label(zf, text=titel, cursor="hand2")
         titel_lbl.grid(row=0, column=i, padx=10)
-        lb = tk.Label(zf, text="-", font=("Segoe UI", 16, "bold"), cursor="hand2")
+        lb = tk.Label(zf, text="-", font=("Segoe UI", 16, "bold"), cursor="hand2",
+                      bg=BG, fg=FG)
         lb.grid(row=1, column=i, padx=10)
         for w in (titel_lbl, lb):
             w.bind("<Button-1>", lambda _evt, s=k: wende_filter(s))
@@ -421,14 +495,16 @@ def gui():
                           ("meldung", "Grund / Meldung", 560)):
         tv.heading(sp, text=titel)
         tv.column(sp, width=br, anchor="w", stretch=(sp == "meldung"))
-    tv.tag_configure("fehler", background="#f8d0d0")
-    tv.tag_configure("warn", background="#fff2c2")
-    tv.tag_configure("ok", background="#ffffff")
+    tv.tag_configure("fehler", background=ROT_ZEILE, foreground=FG)
+    tv.tag_configure("warn", background=GOLD_ZEILE, foreground=FG)
+    tv.tag_configure("ok", background=CARD, foreground=FG)
     sb = ttk.Scrollbar(tv, orient="vertical", command=tv.yview)
     tv.configure(yscrollcommand=sb.set)
     sb.pack(side="right", fill="y")
     pan.add(tv, weight=3)
-    detail = tk.Text(pan, height=12, font=("Consolas", 10), wrap="word", state="disabled")
+    detail = tk.Text(pan, height=12, font=("Consolas", 10), wrap="word", state="disabled",
+                     bg=CARD, fg=FG, insertbackground=FG, relief="flat",
+                     selectbackground=ORANGE, selectforeground=BG)
     pan.add(detail, weight=1)
 
     def zeige_detail(_evt=None):
@@ -581,9 +657,9 @@ def gui():
                 {"ok": "OK", "warn": "Hinweis", "fehler": "FEHLER"}[b["status"]], meldung))
         z, fehler, hinweise = zaehle(ergebnisse)
         for k, _ in GRUPPEN:
-            zlabels[k].configure(text=str(z.get(k, 0)), fg="black")
-        zlabels["FEHLER"].configure(text=str(fehler), fg=("#b00000" if fehler else "black"))
-        zlabels["HINWEISE"].configure(text=str(hinweise), fg=("#8a6d00" if hinweise else "black"))
+            zlabels[k].configure(text=str(z.get(k, 0)), fg=FG)
+        zlabels["FEHLER"].configure(text=str(fehler), fg=(ROT if fehler else FG))
+        zlabels["HINWEISE"].configure(text=str(hinweise), fg=(GOLD if hinweise else FG))
         if schluessel is None:
             zf.configure(text="Zuordnung")
         else:

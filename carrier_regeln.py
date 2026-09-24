@@ -41,7 +41,7 @@ einen schweren "2-Fach-Artikel"-Doppelpack mit "1-je-Paket").
 import html
 import re
 
-VERSION = "2026-09-24d"
+VERSION = "2026-09-24e"
 
 # --- Gewichtsgrenzen in kg (Klasse gilt bei Gewicht STRIKT UNTER der Grenze) -----
 G_BRIEF = 0.05
@@ -481,11 +481,21 @@ def je_paket_aufteilung(r, gewicht):
     weiterhin die normale Gewichtspruefung in bestimme_carrier() plus ggf.
     "Paket aufteilen" von Hand im Dashboard."""
     positionen = [p for p in (r.get("positionen") or []) if not _ist_versandposition(p)]
-    if len(positionen) != 1:
+    if not positionen:
         return None, None
+    # Derselbe Artikel auf MEHREREN Positionen (real: Rechnung 1705779, 2x
+    # "cc1407/56" je Menge 1) ist keine Mischbestellung - Mengen addieren,
+    # sofern Artikelnr, Fach-Faktor und je-Paket-Markierung identisch sind.
     p = positionen[0]
+    schluessel = lambda q: ((q.get("art") or "").strip().lower(), q.get("fach") or 1,
+                            q.get("je_paket"))
+    if not schluessel(p)[0] or any(schluessel(q) != schluessel(p) for q in positionen):
+        return None, None
+    try:
+        menge = sum(q.get("menge") or 0 for q in positionen)
+    except TypeError:
+        return None, None
     je_paket = p.get("je_paket")
-    menge = p.get("menge")
     if not je_paket or je_paket < 1 or not menge or menge <= 0:
         return None, None
     if gewicht is None or gewicht <= 0:
@@ -857,6 +867,21 @@ def selftest():
                           sendungsgewicht=30.0)
     check("3 Kartons Brennpaste bei 72-je-Paket -> passt genau in 1 Paket",
           bewerte_rechnung(r_brennpaste_3)["pakete"], None)
+
+    # Derselbe Artikel auf ZWEI Positionen (real: Rechnung 1705779, 2x
+    # "cc1407/56" 56-Fach-Artikel/84-je-Paket je Menge 1, 39,8 kg) ->
+    # Mengen addieren: 2 Kartons, je Paket 1 ganzer Karton -> 2 Pakete.
+    r_zwei_pos = dict(r_brennpaste, rnr="1705779", sendungsgewicht=39.8,
+                      positionen=[_pos("cc1407/56", 1.0, je_paket=84, fach=56),
+                                  _pos("cc1407/56", 1.0, je_paket=84, fach=56)])
+    b_zp = bewerte_rechnung(r_zwei_pos)
+    check("real 1705779: gleicher Artikel auf 2 Positionen -> 2 Pakete a 19,9 kg",
+          (b_zp["pakete"], b_zp["fehler"]), ([19.9, 19.9], []))
+    r_zwei_versch = dict(r_zwei_pos, rnr="1700909",
+                         positionen=[_pos("cc1407/56", 1.0, je_paket=84, fach=56),
+                                     _pos("cc1407/28", 1.0, je_paket=84, fach=28)])
+    check("verschiedene je-Paket-Artikel -> weiterhin keine Auto-Aufteilung",
+          bewerte_rechnung(r_zwei_versch)["pakete"], None)
 
     # Mischbestellung (Einzelversand-Artikel + weiterer echter Artikel) -> KEINE
     # automatische Aufteilung, da sich das Gesamtgewicht nicht zuverlaessig

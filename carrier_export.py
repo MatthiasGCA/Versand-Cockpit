@@ -47,7 +47,7 @@ from datetime import datetime
 
 import carrier_regeln as regeln
 
-VERSION = "2026-09-24a"
+VERSION = "2026-09-24b"
 
 # ---------------------------------------------------------------------------
 # Absenderdaten (fest - aus den Musterdateien uebernommen; DHL/DPD nutzen
@@ -98,11 +98,13 @@ def _gewicht_txt(g):
 
 
 def _name2_name3(a):
-    """Zusatzzeilen (Firma, c/o, Postnummer ...) -> (Name 2, Name 3).
-    1. Zeile -> Name 2, 2. -> Name 3, jede weitere mit ", " an Name 3
-    (carrier_regeln setzt dafuer einen Hinweis)."""
+    """Zusatzzeilen (Firma, c/o, Postnummer ...) + Ortsteil -> (Name 2, Name 3).
+    Der Ortsteil steht IMMER in Name 3 (nie im Ort - damit hat DHL oft
+    Probleme). 1. Zusatzzeile -> Name 2, weitere mit ", " in Name 3 (vor dem
+    Ortsteil; carrier_regeln setzt bei >2 Zeilen einen Hinweis)."""
     zusatz = [z for z in (a.get("zusatz") or []) if z]
-    return (zusatz[0] if zusatz else "", ", ".join(zusatz[1:]))
+    rest = zusatz[1:] + ([a["ortsteil"]] if a.get("ortsteil") else [])
+    return (zusatz[0] if zusatz else "", ", ".join(rest))
 
 
 def _dhl_dpd_zeile(b, ist_dpd, gewicht=None):
@@ -161,7 +163,8 @@ def _post_zeile(a, rnr):
     # ", " statt "; " - ein rohes Semikolon im Feldwert ist genau das Muster,
     # das bereinige() im Rest der Datei bewusst vermeidet (siehe dortiger
     # Kommentar zur zerrissenen Zeile durch ein Semikolon im Firmennamen).
-    zusatz = ", ".join(a.get("zusatz") or [])
+    zusatz = ", ".join(list(a.get("zusatz") or [])
+                       + ([a["ortsteil"]] if a.get("ortsteil") else []))
     return [a["name"], zusatz, a["strasse"], a["hausnr"], a["plz"], a["ort"],
             a["land"], "HOUSE", rnr]
 
@@ -295,6 +298,16 @@ def selftest():
     z = _dhl_dpd_zeile(b_z3, True)
     check("DPD: 3 Zusatzzeilen -> Name 2 + Name 3 zusammengefasst", (z[13], z[14]),
           ("Muster GmbH", "c/o Lager, Tor 3"))
+    b_ot = _bsp("1705888", "pax1", 5.2, ["Scheffert Kornelia", "Dorf 17 OT Quitzerow",
+                                         "17111 Kletzin"])
+    z = _dhl_dpd_zeile(b_ot, False)
+    check("DHL: Ortsteil ohne Zusatz -> Name 3, Ort sauber",
+          (z[13], z[14], z[15], z[16], z[18]), ("", "OT Quitzerow", "Dorf", "17", "Kletzin"))
+    b_ot2 = _bsp("1700012", "pax1", 2.0, ["A B", "Firma X", "Dorf 17 OT Quitzerow",
+                                          "17111 Kletzin"])
+    z = _dhl_dpd_zeile(b_ot2, False)
+    check("DHL: Zusatz + Ortsteil -> Name 2 / Name 3", (z[13], z[14]),
+          ("Firma X", "OT Quitzerow"))
     check("DHL DE: 32 Spalten", len(z), 32)
 
     # Manuell aufgeteilte Sendung (b["pakete"], siehe carrier_dashboard.

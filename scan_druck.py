@@ -50,9 +50,18 @@ try:
 except Exception:
     _HAS_REPORTLAB = False
 # ============================ KONFIGURATION ============================
-VERSION = "2026-09-21b"          # im Fenstertitel sichtbar -> Deployment pruefbar
+VERSION = "2026-09-24a"          # im Fenstertitel sichtbar -> Deployment pruefbar
 # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je Aenderung am selben Tag (erste
 # Aenderung des Tages = a, dann b, c ...; ein neuer Tag beginnt wieder bei a).
+# 2026-09-24a: Briefmarke "OHNE Zuordnung", obwohl schon gedruckt (real: Re
+#   1705754, Briefmarken.23Stk 09:02, gedruckt 09:21). Wurde eine Datei frisch
+#   eingelesen (Neustart / Datei kurz aus dem Netzwerk-Listing weg), nachdem
+#   Labels daraus schon gedruckt waren, zaehlten deren Rechnungsnummern ueber
+#   z.gedruckt als "fremd belegt" -> Label unzuordenbar, Datei nie archiviert.
+#   Jetzt gelten fuer "belegt" und "verdaechtig" nur Drucke, die VOR dem
+#   Entstehen der Datei (mtime, 60 s Toleranz) lagen (gedruckt_vor_datei).
+#   Der Evi-Schmid-Fall (2026-08-28a, alte Rechnung Tage vorher gedruckt)
+#   bleibt dadurch geschuetzt.
 # 2026-09-21b: Eigene Toene statt des Windows-Pieptons. standard.mp3 (Standard-
 #   ton: Mehrfach-Scan-Warnung, Mengeninfo fehlt, falscher Artikel) und EAN.mp3
 #   (Aufforderung zum Artikel-EAN-Scan, auch Sammeldruck) - beide Dateien
@@ -989,6 +998,19 @@ def archiviere(z, pfad, ordner):
     _entferne_datei(z, pfad)
     _recompute(z)
     return True
+DRUCK_VOR_DATEI_TOLERANZ = 60      # Sek. Puffer fuer Uhr-Abweichung Share/PC
+def gedruckt_vor_datei(z, nr, datei_mtime):
+    """True, wenn nr schon gedruckt wurde, BEVOR die Datei (mtime) entstand.
+    Ein spaeterer Druck kann nur aus dieser Datei selbst stammen. Unbekannter
+    Zeitstempel ('?') zaehlt vorsichtshalber als 'vorher'."""
+    ts = z.gedruckt.get(nr)
+    if ts is None:
+        return False
+    try:
+        t = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S").timestamp()
+    except (TypeError, ValueError):
+        return True
+    return t < datei_mtime - DRUCK_VOR_DATEI_TOLERANZ
 def aktualisiere_index(z, ordner):
     """Synchronisiert den Index mit dem Ordnerinhalt. True bei Aenderung."""
     with z.lock:
@@ -1065,8 +1087,17 @@ def aktualisiere_index(z, ordner):
             # "Post-Sendungen ohne Zuordnung" (es WURDE ja "erfolgreich"
             # zugeordnet, nur falsch), aber "Keine Sendung zu 1701727
             # gefunden" beim Scannen der echten neuen Rechnung.
+            # ABER nur Drucke, die VOR dem Entstehen dieser Datei lagen (Fix
+            # 2026-09-24a, real an Re 1705754): wurde die Datei frisch
+            # eingelesen (Cockpit-Neustart oder Datei kurz aus dem Netzwerk-
+            # Listing verschwunden), NACHDEM schon Labels daraus gedruckt
+            # waren, galten deren eigene Rechnungsnummern als "fremd belegt"
+            # -> das bereits gedruckte Label wurde "OHNE Zuordnung" und die
+            # Datei nie archiviert.
             eigene_alt = z.datei_nrs.get(pfad, set())
-            belegte = (set(z.index.keys()) | set(z.gedruckt.keys())) - eigene_alt
+            belegte = (set(z.index.keys())
+                       | {nr for nr in z.gedruckt
+                          if gedruckt_vor_datei(z, nr, st.st_mtime)}) - eigene_alt
             eintraege = parse_datei(pfad, belegte)
             if eintraege is None:
                 continue
@@ -1095,7 +1126,8 @@ def aktualisiere_index(z, ordner):
                 #     abgelegte Datei). Nicht stillschweigend durchlaufen lassen
                 #     -> markieren, damit sie unten NICHT automatisch archiviert
                 #     wird, sondern als Warnung sichtbar bleibt.
-                if nr in z.gedruckt and pfad not in z.verdaechtig[nr]:
+                if (gedruckt_vor_datei(z, nr, st.st_mtime)
+                        and pfad not in z.verdaechtig[nr]):
                     z.verdaechtig[nr].append(pfad)
                 z.index[nr].append((pfad, seite, versender))
                 if emp:

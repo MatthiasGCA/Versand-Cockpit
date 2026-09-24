@@ -4,7 +4,7 @@ carrier_statistik.py - Kg-Statistik je Carrier fuer das Carrier-Dashboard
 ================================================================================
 Haengt bei jedem Schritt-2-Lauf (carrier_dashboard.exportiere_alles) eine Zeile
 pro TATSAECHLICH exportierter Rechnung an eine CSV an (dieselbe Bedingung wie
-carrier_export.exportiere(): status != "fehler" UND Carrier zugeordnet):
+carrier_export.exportiere(): status == "ok" UND Carrier zugeordnet):
 Datum, Carrier, Gewicht (kg), Land, Ausland-Flag, Rechnungsnummer. Reine
 Schreib-/Auswertelogik ohne GUI - Selbsttest via py carrier_statistik.py.
 
@@ -30,7 +30,7 @@ import os
 from collections import Counter, defaultdict
 from datetime import datetime
 
-VERSION = "2026-09-23f"
+VERSION = "2026-09-24a"
 
 STATISTIK_DATEI = r"\\DESKTOP-N2H75H\Netzwerk\Paketscheine\carrier_statistik.csv"
 ARTIKEL_STATISTIK_DATEI = r"\\DESKTOP-N2H75H\Netzwerk\Paketscheine\artikel_statistik.csv"

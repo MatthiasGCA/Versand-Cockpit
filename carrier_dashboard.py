@@ -89,7 +89,7 @@ from tkinter import messagebox, simpledialog, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-09-23l"
+VERSION = "2026-09-24a"
 
 # Fenster-/Taskleisten-Symbol (siehe gui() unten) - liegt im selben Ordner
 # wie dieses Skript, damit es unveraendert auch nach einem Umzug funktioniert.
@@ -283,7 +283,7 @@ def exportiere_alles(rechnungen, ergebnisse, ausgabe_pfad, archiv_ordner, carrie
     ergebnisse (dazu bewertete Carrier-Ergebnisse, GLEICHE Reihenfolge/Laenge)
     -> Pickliste-PDF + fuenf Bruecken-CSVs (wie packliste.main(), Layout/Logik
     unveraendert) im Ordner von ausgabe_pfad, Carrier-CSVs nach carrier_ordner
-    (carrier_export.exportiere - exportiert nur status != 'fehler' MIT
+    (carrier_export.exportiere - exportiert nur status == 'ok' MIT
     Carrier), danach Archivierung der eingelesenen PDFs nach archiv_ordner
     (packliste.archiviere - verschiebt nur, was erfolgreich verarbeitet wurde).
     Gibt einen Berichts-dict zurueck; einzelne Archiv-Fehler werfen KEINE
@@ -407,6 +407,8 @@ def _frage_gewicht(root, titel, prompt, minvalue, maxvalue, initialvalue=None):
         text_bereinigt = text.strip().replace(",", ".")
         try:
             wert = float(text_bereinigt)
+            if wert != wert:                    # "nan" passiert sonst beide Grenzvergleiche
+                raise ValueError
         except ValueError:
             messagebox.showerror(titel,
                                  "\"%s\" ist keine gültige Zahl. Bitte z.B. 25,5 oder "
@@ -917,7 +919,7 @@ def gui():
                     rechnungen_roh[:] = [r for i, r in enumerate(rechnungen_roh)
                                          if i not in verarbeitet]
                     ergebnisse[:] = [b for i, b in enumerate(ergebnisse) if i not in verarbeitet]
-                    quittiert &= {b["rnr"] for b in ergebnisse}   # nicht mehr vorhandene aufraeumen
+                    quittiert.intersection_update(b["rnr"] for b in ergebnisse)   # In-place: "&=" waere hier eine lokale Neubindung (UnboundLocalError)
                     filter_state["schluessel"] = None    # Indizes verschoben -> Filter zuruecksetzen
                     fuelle()
                     # Bleiben Zeilen stehen (Filter/uebersprungen), kann direkt ein

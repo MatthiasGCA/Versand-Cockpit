@@ -41,7 +41,7 @@ einen schweren "2-Fach-Artikel"-Doppelpack mit "1-je-Paket").
 import html
 import re
 
-VERSION = "2026-09-23g"
+VERSION = "2026-09-24a"
 
 # --- Gewichtsgrenzen in kg (Klasse gilt bei Gewicht STRIKT UNTER der Grenze) -----
 G_BRIEF = 0.05
@@ -475,7 +475,8 @@ def je_paket_aufteilung(r, gewicht):
 
 def bewerte_rechnung(r):
     """Ergebnis-dict fuer eine geparste Rechnung (siehe carrier_dashboard.py).
-    status: 'ok' | 'warn' (Hinweise, Export moeglich) | 'fehler' (blockiert)."""
+    status: 'ok' | 'warn' (offener Hinweis - blockiert den Export bis zum
+    Quittieren) | 'fehler' (blockiert)."""
     fehler, hinweise = [], []
     rnr = r.get("rnr") or ""
     if not rnr:

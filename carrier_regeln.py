@@ -41,7 +41,7 @@ einen schweren "2-Fach-Artikel"-Doppelpack mit "1-je-Paket").
 import html
 import re
 
-VERSION = "2026-09-24a"
+VERSION = "2026-09-24b"
 
 # --- Gewichtsgrenzen in kg (Klasse gilt bei Gewicht STRIKT UNTER der Grenze) -----
 G_BRIEF = 0.05
@@ -159,6 +159,18 @@ _STRASSE_HNR = re.compile(
 # zwei eigenen Zeilen, real beobachtet an Rechnung 1705611/1705631: "Wiesenweg"
 # / "4", "lindenstrasse" / "8").
 _NUR_HAUSNUMMER = re.compile(r"^\d+\s*[A-Za-z]?$")
+# Ortsteil HINTER der Hausnummer ("Dorf 17 OT Quitzerow", Rechnung 1705888) -
+# wuerde sonst die Hausnummer-Erkennung verhindern. Wird an den Ort gehaengt.
+_ORTSTEIL = re.compile(r"^(?P<str>.*\d\s*[A-Za-z]?)[\s,]+(?P<ot>(?:OT|Ortsteil)\b\.?\s*\S.*)$",
+                       re.I)
+
+
+def _trenne_ortsteil(zeile):
+    """('Dorf 17', 'OT Quitzerow') bzw. (zeile, '') ohne Ortsteil-Anhang."""
+    m = _ORTSTEIL.match(zeile or "")
+    if m and _STRASSE_HNR.match(m.group("str")):
+        return m.group("str").strip(), m.group("ot").strip()
+    return zeile, ""
 
 
 def _finde_strasse(kandidaten):
@@ -177,7 +189,7 @@ def _finde_strasse(kandidaten):
     #    der echten Strassenzeile) nach der ersten Zeile suchen, die schon fuer
     #    sich allein wie "Strasse + Hausnummer" aussieht.
     for k in range(len(kandidaten) - 1, -1, -1):
-        if _STRASSE_HNR.match(kandidaten[k]):
+        if _STRASSE_HNR.match(_trenne_ortsteil(kandidaten[k])[0]):
             return kandidaten[k], kandidaten[:k] + kandidaten[k + 1:]
     # 2) Keine Zeile passt einzeln - evtl. Strasse und Hausnummer auf zwei
     #    eigenen Zeilen: ist die letzte Zeile NUR die Hausnummer, mit der Zeile
@@ -232,6 +244,11 @@ def analysiere_adresse(zeilen):
         out["hinweise"].append("PLZ/Ort stehen in der Strassenzeile - bitte prüfen")
     else:
         strasse_roh, zusatz = _finde_strasse(zl[1:idx])
+    # Ortsteil an den Ort haengen, nicht in den Zusatz - die DHL/DPD-CSV
+    # schreibt den Zusatz nicht mit, der Ortsteil waere sonst verloren.
+    strasse_roh, ortsteil = _trenne_ortsteil(strasse_roh)
+    if ortsteil:
+        out["ort"] = ("%s %s" % (out["ort"], ortsteil)).strip()
     out["zusatz"] = zusatz
 
     # --- Land -----------------------------------------------------------------
@@ -635,6 +652,14 @@ def selftest():
     check("adr real 1705611 (Strasse/Hausnr auf zwei Zeilen)",
           (a["strasse"], a["hausnr"], a["zusatz"], a["hinweise"]),
           ("Wiesenweg", "4", [], []))
+    # Ortsteil hinter der Hausnummer -> Zusatz (Rechnung 1705888).
+    a = analysiere_adresse(["Scheffert Kornelia", "Dorf 17 OT Quitzerow", "17111 Kletzin"])
+    check("adr real 1705888 (Ortsteil hinter Hausnr)",
+          (a["strasse"], a["hausnr"], a["ort"], a["zusatz"], a["hinweise"]),
+          ("Dorf", "17", "Kletzin OT Quitzerow", [], []))
+    a = analysiere_adresse(["Max Muster", "Hauptstr. 5a, Ortsteil Oberdorf", "12345 Ort"])
+    check("adr Ortsteil ausgeschrieben mit Komma",
+          (a["strasse"], a["hausnr"], a["ort"]), ("Hauptstr.", "5a", "Ort Ortsteil Oberdorf"))
     # Hausnummer mit Doppelpunkt statt Leerzeichen angeklebt.
     a = analysiere_adresse(["Johannes Wanke", "Peheimer Str :11", "DE-49699 Lindern"])
     check("adr real 1705571 (Hausnr mit Doppelpunkt angeklebt)",

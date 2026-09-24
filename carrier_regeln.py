@@ -41,7 +41,7 @@ einen schweren "2-Fach-Artikel"-Doppelpack mit "1-je-Paket").
 import html
 import re
 
-VERSION = "2026-09-24b"
+VERSION = "2026-09-24c"
 
 # --- Gewichtsgrenzen in kg (Klasse gilt bei Gewicht STRIKT UNTER der Grenze) -----
 G_BRIEF = 0.05
@@ -188,7 +188,12 @@ def _finde_strasse(kandidaten):
     # 1) Rueckwaerts (naeher an der PLZ zuerst, das ist die ueblichere Position
     #    der echten Strassenzeile) nach der ersten Zeile suchen, die schon fuer
     #    sich allein wie "Strasse + Hausnummer" aussieht.
+    #    Eine reine Hausnummer-Zeile zaehlt dabei NICHT (Fix 2026-09-24c, real
+    #    an 1705798 "Eickendorf"/"19": "19" passte selbst als Strasse "1" +
+    #    Hausnr "9" - die echte Strasse fiel in den Zusatz, Status trotzdem ok).
     for k in range(len(kandidaten) - 1, -1, -1):
+        if _NUR_HAUSNUMMER.match(kandidaten[k]):
+            continue
         if _STRASSE_HNR.match(_trenne_ortsteil(kandidaten[k])[0]):
             return kandidaten[k], kandidaten[:k] + kandidaten[k + 1:]
     # 2) Keine Zeile passt einzeln - evtl. Strasse und Hausnummer auf zwei
@@ -244,12 +249,29 @@ def analysiere_adresse(zeilen):
         out["hinweise"].append("PLZ/Ort stehen in der Strassenzeile - bitte prüfen")
     else:
         strasse_roh, zusatz = _finde_strasse(zl[1:idx])
-    # Ortsteil an den Ort haengen, nicht in den Zusatz - die DHL/DPD-CSV
-    # schreibt den Zusatz nicht mit, der Ortsteil waere sonst verloren.
+    # Ortsteil an den Ort haengen (gehoert inhaltlich zum Ort, nicht in
+    # Name 2/3 der DHL/DPD-CSV).
     strasse_roh, ortsteil = _trenne_ortsteil(strasse_roh)
     if ortsteil:
         out["ort"] = ("%s %s" % (out["ort"], ortsteil)).strip()
+    # Doppelte Zeilen verwerfen - Amicron wiederholt manchmal die Strasse
+    # (1705811 "Seegeritzer Weg 202" 2x) oder den Namen (1705916 Firma 2x);
+    # die landeten sonst seit Name 2/3-Export doppelt auf dem Label.
+    def _n(t):
+        return re.sub(r"[^0-9a-zäöüß]", "", (t or "").lower())
+    schon = {_n(out["name"]), _n(strasse_roh), _n(strasse_roh + ortsteil)}
+    rein = []
+    for z in zusatz:
+        if _n(z) not in schon:
+            rein.append(z)
+            schon.add(_n(z))
+    zusatz = rein
     out["zusatz"] = zusatz
+    if len(zusatz) > 2:
+        # DHL/DPD haben nur Name 2 + Name 3 - ab der 3. Zusatzzeile wird in
+        # Name 3 zusammengefasst (carrier_export._name2_name3), bitte pruefen.
+        out["hinweise"].append("Mehr als 2 Zusatzzeilen - bei DHL/DPD in Name 3 "
+                               "zusammengefasst: %s" % " | ".join(zusatz[1:]))
 
     # --- Land -----------------------------------------------------------------
     land = ""
@@ -652,7 +674,23 @@ def selftest():
     check("adr real 1705611 (Strasse/Hausnr auf zwei Zeilen)",
           (a["strasse"], a["hausnr"], a["zusatz"], a["hinweise"]),
           ("Wiesenweg", "4", [], []))
-    # Ortsteil hinter der Hausnummer -> Zusatz (Rechnung 1705888).
+    # Strasse + ZWEISTELLIGE Hausnr auf zwei Zeilen (1705798) - "19" darf
+    # nicht selbst als Strasse "1" + Hausnr "9" gelten.
+    a = analysiere_adresse(["Gilbert Niemann", "Eickendorf", "19", "DE-48317 Drensteinfurt"])
+    check("adr real 1705798 (zweistellige Hausnr auf eigener Zeile)",
+          (a["strasse"], a["hausnr"], a["zusatz"]), ("Eickendorf", "19", []))
+    a = analysiere_adresse(["Rudolf Pieper", "Isingheim", "11a", "DE-59889 Eslohe"])
+    check("adr real 1705834 (Hausnr mit Buchstabe auf eigener Zeile)",
+          (a["strasse"], a["hausnr"], a["zusatz"]), ("Isingheim", "11a", []))
+    # Doppelte Strassen-/Namenszeile nicht in den Zusatz.
+    a = analysiere_adresse(["Marlenis Rodriguez", "Seegeritzer Weg 202",
+                            "Seegeritzer Weg 202", "DE-04349 Leipzig"])
+    check("adr real 1705811 (Strasse doppelt)", (a["strasse"], a["hausnr"], a["zusatz"]),
+          ("Seegeritzer Weg", "202", []))
+    a = analysiere_adresse(["Central Plaza GmbH", "Central Plaza GmbH", "Hauptplatz 5",
+                            "DE-86971 Peiting"])
+    check("adr real 1705916 (Name doppelt)", a["zusatz"], [])
+    # Ortsteil hinter der Hausnummer -> an den Ort (Rechnung 1705888).
     a = analysiere_adresse(["Scheffert Kornelia", "Dorf 17 OT Quitzerow", "17111 Kletzin"])
     check("adr real 1705888 (Ortsteil hinter Hausnr)",
           (a["strasse"], a["hausnr"], a["ort"], a["zusatz"], a["hinweise"]),

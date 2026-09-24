@@ -47,7 +47,7 @@ from datetime import datetime
 
 import carrier_regeln as regeln
 
-VERSION = "2026-09-23e"
+VERSION = "2026-09-24a"
 
 # ---------------------------------------------------------------------------
 # Absenderdaten (fest - aus den Musterdateien uebernommen; DHL/DPD nutzen
@@ -97,12 +97,21 @@ def _gewicht_txt(g):
     return ("%.4f" % (g or 0)).replace(".", ",")
 
 
+def _name2_name3(a):
+    """Zusatzzeilen (Firma, c/o, Postnummer ...) -> (Name 2, Name 3).
+    1. Zeile -> Name 2, 2. -> Name 3, jede weitere mit ", " an Name 3
+    (carrier_regeln setzt dafuer einen Hinweis)."""
+    zusatz = [z for z in (a.get("zusatz") or []) if z]
+    return (zusatz[0] if zusatz else "", ", ".join(zusatz[1:]))
+
+
 def _dhl_dpd_zeile(b, ist_dpd, gewicht=None):
     """gewicht ueberschreibt optional b["gewicht"] (Gesamtgewicht laut
     Rechnung) - fuer eine manuell in zwei Pakete aufgeteilte DHL-Sendung
     (b["pakete"]) wird diese Funktion einmal je Einzelgewicht aufgerufen,
     siehe _dhl_zeilen()."""
     a = b["adresse"]
+    name2, name3 = _name2_name3(a)
     if ist_dpd:
         produkt, abrechnung = DPD_PRODUKT
         empf_ref = b.get("kdnr") or ""
@@ -119,7 +128,7 @@ def _dhl_dpd_zeile(b, ist_dpd, gewicht=None):
         ab["name1"], "", "",
         ab["strasse"], ab["hausnr"], ab["plz"], ab["ort"], ab["land"],
         ab["email"], ab["telefon"],
-        a["name"], "", "",                       # Name nicht getrennt (Kundenwunsch)
+        a["name"], name2, name3,                 # Name nicht getrennt (Kundenwunsch)
         a["strasse"], a["hausnr"], a["plz"], a["ort"], regeln.iso3(a["land"]),
         "", empf_telefon,
         _gewicht_txt(gewicht if gewicht is not None else b["gewicht"]),
@@ -274,8 +283,18 @@ def selftest():
     check("DHL DE: Produkt/Abrechnung", (z[24], z[25]), ("V01PAK", "52148008630101"))
     check("DHL DE: Land ISO3", z[19], "DEU")
     check("DHL DE: Telefon-Feld = Leerzeichen+Rnr", z[21], " 1705334")
-    check("DHL DE: Name ungetrennt", (z[12], z[13], z[14]), ("Karl-Heinz Kuril", "", ""))
+    check("DHL DE: Name ungetrennt, ohne Zusatz Name 2/3 leer", (z[12], z[13], z[14]),
+          ("Karl-Heinz Kuril", "", ""))
     check("DHL DE: Gewicht Komma-Format", z[22], "3,8000")
+    b_z1 = _bsp("1700010", "pax1", 2.0, ["Max Muster", "Muster GmbH", "Weg 1", "12345 Ort"])
+    z = _dhl_dpd_zeile(b_z1, False)
+    check("DHL: 1 Zusatzzeile -> Name 2", (z[12], z[13], z[14]),
+          ("Max Muster", "Muster GmbH", ""))
+    b_z3 = _bsp("1700011", "wapo", 1.0,
+                ["Max Muster", "Muster GmbH", "c/o Lager", "Tor 3", "Weg 1", "12345 Ort"])
+    z = _dhl_dpd_zeile(b_z3, True)
+    check("DPD: 3 Zusatzzeilen -> Name 2 + Name 3 zusammengefasst", (z[13], z[14]),
+          ("Muster GmbH", "c/o Lager, Tor 3"))
     check("DHL DE: 32 Spalten", len(z), 32)
 
     # Manuell aufgeteilte Sendung (b["pakete"], siehe carrier_dashboard.

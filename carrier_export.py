@@ -47,7 +47,7 @@ from datetime import datetime
 
 import carrier_regeln as regeln
 
-VERSION = "2026-09-24b"
+VERSION = "2026-09-25a"
 
 # ---------------------------------------------------------------------------
 # Absenderdaten (fest - aus den Musterdateien uebernommen; DHL/DPD nutzen
@@ -89,6 +89,11 @@ POST_SPALTEN = ["NAME", "ZUSATZ", "STRASSE", "NUMMER", "PLZ", "STADT", "LAND",
 DHL_PRODUKT = {"DE": ("V01PAK", "52148008630101")}
 DHL_PRODUKT_DEFAULT = ("V53WPAK.V53VV", "52148008635303")
 DPD_PRODUKT = ("V01PAK", "52148008630101")          # DPD: immer Inland
+# DHL Kleinpaket (Inland-Werte per Test-Import bei DHL bestaetigt 2026-09-25);
+# fuer Auslands-Kleinpakete (b["kleinpaket"], siehe carrier_regeln.
+# ist_auslands_kleinpaket) zunaechst dieselben Werte - bei Ablehnung durch DHL
+# HIER anpassen.
+DHL_KLEINPAKET = ("V62KP", "52148008636201")
 DPD_FESTWERTE = ("34", "23", "5", "16")             # IBAN/BIC/Zahlungsempf./Bankname
 
 
@@ -120,7 +125,10 @@ def _dhl_dpd_zeile(b, ist_dpd, gewicht=None):
         empf_telefon = ""
         nachnahme = ("", *DPD_FESTWERTE, "")
     else:
-        produkt, abrechnung = DHL_PRODUKT.get(a["land"], DHL_PRODUKT_DEFAULT)
+        if b.get("kleinpaket"):
+            produkt, abrechnung = DHL_KLEINPAKET
+        else:
+            produkt, abrechnung = DHL_PRODUKT.get(a["land"], DHL_PRODUKT_DEFAULT)
         empf_ref = b["rnr"]                     # DHL: Referenz = Rechnungsnummer
         empf_telefon = " " + b["rnr"]            # zweckentfremdet, siehe Modul-Kopf
         nachnahme = ("", "", "", "", "", "")
@@ -341,6 +349,15 @@ def selftest():
           [z[22] for z in zeilen3], ["25,0000", "25,0000", "20,4000"])
 
     check("Unaufgeteilte Sendung: weiterhin genau 1 Zeile", len(_dhl_zeilen(b_dhl_de)), 1)
+
+    b_kp = _bsp("1700991", "wapo", 0.8, ["A B", "Weg 1", "AT-8330 Feldbach"])
+    b_kp["kleinpaket"] = True
+    z_kp = _dhl_dpd_zeile(b_kp, False)
+    check("DHL Kleinpaket Ausland: Produkt/Abrechnung", (z_kp[24], z_kp[25]),
+          ("V62KP", "52148008636201"))
+    check("DHL Kleinpaket Ausland: Land AUT", z_kp[19], "AUT")
+    check("DHL ohne Kleinpaket-Flag: unveraendert Auslandsprodukt",
+          (_dhl_dpd_zeile(dict(b_kp, kleinpaket=False), False)[24],), ("V53WPAK.V53VV",))
 
     b_dhl_at = _bsp("1703056", "pax1", 2.4, ["Michael Höfler", "Mühldorf 414", "AT-8330 Feldbach"])
     z = _dhl_dpd_zeile(b_dhl_at, False)

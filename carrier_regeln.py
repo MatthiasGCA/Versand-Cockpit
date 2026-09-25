@@ -36,12 +36,19 @@ werden davon automatisch ausgenommen: je_paket_aufteilung() teilt eine
 Rechnung mit GENAU EINEM so markierten Artikel automatisch in mehrere
 DHL-Pakete auf (gleichmaessig verteilt, inkl. Fach-Artikel-Faktor fuer z.B.
 einen schweren "2-Fach-Artikel"-Doppelpack mit "1-je-Paket").
+
+DHL-Kleinpaket (2026-09-25, Regel von Matthias): eine DHL-Sendung ins AUSLAND
+wird als Kleinpaket statt Paket exportiert, wenn ALLE Bedingungen zutreffen:
+Gewicht von 0,6 bis 1,0 kg (Grenzen inklusive), Warenwert ueber 40 EUR (Summe
+der Positionspreise OHNE Versandkosten, wie auf der Rechnung gedruckt), eine
+Kennung Wapo oder Pox1 und KEINE Pax1 (Pax1 = Paket-Pflicht). Siehe
+ist_auslands_kleinpaket() und die Konstanten KLEINPAKET_*.
 """
 
 import html
 import re
 
-VERSION = "2026-09-24e"
+VERSION = "2026-09-25b"
 
 # --- Gewichtsgrenzen in kg (Klasse gilt bei Gewicht STRIKT UNTER der Grenze) -----
 G_BRIEF = 0.05
@@ -50,6 +57,11 @@ G_DPD = 1.1
 # DHL-Paket-Maximalgewicht (Matthias bestaetigt) - darueber kann DHL die
 # Sendung nicht annehmen, blockiert also den Export (siehe bestimme_carrier()).
 G_DHL_MAX = 31.5
+# DHL-Kleinpaket Ausland (Regel von Matthias 2026-09-25)
+KLEINPAKET_MIN_KG = 0.6
+KLEINPAKET_MAX_KG = 1.0
+KLEINPAKET_MIN_WARENWERT = 40.0               # EUR, strikt darueber
+KLEINPAKET_KENNUNGEN = {"wapo", "pox1"}
 
 BRIEF = "Post Brief"
 GROSSBRIEF = "Post Großbrief"
@@ -466,6 +478,34 @@ def _ist_versandposition(p):
     return False
 
 
+def warenwert(r):
+    """Summe der Positionspreise (G-Preis, wie auf der Rechnung gedruckt) OHNE
+    Versandkosten-Zeilen; None, wenn bei einer echten Position der Preis nicht
+    gelesen werden konnte (dann laesst sich der Warenwert nicht sicher sagen)."""
+    summe = 0.0
+    for p in r.get("positionen") or []:
+        if _ist_versandposition(p):
+            continue
+        if p.get("gp") is None:
+            return None
+        summe += p["gp"]
+    return round(summe, 2)
+
+
+def ist_auslands_kleinpaket(r, kenn, gewicht, land):
+    """True, wenn eine DHL-Auslandssendung als Kleinpaket exportiert werden
+    soll (Regel siehe Modulkopf). Erwartet, dass der Carrier schon DHL ist."""
+    if not land or land == "DE" or gewicht is None:
+        return False
+    if not (KLEINPAKET_KENNUNGEN & set(kenn)) or "pax1" in kenn:
+        return False
+    g = round(gewicht, 5)
+    if not (KLEINPAKET_MIN_KG <= g <= KLEINPAKET_MAX_KG):
+        return False
+    wert = warenwert(r)
+    return wert is not None and wert > KLEINPAKET_MIN_WARENWERT
+
+
 def je_paket_aufteilung(r, gewicht):
     """(pakete|None, grund_zusatz|None) - automatische Paketaufteilung fuer
     eine Rechnung mit GENAU EINER echten Position, die mit "<N>-je-Paket"
@@ -579,6 +619,11 @@ def bewerte_rechnung(r):
         if pakete is not None:
             fehler = [f for f in fehler if "DHL-Maximalgewicht" not in f]
             grund += ", " + je_paket_grund
+    kleinpaket = carrier == DHL and ist_auslands_kleinpaket(r, kenn, gewicht, adr["land"])
+    if kleinpaket:
+        grund += (", DHL-Kleinpaket Ausland (%s kg, Warenwert %s EUR)"
+                  % (("%.3f" % gewicht).replace(".", ","),
+                     ("%.2f" % warenwert(r)).replace(".", ",")))
     if not (r.get("zeilen_ok", True) and r.get("summe_ok", True)
             and r.get("vollstaendig_ok", True)):
         hinweise.append("Rechnungsprüfung (Beträge/Vollständigkeit) nicht bestanden")
@@ -594,7 +639,7 @@ def bewerte_rechnung(r):
         "kennungen": sorted(kenn), "gewicht": gewicht, "kdnr": kdnr,
         "carrier": carrier, "ausland": bool(adr["land"]) and adr["land"] != "DE",
         "grund": grund, "fehler": fehler, "hinweise": hinweise, "status": status,
-        "pakete": pakete,
+        "pakete": pakete, "kleinpaket": kleinpaket,
     }
 
 
@@ -953,6 +998,36 @@ def selftest():
     b_edit2 = bewerte_rechnung(dict(r_edit, adresse_zeilen=adresse_zeilen_aus_feldern(
         "Anna Test", [], "Wiesenweg", "4", "", "12345", "Musterstadt", "DE")))
     check("Nach Korrektur: ok, DHL", (b_edit2["status"], b_edit2["carrier"]), ("ok", DHL))
+
+    # DHL-Kleinpaket Ausland (Regel von Matthias 2026-09-25)
+    def _kp(kennung, gewicht, wert, land_zeilen=("A B", "Weg 1", "AT-8330 Feldbach"),
+            art_gp=None):
+        pos = _pos("A1", 1.0)
+        pos["kennungen"] = kennung
+        pos["gp"] = wert
+        pos_ver = {"art": "660", "bez": "Versandkosten", "menge": 1.0, "kennungen": [],
+                   "lagerorte": [], "gp": 12.5}
+        return bewerte_rechnung({"rnr": "1700990", "datei": "x.pdf", "sendungsgewicht": gewicht,
+                                 "adresse_zeilen": list(land_zeilen), "positionen": [pos, pos_ver],
+                                 "zeilen_ok": True, "summe_ok": True, "vollstaendig_ok": True})
+    check("Kleinpaket: AT, wapo, 0,8 kg, 45 EUR -> Kleinpaket (DHL)",
+          (_kp(["wapo"], 0.8, 45.0)["carrier"], _kp(["wapo"], 0.8, 45.0)["kleinpaket"]), (DHL, True))
+    check("Kleinpaket: pox1 zaehlt ebenfalls", _kp(["pox1"], 0.7, 45.0)["kleinpaket"], True)
+    check("Kleinpaket: Grenze 0,6 kg inklusive", _kp(["pox1"], 0.6, 45.0)["kleinpaket"], True)
+    check("Kleinpaket: Grenze 1,0 kg inklusive", _kp(["wapo"], 1.0, 45.0)["kleinpaket"], True)
+    check("Kleinpaket: 0,59 kg -> nein", _kp(["wapo"], 0.59, 45.0)["kleinpaket"], False)
+    check("Kleinpaket: 1,05 kg -> nein", _kp(["wapo"], 1.05, 45.0)["kleinpaket"], False)
+    check("Kleinpaket: Warenwert genau 40 EUR -> nein (strikt darueber)",
+          _kp(["wapo"], 0.8, 40.0)["kleinpaket"], False)
+    check("Kleinpaket: Warenwert 40,01 EUR -> ja", _kp(["wapo"], 0.8, 40.01)["kleinpaket"], True)
+    check("Kleinpaket: Warenwert zaehlt OHNE Versandkosten (30 EUR + 12,50 Versand -> nein)",
+          _kp(["wapo"], 0.8, 30.0)["kleinpaket"], False)
+    check("Kleinpaket: mit Pax1 -> nein (Paket-Pflicht)", _kp(["pax1", "wapo"], 0.8, 45.0)["kleinpaket"], False)
+    check("Kleinpaket: nur Brx1 -> nein", _kp(["brx1"], 0.8, 45.0)["kleinpaket"], False)
+    check("Kleinpaket: Inland -> nein (auch DHL-Packstation)",
+          _kp(["wapo"], 0.8, 45.0, ("A B", "Weg 1", "12345 Ort"))["kleinpaket"], False)
+    check("Kleinpaket: Warenwert unbekannt (Preis fehlt) -> nein", _kp(["wapo"], 0.8, None)["kleinpaket"], False)
+    check("Kleinpaket: Grund nennt Kleinpaket", "Kleinpaket" in _kp(["wapo"], 0.8, 45.0)["grund"], True)
 
     if n_fail:
         print("SELBSTTEST FEHLGESCHLAGEN (%d von %d):" % (len(n_fail), n_ok + len(n_fail)))

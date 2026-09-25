@@ -99,7 +99,7 @@ from tkinter import messagebox, simpledialog, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-09-25d"
+VERSION = "2026-09-25e"
 
 # Fenster-/Taskleisten-Symbol (siehe gui() unten) - liegt im selben Ordner
 # wie dieses Skript, damit es unveraendert auch nach einem Umzug funktioniert.
@@ -1008,6 +1008,8 @@ def gui():
             if b.get("pakete"):
                 gtxt += " (%d Pakete)" % len(b["pakete"])
             c = b["carrier"] or "-"
+            if b.get("kleinpaket"):
+                c += " Kleinpaket"
             if b["carrier"] in (regeln.BRIEF, regeln.GROSSBRIEF):
                 c += " Ausland" if b["ausland"] else " Inland"
             tv.insert("", "end", iid=str(i), tags=(b["status"],), values=(

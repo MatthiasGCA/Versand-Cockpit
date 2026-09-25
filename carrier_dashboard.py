@@ -99,7 +99,7 @@ from tkinter import messagebox, simpledialog, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-09-25e"
+VERSION = "2026-09-25f"
 
 # Fenster-/Taskleisten-Symbol (siehe gui() unten) - liegt im selben Ordner
 # wie dieses Skript, damit es unveraendert auch nach einem Umzug funktioniert.
@@ -737,18 +737,24 @@ def gui():
             else:
                 root.after(50, poll)
 
-        alt = (str(btn_zuordnen["state"]), str(btn_export["state"]))
         alter_status = status_var.get()
         wartet["an"] = True
         btn_zuordnen.configure(state="disabled")
         btn_export.configure(state="disabled")
-        status_var.set("Lese Statistik-Dateien ...")
+        warte_text = "Lese Statistik-Dateien ..."
+        status_var.set(warte_text)
         root.after(50, poll)
         root.wait_variable(fertig)
         wartet["an"] = False
-        btn_zuordnen.configure(state=alt[0])
-        btn_export.configure(state=alt[1])
-        status_var.set(alter_status)
+        # Zustand NEU ableiten statt den alten wiederherzustellen: waehrend des
+        # Wartens kann ein Lese-/Export-Lauf fertig geworden sein (Handler laufen
+        # in der Warte-Ereignisschleife) - ein Zurueckschreiben des alten Zustands
+        # wuerde die Buttons dauerhaft sperren bzw. den Fertig-Status ueberschreiben.
+        frei = not laeuft["an"]
+        btn_zuordnen.configure(state="normal" if frei else "disabled")
+        btn_export.configure(state="normal" if frei and ergebnisse else "disabled")
+        if status_var.get() == warte_text:
+            status_var.set(alter_status)
         if t.is_alive() or "fehler" in erg:
             return False, None
         return True, erg["wert"]

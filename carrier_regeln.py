@@ -41,14 +41,15 @@ DHL-Kleinpaket (2026-09-25, Regel von Matthias): eine DHL-Sendung ins AUSLAND
 wird als Kleinpaket statt Paket exportiert, wenn ALLE Bedingungen zutreffen:
 Gewicht von 0,6 bis 1,0 kg (Grenzen inklusive), Warenwert ueber 40 EUR (Summe
 der Positionspreise OHNE Versandkosten, wie auf der Rechnung gedruckt), eine
-Kennung Wapo oder Pox1 und KEINE Pax1 (Pax1 = Paket-Pflicht). Siehe
+Kennung Wapo oder Pox1, KEINE Pax1 (Pax1 = Paket-Pflicht) und Zielland in der EU
+(nicht CH/LI/NO/GB - Zoll). Siehe
 ist_auslands_kleinpaket() und die Konstanten KLEINPAKET_*.
 """
 
 import html
 import re
 
-VERSION = "2026-09-25b"
+VERSION = "2026-09-25c"
 
 # --- Gewichtsgrenzen in kg (Klasse gilt bei Gewicht STRIKT UNTER der Grenze) -----
 G_BRIEF = 0.05
@@ -62,6 +63,10 @@ KLEINPAKET_MIN_KG = 0.6
 KLEINPAKET_MAX_KG = 1.0
 KLEINPAKET_MIN_WARENWERT = 40.0               # EUR, strikt darueber
 KLEINPAKET_KENNUNGEN = {"wapo", "pox1"}
+# Nur EU-Laender (Matthias 2026-09-25): ausserhalb der EU (CH, LI, NO, GB ...)
+# braeuchte Warenpost International Zolldaten, die die CSV nicht enthaelt.
+EU_LAENDER = {"AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR", "DE", "GR", "HU",
+              "IE", "IT", "LV", "LT", "LU", "MT", "NL", "PL", "PT", "RO", "SK", "SI", "ES", "SE"}
 
 BRIEF = "Post Brief"
 GROSSBRIEF = "Post Großbrief"
@@ -495,7 +500,7 @@ def warenwert(r):
 def ist_auslands_kleinpaket(r, kenn, gewicht, land):
     """True, wenn eine DHL-Auslandssendung als Kleinpaket exportiert werden
     soll (Regel siehe Modulkopf). Erwartet, dass der Carrier schon DHL ist."""
-    if not land or land == "DE" or gewicht is None:
+    if land not in EU_LAENDER or land == "DE" or gewicht is None:
         return False
     if not (KLEINPAKET_KENNUNGEN & set(kenn)) or "pax1" in kenn:
         return False
@@ -1027,6 +1032,12 @@ def selftest():
     check("Kleinpaket: Inland -> nein (auch DHL-Packstation)",
           _kp(["wapo"], 0.8, 45.0, ("A B", "Weg 1", "12345 Ort"))["kleinpaket"], False)
     check("Kleinpaket: Warenwert unbekannt (Preis fehlt) -> nein", _kp(["wapo"], 0.8, None)["kleinpaket"], False)
+    for nicht_eu, zeile in (("CH", "CH-8001 Zuerich"), ("GB", "GB-SW1A 1AA London"),
+                            ("NO", "NO-0150 Oslo"), ("LI", "LI-9490 Vaduz")):
+        check("Kleinpaket: %s (kein EU-Land) -> nein" % nicht_eu,
+              _kp(["wapo"], 0.8, 45.0, ("A B", "Weg 1", zeile))["kleinpaket"], False)
+    check("Kleinpaket: NL (EU) -> ja",
+          _kp(["pox1"], 0.8, 45.0, ("A B", "Weg 1", "NL-1012 Amsterdam"))["kleinpaket"], True)
     check("Kleinpaket: Grund nennt Kleinpaket", "Kleinpaket" in _kp(["wapo"], 0.8, 45.0)["grund"], True)
 
     if n_fail:

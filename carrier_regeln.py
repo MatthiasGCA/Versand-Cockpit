@@ -358,6 +358,23 @@ def analysiere_adresse(zeilen):
     return out
 
 
+def adresse_zeilen_aus_feldern(name, zusatz, strasse, hausnr, ortsteil, plz, ort, land):
+    """Baut aus den Eingabefeldern des Dashboard-Dialogs 'Adresse bearbeiten'
+    wieder Rechnungs-Adresszeilen, die analysiere_adresse() genauso auswertet
+    wie die Originalzeilen - so laufen manuelle Korrekturen durch dieselbe
+    Validierung (PLZ/Land/Hausnummer/Feldlaenge) statt an ihr vorbei.
+    zusatz: Liste beliebiger Zusatzzeilen (leere werden ignoriert)."""
+    zeilen = [name] + [z for z in (zusatz or []) if (z or "").strip()]
+    if (ortsteil or "").strip():
+        ot = ortsteil.strip()
+        zeilen.append(ot if re.match(r"(?:OT|Ortsteil)\b", ot, re.I) else "OT " + ot)
+    zeilen.append(" ".join(t for t in ((strasse or "").strip(), (hausnr or "").strip()) if t))
+    land = (land or "").strip().upper()
+    plz_ort = " ".join(t for t in ((plz or "").strip(), (ort or "").strip()) if t)
+    zeilen.append((land + "-" if land else "") + plz_ort)
+    return [z for z in zeilen if z.strip()]
+
+
 # ==========================================================================
 # Carrier-Regeln
 # ==========================================================================
@@ -906,6 +923,36 @@ def selftest():
     b_zuschwer = bewerte_rechnung(r_zuschwer)
     check("Auch aufgeteilt (50+50 kg) noch ueber DHL-Maximalgewicht -> Fehler bleibt",
           (b_zuschwer.get("pakete"), bool(b_zuschwer["fehler"])), (None, True))
+
+    # Adresse bearbeiten (Dashboard-Dialog): Klassiker = Kunde hat die
+    # Hausnummer vergessen, Matthias fragt nach und traegt sie nach.
+    a0 = analysiere_adresse(["Anna Test", "Wiesenweg", "12345 Musterstadt"])
+    check("Adresse ohne Hausnummer -> Hinweis", any("Keine Hausnummer" in h for h in a0["hinweise"]), True)
+    zl = adresse_zeilen_aus_feldern("Anna Test", [], "Wiesenweg", "4", "", "12345", "Musterstadt", "DE")
+    a1 = analysiere_adresse(zl)
+    check("Nachgetragene Hausnummer -> sauber ausgewertet",
+          (a1["strasse"], a1["hausnr"], a1["plz"], a1["ort"], a1["land"], a1["fehler"], a1["hinweise"]),
+          ("Wiesenweg", "4", "12345", "Musterstadt", "DE", [], []))
+    zl = adresse_zeilen_aus_feldern("Hans X", ["Firma Y"], "Dorf", "17", "Quitzerow", "17111", "Kletzin", "")
+    a2 = analysiere_adresse(zl)
+    check("Zusatz + Ortsteil + leeres Land (5-stellig -> DE)",
+          (a2["zusatz"], a2["ortsteil"], a2["ort"], a2["land"], a2["fehler"]),
+          (["Firma Y"], "OT Quitzerow", "Kletzin", "DE", []))
+    zl = adresse_zeilen_aus_feldern("Karl N", [], "Ring", "36/6", "", "9991", "Kals", "at")
+    a3 = analysiere_adresse(zl)
+    check("Land klein geschrieben (at) -> AT", (a3["land"], a3["plz"], a3["hausnr"], a3["fehler"]),
+          ("AT", "9991", "36/6", []))
+    zl = adresse_zeilen_aus_feldern("A B", [], "Weg", "1", "", "1234", "Ort", "DE")
+    check("Falsche PLZ-Laenge fuer DE -> weiterhin Fehler",
+          bool(analysiere_adresse(zl)["fehler"]), True)
+    r_edit = {"rnr": "1700950", "datei": "x.pdf", "sendungsgewicht": 3.0,
+              "adresse_zeilen": ["Anna Test", "Wiesenweg", "12345 Musterstadt"],
+              "positionen": [_pos("A1", 1.0)], "zeilen_ok": True, "summe_ok": True,
+              "vollstaendig_ok": True}
+    check("Vor Korrektur: Hinweis (warn)", bewerte_rechnung(r_edit)["status"], "warn")
+    b_edit2 = bewerte_rechnung(dict(r_edit, adresse_zeilen=adresse_zeilen_aus_feldern(
+        "Anna Test", [], "Wiesenweg", "4", "", "12345", "Musterstadt", "DE")))
+    check("Nach Korrektur: ok, DHL", (b_edit2["status"], b_edit2["carrier"]), ("ok", DHL))
 
     if n_fail:
         print("SELBSTTEST FEHLGESCHLAGEN (%d von %d):" % (len(n_fail), n_ok + len(n_fail)))

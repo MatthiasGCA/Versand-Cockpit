@@ -89,7 +89,7 @@ from tkinter import messagebox, simpledialog, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-09-24a"
+VERSION = "2026-09-25a"
 
 # Fenster-/Taskleisten-Symbol (siehe gui() unten) - liegt im selben Ordner
 # wie dieses Skript, damit es unveraendert auch nach einem Umzug funktioniert.
@@ -373,7 +373,8 @@ def detailtext(b):
     if b["grund"]:
         zeilen.append("Grund:     %s" % b["grund"])
     zeilen.append("")
-    zeilen.append("Adresse laut Auswertung:")
+    zeilen.append("Adresse (manuell bearbeitet):" if b.get("adresse_bearbeitet")
+                  else "Adresse laut Auswertung:")
     zeilen.append("  Name:     %s" % (a["name"] or "-"))
     for z in a["zusatz"]:
         zeilen.append("  Zusatz:   %s" % z)
@@ -428,6 +429,63 @@ def _frage_gewicht(root, titel, prompt, minvalue, maxvalue, initialvalue=None):
 # GUI
 # ==========================================================================
 
+def _adress_dialog(root, a, rnr):
+    """Modaler Dialog 'Adresse bearbeiten' - Felder mit den aktuell ausgewerteten
+    Werten vorbelegt. Rueckgabe: dict der Felder (name, zusatz[Liste], strasse,
+    hausnr, ortsteil, plz, ort, land) oder None bei Abbruch."""
+    dlg = tk.Toplevel(root)
+    dlg.title("Adresse bearbeiten - Rechnung %s" % (rnr or "?"))
+    dlg.configure(bg=BG)
+    dlg.transient(root)
+    dlg.resizable(False, False)
+    _dunkle_titelleiste(dlg)
+    zusatz = list(a.get("zusatz") or [])
+    felder = [
+        ("name", "Name", a.get("name", "")),
+        ("z1", "Zusatz 1 (Firma/c/o)", zusatz[0] if len(zusatz) > 0 else ""),
+        ("z2", "Zusatz 2", zusatz[1] if len(zusatz) > 1 else ""),
+        ("strasse", "Straße", a.get("strasse", "")),
+        ("hausnr", "Hausnummer", a.get("hausnr", "")),
+        ("ortsteil", "Ortsteil (optional)", a.get("ortsteil", "")),
+        ("plz", "PLZ", a.get("plz", "")),
+        ("ort", "Ort", a.get("ort", "")),
+        ("land", "Land (2 Buchstaben, z.B. DE/AT)", a.get("land", "")),
+    ]
+    if len(zusatz) > 2:                       # weitere Zusatzzeilen nicht verlieren
+        felder[2] = ("z2", "Zusatz 2", " | ".join(zusatz[1:]))
+    vars_ = {}
+    for i, (key, label, wert) in enumerate(felder):
+        ttk.Label(dlg, text=label).grid(row=i, column=0, sticky="w", padx=(12, 8), pady=3)
+        v = tk.StringVar(value=wert)
+        vars_[key] = v
+        e = tk.Entry(dlg, textvariable=v, width=42, bg=CARD, fg=FG, insertbackground=FG,
+                     relief="flat", highlightthickness=1, highlightbackground=BORDER,
+                     highlightcolor=ORANGE)
+        e.grid(row=i, column=1, padx=(0, 12), pady=3)
+        if key == "hausnr":
+            e.focus_set()
+            e.select_range(0, "end")
+    ergebnis = {"werte": None}
+
+    def ok(_evt=None):
+        w = {k: v.get().strip() for k, v in vars_.items()}
+        ergebnis["werte"] = {
+            "name": w["name"], "zusatz": [w["z1"], w["z2"]], "strasse": w["strasse"],
+            "hausnr": w["hausnr"], "ortsteil": w["ortsteil"], "plz": w["plz"],
+            "ort": w["ort"], "land": w["land"]}
+        dlg.destroy()
+
+    knoepfe_f = ttk.Frame(dlg)
+    knoepfe_f.grid(row=len(felder), column=0, columnspan=2, pady=10)
+    ttk.Button(knoepfe_f, text="Übernehmen", command=ok).pack(side="left", padx=6)
+    ttk.Button(knoepfe_f, text="Abbrechen", command=dlg.destroy).pack(side="left", padx=6)
+    dlg.bind("<Return>", ok)
+    dlg.bind("<Escape>", lambda _e: dlg.destroy())
+    dlg.grab_set()
+    root.wait_window(dlg)
+    return ergebnis["werte"]
+
+
 def gui():
     root = tk.Tk()
     root.title("Carrier-Dashboard  (Version %s / Regeln %s)" % (VERSION, regeln.VERSION))
@@ -455,6 +513,10 @@ def gui():
     # Lauf mit neuen PDFs nicht bereits quittierte Hinweise wieder aufleben
     # laesst. Nur fuer die aktuelle GUI-Sitzung (kein Speichern auf Platte).
     quittiert = set()
+    # rnr -> manuell korrigierte Adresszeilen (Button "Adresse bearbeiten"); wird
+    # nach jedem Schritt-1-Lauf erneut angewendet, damit die Nachtragung (z.B.
+    # Hausnummer nach Rueckfrage beim Kunden) nicht verloren geht.
+    adress_korrekturen = {}
 
     # --- Kopf: Pool-Ordner (fest, nur zur Information) + Zaehler -------------
     # Die Ordner sind bewusst NICHT hier waehlbar, siehe Modul-Kopf/Konstanten
@@ -504,6 +566,8 @@ def gui():
     btn_quittieren.pack(side="left", padx=(0, 8))
     btn_aufteilen = ttk.Button(knoepfe, text="Paket aufteilen", state="disabled")
     btn_aufteilen.pack(side="left", padx=(0, 8))
+    btn_adresse = ttk.Button(knoepfe, text="Adresse bearbeiten", state="disabled")
+    btn_adresse.pack(side="left", padx=(0, 8))
     ttk.Label(knoepfe, textvariable=status_var).pack(side="left", padx=12)
     prog = ttk.Progressbar(root, mode="determinate", style="Orange.Horizontal.TProgressbar")
     prog.pack(fill="x", padx=8, pady=(6, 0))
@@ -550,9 +614,11 @@ def gui():
         sel = tv.selection()
         if not sel:
             btn_quittieren.configure(state="disabled")
+            btn_adresse.configure(state="disabled")
             return
         idx = int(sel[0])
         b = ergebnisse[idx]
+        btn_adresse.configure(state=("normal" if rechnungen_roh[idx] is not None else "disabled"))
         detail.configure(state="normal")
         detail.delete("1.0", "end")
         detail.insert("1.0", detailtext(b))
@@ -581,6 +647,43 @@ def gui():
         fuelle()
 
     btn_quittieren.configure(command=quittiere_auswahl)
+
+    def bewerte_mit_korrektur(r, b_alt):
+        """Bewertet r mit der gemerkten Adresskorrektur neu (gleiche Validierung
+        wie im Original) und uebernimmt die Pool-Duplikat-Hinweise aus b_alt."""
+        r["adresse_zeilen"] = adress_korrekturen[r["rnr"]]
+        b = regeln.bewerte_rechnung(r)
+        b["quelle"] = r.get("quelle", "")
+        b["adresse_bearbeitet"] = True
+        dup = [h for h in b_alt["hinweise"] if h.startswith("ACHTUNG: Rechnungsnummer kommt")]
+        if dup:
+            b["hinweise"] += dup
+            if b["status"] == "ok":
+                b["status"] = "warn"
+        return b
+
+    def adresse_bearbeiten():
+        sel = tv.selection()
+        if not sel:
+            return
+        idx = int(sel[0])
+        r, b = rechnungen_roh[idx], ergebnisse[idx]
+        if r is None:
+            return
+        if not r.get("rnr"):
+            messagebox.showinfo("Carrier-Dashboard", "Ohne Rechnungsnummer nicht bearbeitbar.")
+            return
+        w = _adress_dialog(root, b["adresse"], r["rnr"])
+        if w is None:
+            return
+        adress_korrekturen[r["rnr"]] = regeln.adresse_zeilen_aus_feldern(
+            w["name"], w["zusatz"], w["strasse"], w["hausnr"], w["ortsteil"],
+            w["plz"], w["ort"], w["land"])
+        ergebnisse[idx] = bewerte_mit_korrektur(r, b)
+        quittiert.discard(r["rnr"])                 # neue Adresse -> Hinweise erneut pruefen
+        fuelle()
+
+    btn_adresse.configure(command=adresse_bearbeiten)
 
     def paket_aufteilen():
         sel = tv.selection()
@@ -739,6 +842,9 @@ def gui():
                 elif m[0] == "fertig":
                     rechnungen_roh[:] = m[1]
                     ergebnisse[:] = m[2]
+                    for i, (r, b) in enumerate(zip(rechnungen_roh, ergebnisse)):
+                        if r is not None and r.get("rnr") in adress_korrekturen:
+                            ergebnisse[i] = bewerte_mit_korrektur(r, b)
                     # Frueher (in dieser Sitzung) quittierte Hinweise wieder
                     # anwenden, falls die betroffene Rechnung erneut auftaucht
                     # (z.B. weil zwischenzeitlich neue PDFs dazukamen und
@@ -919,6 +1025,8 @@ def gui():
                     rechnungen_roh[:] = [r for i, r in enumerate(rechnungen_roh)
                                          if i not in verarbeitet]
                     ergebnisse[:] = [b for i, b in enumerate(ergebnisse) if i not in verarbeitet]
+                    for k in set(adress_korrekturen) - {b["rnr"] for b in ergebnisse}:
+                        del adress_korrekturen[k]
                     quittiert.intersection_update(b["rnr"] for b in ergebnisse)   # In-place: "&=" waere hier eine lokale Neubindung (UnboundLocalError)
                     filter_state["schluessel"] = None    # Indizes verschoben -> Filter zuruecksetzen
                     fuelle()

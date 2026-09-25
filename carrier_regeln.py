@@ -621,7 +621,7 @@ def bewerte_rechnung(r):
             grund += ", " + je_paket_grund
     kleinpaket = carrier == DHL and ist_auslands_kleinpaket(r, kenn, gewicht, adr["land"])
     if kleinpaket:
-        grund += (", DHL-Kleinpaket Ausland (%s kg, Warenwert %s EUR)"
+        grund += (", DHL Warenpost International = Kleinpaket Ausland (%s kg, Warenwert %s EUR)"
                   % (("%.3f" % gewicht).replace(".", ","),
                      ("%.2f" % warenwert(r)).replace(".", ",")))
     if not (r.get("zeilen_ok", True) and r.get("summe_ok", True)

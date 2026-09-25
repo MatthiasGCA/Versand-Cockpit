@@ -47,7 +47,7 @@ from datetime import datetime
 
 import carrier_regeln as regeln
 
-VERSION = "2026-09-25a"
+VERSION = "2026-09-25b"
 
 # ---------------------------------------------------------------------------
 # Absenderdaten (fest - aus den Musterdateien uebernommen; DHL/DPD nutzen
@@ -89,11 +89,16 @@ POST_SPALTEN = ["NAME", "ZUSATZ", "STRASSE", "NUMMER", "PLZ", "STADT", "LAND",
 DHL_PRODUKT = {"DE": ("V01PAK", "52148008630101")}
 DHL_PRODUKT_DEFAULT = ("V53WPAK.V53VV", "52148008635303")
 DPD_PRODUKT = ("V01PAK", "52148008630101")          # DPD: immer Inland
-# DHL Kleinpaket (Inland-Werte per Test-Import bei DHL bestaetigt 2026-09-25);
-# fuer Auslands-Kleinpakete (b["kleinpaket"], siehe carrier_regeln.
-# ist_auslands_kleinpaket) zunaechst dieselben Werte - bei Ablehnung durch DHL
-# HIER anpassen.
+# DHL Kleinpaket Inland (per Test-Import bei DHL bestaetigt 2026-09-25) -
+# aktuell von keiner Regel genutzt, aber fuer spaeter bereit.
 DHL_KLEINPAKET = ("V62KP", "52148008636201")
+# Auslands-"Kleinpaket" (b["kleinpaket"], siehe carrier_regeln.
+# ist_auslands_kleinpaket) ist bei DHL das Produkt "Warenpost International":
+# der Import mit V62KP wurde abgelehnt, Matthias hat das Label im Portal
+# korrigiert -> Abrechnungsnummer 52148008636601 (Verfahren 66). Produktcode
+# V66WPI = DHL-Standardcode fuer Warenpost International; per Test-Import zu
+# bestaetigen.
+DHL_KLEINPAKET_AUSLAND = ("V66WPI", "52148008636601")
 DPD_FESTWERTE = ("34", "23", "5", "16")             # IBAN/BIC/Zahlungsempf./Bankname
 
 
@@ -126,7 +131,8 @@ def _dhl_dpd_zeile(b, ist_dpd, gewicht=None):
         nachnahme = ("", *DPD_FESTWERTE, "")
     else:
         if b.get("kleinpaket"):
-            produkt, abrechnung = DHL_KLEINPAKET
+            produkt, abrechnung = (DHL_KLEINPAKET if a["land"] == "DE"
+                                   else DHL_KLEINPAKET_AUSLAND)
         else:
             produkt, abrechnung = DHL_PRODUKT.get(a["land"], DHL_PRODUKT_DEFAULT)
         empf_ref = b["rnr"]                     # DHL: Referenz = Rechnungsnummer
@@ -353,8 +359,8 @@ def selftest():
     b_kp = _bsp("1700991", "wapo", 0.8, ["A B", "Weg 1", "AT-8330 Feldbach"])
     b_kp["kleinpaket"] = True
     z_kp = _dhl_dpd_zeile(b_kp, False)
-    check("DHL Kleinpaket Ausland: Produkt/Abrechnung", (z_kp[24], z_kp[25]),
-          ("V62KP", "52148008636201"))
+    check("DHL Kleinpaket Ausland (= Warenpost International): Produkt/Abrechnung",
+          (z_kp[24], z_kp[25]), ("V66WPI", "52148008636601"))
     check("DHL Kleinpaket Ausland: Land AUT", z_kp[19], "AUT")
     check("DHL ohne Kleinpaket-Flag: unveraendert Auslandsprodukt",
           (_dhl_dpd_zeile(dict(b_kp, kleinpaket=False), False)[24],), ("V53WPAK.V53VV",))

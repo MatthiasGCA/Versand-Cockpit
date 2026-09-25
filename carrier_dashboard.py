@@ -56,6 +56,14 @@ Carrier-CSVs tatsaechlich geschrieben und die eingelesenen PDFs archiviert.
       DHL-Pakete verteilt (gleichmaessig, inkl. Fach-Artikel-Faktor), sofern
       die Rechnung ausschliesslich diesen einen Artikel enthaelt - siehe
       carrier_regeln.py Modulkopf.
+  Automatisches Einlesen: das Dashboard beobachtet den Pool (Haken "Neue
+      Rechnungen automatisch einlesen", Vorgabe an) und liest neue/geaenderte
+      PDFs - erst nach AUTO_RUHE_S Ruhe, der Amicron-Export liefert ca. 1 PDF
+      pro Sekunde - INKREMENTELL nach (nur die neuen; Filter, Auswahl, Quit-
+      tierungen, Adress-/Paketbearbeitung der uebrigen Zeilen bleiben erhalten).
+      Verschwundene PDFs werden aus der Tabelle genommen. Schritt 2 startet
+      NIE automatisch; der Button "1. Bestellungen zuordnen" liest weiterhin
+      alles komplett neu (Notfallknopf).
   Schritt 4 (spaeter, optional): Warnung in scan_druck.py bei Carrier-
       Abweichung zwischen Label und dieser Zuordnung.
 
@@ -90,7 +98,7 @@ from tkinter import messagebox, simpledialog, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-09-25b"
+VERSION = "2026-09-25c"
 
 # Fenster-/Taskleisten-Symbol (siehe gui() unten) - liegt im selben Ordner
 # wie dieses Skript, damit es unveraendert auch nach einem Umzug funktioniert.
@@ -147,6 +155,15 @@ def _dunkles_theme(root):
                     focuscolor=BG)
     style.map("TButton", background=[("active", BORDER), ("disabled", BG)],
               foreground=[("disabled", MUTED)])
+    style.configure("Schritt.TButton", font=("Segoe UI", 11, "bold"), padding=(18, 9),
+                    background=ORANGE, foreground=BG, bordercolor=ORANGE,
+                    lightcolor=ORANGE, darkcolor=ORANGE, focuscolor=ORANGE)
+    style.map("Schritt.TButton", background=[("active", "#FFA033"), ("disabled", CARD)],
+              foreground=[("disabled", MUTED)], bordercolor=[("disabled", BORDER)],
+              lightcolor=[("disabled", CARD)], darkcolor=[("disabled", CARD)])
+    style.configure("TCheckbutton", background=BG, foreground=FG, focuscolor=BG)
+    style.map("TCheckbutton", background=[("active", BG)],
+              indicatorcolor=[("selected", ORANGE), ("!selected", CARD)])
     style.configure("TPanedwindow", background=BG)
     style.configure("Treeview", background=CARD, foreground=FG, fieldbackground=CARD,
                     bordercolor=BORDER, rowheight=22)
@@ -170,6 +187,11 @@ ARCHIV_ORDNER = r"C:\Carrier-Dashboard\Pool\Archiv"
 CARRIER_EXPORT_ORDNER = r"C:\Carrier_Export"
 
 REFRESH_MS = 5000
+# Automatisches Einlesen neuer Rechnungen (siehe auto_scan() in gui()): Pool
+# alle AUTO_MS pruefen, erst AUTO_RUHE_S nach der letzten neuen/geaenderten
+# Datei einlesen (Amicron-Export liefert ca. 1 PDF/Sekunde).
+AUTO_MS = 2000
+AUTO_RUHE_S = 5.0
 
 # Reihenfolge und Beschriftung der Zusammenfassung
 GRUPPEN = [
@@ -227,6 +249,50 @@ def filter_treffer(schluessel, b):
     return gruppen_schluessel(b) == schluessel
 
 
+def _sig(st):
+    """Signatur einer Datei (mtime in ms, Groesse) - erkennt neue/geaenderte PDFs."""
+    return (int(st.st_mtime * 1000), st.st_size)
+
+
+def lese_datei(pfad):
+    """Liest+bewertet EINE PDF. Rueckgabe (r, b): r = parse_pdf()-Ergebnis (mit
+    "datei"/"quelle") oder None bei Lese-/Auswertungsfehler, b = Ergebnis-dict
+    (bei Fehler eine _fehlerzeile()). b["quelle"]/b["sig"] identifizieren die
+    Datei fuer das automatische, inkrementelle Einlesen (siehe gui())."""
+    import packliste
+    name = os.path.basename(pfad)
+    try:
+        sig = _sig(os.stat(pfad))
+    except OSError:
+        sig = None
+
+    def fehler(text, rnr=""):
+        b = _fehlerzeile(name, text, rnr)
+        b["quelle"], b["sig"] = pfad, sig
+        return None, b
+
+    try:
+        r = packliste.parse_pdf(pfad)
+    except Exception as e:
+        return fehler("PDF nicht lesbar: %s" % e)
+    if not r.get("positionen"):
+        return fehler("Keine Positionen erkannt (keine Rechnung?)", r.get("rnr", ""))
+    r["datei"] = name
+    r["quelle"] = pfad
+    try:
+        b = regeln.bewerte_rechnung(r)
+    except Exception as e:
+        return fehler("Auswertung fehlgeschlagen: %s: %s" % (type(e).__name__, e),
+                      r.get("rnr", ""))
+    b["quelle"], b["sig"] = pfad, sig
+    return r, b
+
+
+def _sortiere_paare(paare):
+    """Nach Rechnungsnummer sortieren (Fehler ohne Nummer am Ende)."""
+    paare.sort(key=lambda t: (not t[1]["rnr"], t[1]["rnr"], t[1]["datei"]))
+
+
 def lese_pool(ordner, melde=None):
     """Liest alle PDFs des Ordners und bewertet sie. Rueckgabe: (rechnungen_roh,
     ergebnisse) - zwei gleich lange, gemeinsam nach Rechnungsnummer sortierte
@@ -234,49 +300,47 @@ def lese_pool(ordner, melde=None):
     parse_pdf()-Ergebnis (inkl. "quelle" fuer die spaetere Archivierung) oder
     None, wenn diese Zeile nur ein Fehler ist (PDF nicht lesbar/keine
     Positionen) - dann ist ergebnisse[i] eine _fehlerzeile() ohne Carrier."""
-    import packliste
     pdfs = sorted(glob.glob(os.path.join(ordner, "*.pdf")))
     treffer = []                      # Liste von (r_oder_None, b)
     for i, pfad in enumerate(pdfs, 1):
-        name = os.path.basename(pfad)
         if melde:
-            melde(i, len(pdfs), name)
-        try:
-            r = packliste.parse_pdf(pfad)
-        except Exception as e:
-            treffer.append((None, _fehlerzeile(name, "PDF nicht lesbar: %s" % e)))
-            continue
-        if not r.get("positionen"):
-            treffer.append((None, _fehlerzeile(
-                name, "Keine Positionen erkannt (keine Rechnung?)", r.get("rnr", ""))))
-            continue
-        r["datei"] = name
-        r["quelle"] = pfad
-        b = regeln.bewerte_rechnung(r)
-        b["quelle"] = pfad
-        treffer.append((r, b))
-    treffer.sort(key=lambda t: (not t[1]["rnr"], t[1]["rnr"], t[1]["datei"]))
+            melde(i, len(pdfs), os.path.basename(pfad))
+        treffer.append(lese_datei(pfad))
+    _sortiere_paare(treffer)
     ergebnisse = [t[1] for t in treffer]
     _markiere_pool_duplikate(ergebnisse)
     return [t[0] for t in treffer], ergebnisse
+
+
+_DUP_PREFIX = "ACHTUNG: Rechnungsnummer kommt"
 
 
 def _markiere_pool_duplikate(ergebnisse):
     """Haengt an jede Rechnung, deren Rechnungsnummer MEHRFACH (mit
     unterschiedlichen Dateien) im selben Pool vorkommt, einen Hinweis an -
     schon in der Schritt-1-Tabelle sichtbar, statt erst bei der Schritt-2-
-    Bestaetigung zu ueberraschen (siehe dort: starte_export())."""
+    Bestaetigung zu ueberraschen (siehe dort: starte_export()). IDEMPOTENT
+    (beim automatischen Nachladen wiederholt aufrufbar): alte Duplikat-Hinweise
+    werden ersetzt/entfernt, ein neu hinzukommender Hinweis macht eine schon
+    quittierte Zeile wieder offen."""
     import carrier_statistik
     doppelt = carrier_statistik.doppelte_im_lauf([b["rnr"] for b in ergebnisse])
-    if not doppelt:
-        return
     for b in ergebnisse:
-        if b["rnr"] in doppelt:
-            b["hinweise"].append(
-                "ACHTUNG: Rechnungsnummer kommt %dx im Pool vor (mögliche "
-                "Doppel-Verarbeitung)" % doppelt[b["rnr"]])
-            if b["status"] == "ok":
-                b["status"] = "warn"
+        alt = [h for h in b["hinweise"] if h.startswith(_DUP_PREFIX)]
+        neu = ("%s %dx im Pool vor (mögliche Doppel-Verarbeitung)"
+               % (_DUP_PREFIX, doppelt[b["rnr"]])) if b["rnr"] in doppelt else None
+        if alt == ([neu] if neu else []):
+            continue
+        b["hinweise"] = [h for h in b["hinweise"] if not h.startswith(_DUP_PREFIX)]
+        if neu:
+            b["hinweise"].append(neu)
+            b["quittiert"] = False
+        if b["fehler"]:
+            b["status"] = "fehler"
+        elif b["hinweise"] and not b.get("quittiert"):
+            b["status"] = "warn"
+        else:
+            b["status"] = "ok"
 
 
 def exportiere_alles(rechnungen, ergebnisse, ausgabe_pfad, archiv_ordner, carrier_ordner):
@@ -338,7 +402,7 @@ def _fehlerzeile(datei, text, rnr=""):
     return {"rnr": rnr, "datei": datei, "adresse": adr, "kennungen": [],
             "gewicht": None, "carrier": None, "ausland": False, "grund": "",
             "fehler": [text], "hinweise": [], "status": "fehler", "quelle": "",
-            "pakete": None}
+            "pakete": None, "sig": None}
 
 
 def zaehle(ergebnisse):
@@ -520,6 +584,18 @@ def gui():
     # nach jedem Schritt-1-Lauf erneut angewendet, damit die Nachtragung (z.B.
     # Hausnummer nach Rueckfrage beim Kunden) nicht verloren geht.
     adress_korrekturen = {}
+    auto = {"gesehen": {}, "letzte": 0.0}     # Zustand des automatischen Einlesens
+    busy = {"n": 0}                           # >0: Dialog/Schritt-2-Vorbereitung offen
+
+    def mit_busy(fn):
+        """Waehrend ein Dialog offen ist (Adresse/Paket/Schritt 2) darf das
+        automatische Einlesen die Tabelle NICHT umsortieren - die Dialoge halten
+        Zeilenindizes bzw. -objekte fest."""
+        busy["n"] += 1
+        try:
+            fn()
+        finally:
+            busy["n"] -= 1
 
     # --- Kopf: Pool-Ordner (fest, nur zur Information) + Zaehler -------------
     # Die Ordner sind bewusst NICHT hier waehlbar, siehe Modul-Kopf/Konstanten
@@ -546,12 +622,16 @@ def gui():
         root.after(REFRESH_MS, tick)
 
     # --- Buttons -------------------------------------------------------------
-    knoepfe = ttk.Frame(root, padding=(8, 0))
-    knoepfe.pack(fill="x")
-    btn_zuordnen = ttk.Button(knoepfe, text="1. Bestellungen zuordnen")
+    schritte = ttk.Frame(root, padding=(8, 0))
+    schritte.pack(fill="x")
+    btn_zuordnen = ttk.Button(schritte, text="1. Bestellungen zuordnen", style="Schritt.TButton")
     btn_zuordnen.pack(side="left")
-    btn_export = ttk.Button(knoepfe, text="2. Pickliste + CSV erstellen", state="disabled")
-    btn_export.pack(side="left", padx=8)
+    btn_export = ttk.Button(schritte, text="2. Pickliste + CSV erstellen", state="disabled",
+                            style="Schritt.TButton")
+    btn_export.pack(side="left", padx=12)
+    ttk.Label(schritte, textvariable=status_var).pack(side="left", padx=12)
+    knoepfe = ttk.Frame(root, padding=(8, 8, 8, 0))
+    knoepfe.pack(fill="x")
 
     wartet = {"an": False}
 
@@ -623,7 +703,9 @@ def gui():
     btn_aufteilen.pack(side="left", padx=(0, 8))
     btn_adresse = ttk.Button(knoepfe, text="Adresse bearbeiten", state="disabled")
     btn_adresse.pack(side="left", padx=(0, 8))
-    ttk.Label(knoepfe, textvariable=status_var).pack(side="left", padx=12)
+    auto_var = tk.BooleanVar(value=True)
+    ttk.Checkbutton(knoepfe, text="Neue Rechnungen automatisch einlesen",
+                    variable=auto_var).pack(side="left", padx=(12, 0))
     prog = ttk.Progressbar(root, mode="determinate", style="Orange.Horizontal.TProgressbar")
     prog.pack(fill="x", padx=8, pady=(6, 0))
 
@@ -709,6 +791,7 @@ def gui():
         r["adresse_zeilen"] = adress_korrekturen[r["rnr"]]
         b = regeln.bewerte_rechnung(r)
         b["quelle"] = r.get("quelle", "")
+        b["sig"] = b_alt.get("sig")
         b["adresse_bearbeitet"] = True
         dup = [h for h in b_alt["hinweise"] if h.startswith("ACHTUNG: Rechnungsnummer kommt")]
         if dup:
@@ -734,11 +817,14 @@ def gui():
         adress_korrekturen[r["rnr"]] = regeln.adresse_zeilen_aus_feldern(
             w["name"], w["zusatz"], w["strasse"], w["hausnr"], w["ortsteil"],
             w["plz"], w["ort"], w["land"])
+        idx = next((i for i, x in enumerate(ergebnisse) if x is b), None)
+        if idx is None:
+            return
         ergebnisse[idx] = bewerte_mit_korrektur(r, b)
         quittiert.pop(r["rnr"], None)                 # neue Adresse -> Hinweise erneut pruefen
         fuelle()
 
-    btn_adresse.configure(command=adresse_bearbeiten)
+    btn_adresse.configure(command=lambda: mit_busy(adresse_bearbeiten))
 
     def paket_aufteilen():
         sel = tv.selection()
@@ -817,7 +903,7 @@ def gui():
         b["status"] = "fehler" if b["fehler"] else ("warn" if b["hinweise"] else "ok")
         fuelle()
 
-    btn_aufteilen.configure(command=paket_aufteilen)
+    btn_aufteilen.configure(command=lambda: mit_busy(paket_aufteilen))
 
     def wende_filter(schluessel):
         filter_state["schluessel"] = schluessel
@@ -886,7 +972,74 @@ def gui():
         threading.Thread(target=arbeite, args=(POOL_ORDNER,), daemon=True).start()
         root.after(100, abfrage)
 
+    def wende_sitzung_an(r, b):
+        """Adresskorrektur + quittierte Hinweise dieser GUI-Sitzung auf ein frisch
+        gelesenes Ergebnis anwenden (rnr-basiert)."""
+        if r is not None and r.get("rnr") in adress_korrekturen:
+            b = bewerte_mit_korrektur(r, b)
+        if b["hinweise"] and set(b["hinweise"]) <= quittiert.get(b["rnr"], frozenset()):
+            b["quittiert"] = True
+            if b["status"] == "warn":
+                b["status"] = "ok"
+        return b
+
+    def arbeite_inkrement(pfade):
+        try:
+            neue = []
+            for i, pfad in enumerate(pfade, 1):
+                q.put(("fortschritt", i, len(pfade), os.path.basename(pfad)))
+                neue.append(lese_datei(pfad))
+            q.put(("inkrement", neue))
+        except Exception as e:
+            q.put(("abbruch", "%s: %s" % (type(e).__name__, e)))
+
+    def starte_inkrement(pfade, entfernt):
+        auto["entfernt"] = entfernt
+        laeuft["an"] = True
+        btn_zuordnen.configure(state="disabled")
+        btn_export.configure(state="disabled")
+        prog.configure(value=0)
+        status_var.set("Lese %d neue Rechnung(en) ..." % len(pfade))
+        threading.Thread(target=arbeite_inkrement, args=(pfade,), daemon=True).start()
+        root.after(100, abfrage)
+
+    def auto_scan():
+        """Beobachtet den Pool: neue/geaenderte PDFs werden erst nach AUTO_RUHE_S
+        Ruhe (kein weiteres neues/geaendertes PDF) inkrementell eingelesen -
+        bereits gelesene Zeilen samt manueller Bearbeitung bleiben unberuehrt.
+        Schritt 2 startet NIE automatisch."""
+        root.after(AUTO_MS, auto_scan)
+        if (not auto_var.get() or laeuft["an"] or wartet["an"] or busy["n"]
+                or not os.path.isdir(POOL_ORDNER)):
+            return
+        aktuell = {}
+        try:
+            with os.scandir(POOL_ORDNER) as it:
+                for e in it:
+                    if e.name.lower().endswith(".pdf") and e.is_file():
+                        aktuell[e.path] = _sig(e.stat())
+        except OSError:
+            return
+        bekannt = {b["quelle"]: b.get("sig") for b in ergebnisse if b.get("quelle")}
+        offen = {pf: sg for pf, sg in aktuell.items() if bekannt.get(pf) != sg}
+        entfernt = {pf for pf in bekannt if pf not in aktuell}
+        jetzt = time.monotonic()
+        for pf, sg in offen.items():
+            if auto["gesehen"].get(pf) != sg:
+                auto["letzte"] = jetzt
+        auto["gesehen"] = dict(offen)
+        if not offen and not entfernt:
+            return
+        if offen and jetzt - auto["letzte"] < AUTO_RUHE_S:
+            status_var.set("%d neue Rechnung(en) erkannt - warte auf das Ende des Exports ..."
+                           % len(offen))
+            return
+        starte_inkrement(sorted(offen), entfernt)
+
     def abfrage():
+        if busy["n"]:                       # Dialog offen: Ergebnis erst danach uebernehmen
+            root.after(200, abfrage)
+            return
         try:
             while True:
                 m = q.get_nowait()
@@ -894,22 +1047,44 @@ def gui():
                     _, i, n, name = m
                     prog.configure(maximum=max(n, 1), value=i)
                     status_var.set("Lese %d/%d: %s" % (i, n, name))
+                elif m[0] == "inkrement":
+                    entfernt = auto.pop("entfernt", set())
+                    neue_pfade = {b["quelle"] for _, b in m[1]}
+                    paare = [(r, b) for r, b in zip(rechnungen_roh, ergebnisse)
+                             if b.get("quelle") not in neue_pfade
+                             and b.get("quelle") not in entfernt]
+                    paare += [(r, wende_sitzung_an(r, b)) for r, b in m[1]]
+                    _sortiere_paare(paare)
+                    sel = tv.selection()
+                    sel_b = ergebnisse[int(sel[0])] if sel else None
+                    rechnungen_roh[:] = [r for r, _ in paare]
+                    ergebnisse[:] = [b for _, b in paare]
+                    _markiere_pool_duplikate(ergebnisse)
+                    fuelle()                          # Filter bleibt bewusst erhalten
+                    if sel_b is not None:
+                        for i, b in enumerate(ergebnisse):
+                            if b is sel_b and tv.exists(str(i)):
+                                tv.selection_set(str(i))
+                                tv.see(str(i))
+                                break
+                    laeuft["an"] = False
+                    btn_zuordnen.configure(state="normal")
+                    btn_export.configure(state=("normal" if ergebnisse else "disabled"))
+                    z, fehler, hinweise = zaehle(ergebnisse)
+                    status_var.set("Automatisch eingelesen: %d neu, %d entfernt - gesamt %d, "
+                                   "%d Fehler, %d Hinweis(e)"
+                                   % (len(m[1]), len(entfernt), len(ergebnisse), fehler, hinweise))
+                    aktualisiere_zaehler()
+                    return
                 elif m[0] == "fertig":
                     rechnungen_roh[:] = m[1]
                     ergebnisse[:] = m[2]
+                    # Adresskorrekturen + frueher (in dieser Sitzung) quittierte
+                    # Hinweise wieder anwenden, falls die betroffene Rechnung
+                    # erneut auftaucht - sonst muesste man dieselbe Rechnung
+                    # jedes Mal neu bearbeiten/quittieren.
                     for i, (r, b) in enumerate(zip(rechnungen_roh, ergebnisse)):
-                        if r is not None and r.get("rnr") in adress_korrekturen:
-                            ergebnisse[i] = bewerte_mit_korrektur(r, b)
-                    # Frueher (in dieser Sitzung) quittierte Hinweise wieder
-                    # anwenden, falls die betroffene Rechnung erneut auftaucht
-                    # (z.B. weil zwischenzeitlich neue PDFs dazukamen und
-                    # Schritt 1 nochmal gelaufen ist) - sonst muesste man
-                    # dieselbe Rechnung jedes Mal neu quittieren.
-                    for b in ergebnisse:
-                        if b["hinweise"] and set(b["hinweise"]) <= quittiert.get(b["rnr"], frozenset()):
-                            b["quittiert"] = True
-                            if b["status"] == "warn":
-                                b["status"] = "ok"
+                        ergebnisse[i] = wende_sitzung_an(r, b)
                     filter_state["schluessel"] = None     # frischer Lauf -> kein alter Filter
                     fuelle()
                     laeuft["an"] = False
@@ -923,6 +1098,7 @@ def gui():
                 elif m[0] == "abbruch":
                     laeuft["an"] = False
                     btn_zuordnen.configure(state="normal")
+                    btn_export.configure(state=("normal" if ergebnisse else "disabled"))
                     status_var.set("ABBRUCH: %s" % m[1])
                     return
         except queue.Empty:
@@ -1150,9 +1326,10 @@ def gui():
         root.after(100, abfrage_export)
 
     btn_zuordnen.configure(command=starte)
-    btn_export.configure(command=starte_export)
+    btn_export.configure(command=lambda: mit_busy(starte_export))
     aktualisiere_zaehler()
     root.after(REFRESH_MS, tick)
+    root.after(AUTO_MS, auto_scan)
     root.mainloop()
 
 

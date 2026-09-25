@@ -94,11 +94,12 @@ import threading
 import time
 import tkinter as tk
 from datetime import datetime
+from tkinter import font as tkfont
 from tkinter import messagebox, simpledialog, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-09-25c"
+VERSION = "2026-09-25d"
 
 # Fenster-/Taskleisten-Symbol (siehe gui() unten) - liegt im selben Ordner
 # wie dieses Skript, damit es unveraendert auch nach einem Umzug funktioniert.
@@ -120,6 +121,87 @@ ROT_ZEILE = "#4A2020"
 GOLD = "#FFD54F"
 GOLD_ZEILE = "#4A3A12"
 ORANGE = "#F38808"
+
+
+class RundButton(tk.Canvas):
+    """Button mit abgerundeten Ecken (ttk kennt das nicht). Bedienung wie ein
+    ttk.Button: text/command/state ("normal"/"disabled"), configure(),
+    cget()/["state"], invoke(), pack(). stil "primaer" = orange + fett (Schritt
+    1/2), "normal" = dunkle Karte."""
+
+    _STILE = {
+        "primaer": dict(font=("Segoe UI", 11, "bold"), pad=(20, 10), radius=16,
+                        fill=ORANGE, hover="#FFA033", text=BG, rand=ORANGE),
+        "normal": dict(font=("Segoe UI", 9), pad=(14, 6), radius=11,
+                       fill=CARD, hover=BORDER, text=FG, rand=BORDER),
+    }
+
+    def __init__(self, parent, text, command=None, state="normal", stil="normal"):
+        st = self._STILE[stil]
+        self._st = st
+        self._text = text
+        self._command = command
+        self._state = state
+        self._hover = False
+        f = tkfont.Font(font=st["font"])
+        w = f.measure(text) + 2 * st["pad"][0]
+        h = f.metrics("linespace") + 2 * st["pad"][1]
+        super().__init__(parent, width=w, height=h, bg=BG, highlightthickness=0, bd=0)
+        self._breite, self._hoehe = w, h
+        self.bind("<Enter>", lambda _e: self._set_hover(True))
+        self.bind("<Leave>", lambda _e: self._set_hover(False))
+        self.bind("<ButtonRelease-1>", self._losgelassen)
+        self._zeichne()
+
+    def _set_hover(self, wert):
+        self._hover = wert
+        self._zeichne()
+
+    def _losgelassen(self, evt):
+        if 0 <= evt.x <= self._breite and 0 <= evt.y <= self._hoehe:
+            self.invoke()
+
+    def _zeichne(self):
+        st, aus = self._st, self._state == "disabled"
+        self.delete("all")
+        if aus:
+            fill, rand, text = (CARD if st is self._STILE["primaer"] else BG), BORDER, MUTED
+        else:
+            fill = st["hover"] if self._hover else st["fill"]
+            rand, text = st["rand"], st["text"]
+        r, x2, y2 = st["radius"], self._breite - 1, self._hoehe - 1
+        pts = [r, 0, x2 - r, 0, x2, 0, x2, r, x2, y2 - r, x2, y2, x2 - r, y2,
+               r, y2, 0, y2, 0, y2 - r, 0, r, 0, 0]
+        self.create_polygon(pts, smooth=True, splinesteps=24, fill=fill, outline=rand)
+        self.create_text(self._breite // 2, self._hoehe // 2, text=self._text, fill=text,
+                         font=st["font"])
+        self.configure(cursor="arrow" if aus else "hand2")
+
+    def invoke(self):
+        if self._state != "disabled" and self._command:
+            self._command()
+
+    def configure(self, cnf=None, **kw):
+        neu = dict(cnf or {}, **kw)
+        eigen = False
+        for k in ("state", "command", "text"):
+            if k in neu:
+                v = neu.pop(k)
+                setattr(self, "_" + k, v)
+                eigen = True
+        if neu:
+            super().configure(**neu)
+        if eigen:
+            self._zeichne()
+
+    config = configure
+
+    def cget(self, key):
+        if key in ("state", "command", "text"):
+            return getattr(self, "_" + key)
+        return super().cget(key)
+
+    __getitem__ = cget
 
 
 def _dunkle_titelleiste(root):
@@ -155,12 +237,6 @@ def _dunkles_theme(root):
                     focuscolor=BG)
     style.map("TButton", background=[("active", BORDER), ("disabled", BG)],
               foreground=[("disabled", MUTED)])
-    style.configure("Schritt.TButton", font=("Segoe UI", 11, "bold"), padding=(18, 9),
-                    background=ORANGE, foreground=BG, bordercolor=ORANGE,
-                    lightcolor=ORANGE, darkcolor=ORANGE, focuscolor=ORANGE)
-    style.map("Schritt.TButton", background=[("active", "#FFA033"), ("disabled", CARD)],
-              foreground=[("disabled", MUTED)], bordercolor=[("disabled", BORDER)],
-              lightcolor=[("disabled", CARD)], darkcolor=[("disabled", CARD)])
     style.configure("TCheckbutton", background=BG, foreground=FG, focuscolor=BG)
     style.map("TCheckbutton", background=[("active", BG)],
               indicatorcolor=[("selected", ORANGE), ("!selected", CARD)])
@@ -542,8 +618,8 @@ def _adress_dialog(root, a, rnr):
 
     knoepfe_f = ttk.Frame(dlg)
     knoepfe_f.grid(row=len(felder), column=0, columnspan=2, pady=10)
-    ttk.Button(knoepfe_f, text="Übernehmen", command=ok).pack(side="left", padx=6)
-    ttk.Button(knoepfe_f, text="Abbrechen", command=dlg.destroy).pack(side="left", padx=6)
+    RundButton(knoepfe_f, text="Übernehmen", command=ok).pack(side="left", padx=6)
+    RundButton(knoepfe_f, text="Abbrechen", command=dlg.destroy).pack(side="left", padx=6)
     dlg.bind("<Return>", ok)
     dlg.bind("<Escape>", lambda _e: dlg.destroy())
     dlg.grab_set()
@@ -624,10 +700,10 @@ def gui():
     # --- Buttons -------------------------------------------------------------
     schritte = ttk.Frame(root, padding=(8, 0))
     schritte.pack(fill="x")
-    btn_zuordnen = ttk.Button(schritte, text="1. Bestellungen zuordnen", style="Schritt.TButton")
+    btn_zuordnen = RundButton(schritte, text="1. Bestellungen zuordnen", stil="primaer")
     btn_zuordnen.pack(side="left")
-    btn_export = ttk.Button(schritte, text="2. Pickliste + CSV erstellen", state="disabled",
-                            style="Schritt.TButton")
+    btn_export = RundButton(schritte, text="2. Pickliste + CSV erstellen", state="disabled",
+                            stil="primaer")
     btn_export.pack(side="left", padx=12)
     ttk.Label(schritte, textvariable=status_var).pack(side="left", padx=12)
     knoepfe = ttk.Frame(root, padding=(8, 8, 8, 0))
@@ -689,19 +765,19 @@ def gui():
             return
         messagebox.showinfo("Carrier-Dashboard - Kg-Statistik", text)
 
-    ttk.Button(knoepfe, text="Statistik", command=zeige_statistik).pack(side="left", padx=(0, 8))
+    RundButton(knoepfe, text="Statistik", command=zeige_statistik).pack(side="left", padx=(0, 8))
 
     def filter_zuruecksetzen():
         wende_filter(None)
 
-    ttk.Button(knoepfe, text="Alle anzeigen", command=filter_zuruecksetzen).pack(
+    RundButton(knoepfe, text="Alle anzeigen", command=filter_zuruecksetzen).pack(
         side="left", padx=(0, 8))
 
-    btn_quittieren = ttk.Button(knoepfe, text="Hinweis quittieren", state="disabled")
+    btn_quittieren = RundButton(knoepfe, text="Hinweis quittieren", state="disabled")
     btn_quittieren.pack(side="left", padx=(0, 8))
-    btn_aufteilen = ttk.Button(knoepfe, text="Paket aufteilen", state="disabled")
+    btn_aufteilen = RundButton(knoepfe, text="Paket aufteilen", state="disabled")
     btn_aufteilen.pack(side="left", padx=(0, 8))
-    btn_adresse = ttk.Button(knoepfe, text="Adresse bearbeiten", state="disabled")
+    btn_adresse = RundButton(knoepfe, text="Adresse bearbeiten", state="disabled")
     btn_adresse.pack(side="left", padx=(0, 8))
     auto_var = tk.BooleanVar(value=True)
     ttk.Checkbutton(knoepfe, text="Neue Rechnungen automatisch einlesen",

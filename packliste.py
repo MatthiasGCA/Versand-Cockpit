@@ -67,7 +67,7 @@ from reportlab.graphics.shapes import Drawing
 # KONFIGURATION
 # ----------------------------------------------------------------------------
 
-VERSION = "2026-09-23b"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+VERSION = "2026-09-25a"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
 # 2026-09-23b: Neue Markierungszeile "<N>-je-Paket" (z.B. "1-je-Paket",
 #   "3-je-Paket", JE_PAKET_RE) - wie Lagerort/Fach-Artikel/Kennung eine eigene
 #   linksbuendige Zeile im Positionsblock, NICHT Teil der Bezeichnung. Neues
@@ -566,7 +566,7 @@ KENNUNG_RE = re.compile(r"^\s*(pax1|pox1|brx1|wapo)\s*$", re.IGNORECASE)
 # uebernommen; ausgewertet vom Carrier-Dashboard (carrier_regeln.
 # je_paket_aufteilung()), die Pickliste selbst nutzt sie nicht - mit
 # Matthias abgestimmt 2026-09-23.
-JE_PAKET_RE = re.compile(r"(\d+)-je-Paket", re.IGNORECASE)
+JE_PAKET_RE = re.compile(r"^\s*(\d+)-je-Paket[\s.]*$", re.IGNORECASE)   # ganze Zeile, wie KENNUNG_RE
 
 
 # ----------------------------------------------------------------------------
@@ -886,7 +886,7 @@ def parse_block(words):
             kennungen.append(m_ken.group(1).lower())
             i += 1
             continue
-        m_je_paket = JE_PAKET_RE.search(txt)
+        m_je_paket = JE_PAKET_RE.match(txt)
         if m_je_paket:
             # "<N>-je-Paket"-Zeile: wie Lagerort/Fach-Artikel/Kennung eine
             # eigene Zeile, NICHT Teil der Bezeichnung - siehe JE_PAKET_RE.

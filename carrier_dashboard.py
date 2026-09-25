@@ -83,13 +83,14 @@ import os
 import queue
 import sys
 import threading
+import time
 import tkinter as tk
 from datetime import datetime
 from tkinter import messagebox, simpledialog, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-09-25a"
+VERSION = "2026-09-25b"
 
 # Fenster-/Taskleisten-Symbol (siehe gui() unten) - liegt im selben Ordner
 # wie dieses Skript, damit es unveraendert auch nach einem Umzug funktioniert.
@@ -507,12 +508,14 @@ def gui():
     laeuft = {"an": False}
     export_info = {"uebersprungen": 0, "verarbeitete_indizes": set()}
     filter_state = {"schluessel": None}
-    # Rechnungsnummern, deren Hinweis der Nutzer per Button quittiert hat -
+    # rnr -> Hinweistexte, die der Nutzer per Button quittiert hat (nur genau
+    # DIESE Texte gelten nach einem neuen Lauf weiter als quittiert; ein neu
+    # hinzugekommener Hinweis macht die Zeile wieder offen) -
     # bleibt ueber einen erneuten Schritt-1-Lauf hinweg erhalten (wird nach
     # jedem Lese-Lauf erneut angewendet, siehe abfrage()), damit ein Nachlade-
     # Lauf mit neuen PDFs nicht bereits quittierte Hinweise wieder aufleben
     # laesst. Nur fuer die aktuelle GUI-Sitzung (kein Speichern auf Platte).
-    quittiert = set()
+    quittiert = {}
     # rnr -> manuell korrigierte Adresszeilen (Button "Adresse bearbeiten"); wird
     # nach jedem Schritt-1-Lauf erneut angewendet, damit die Nachtragung (z.B.
     # Hausnummer nach Rueckfrage beim Kunden) nicht verloren geht.
@@ -550,9 +553,61 @@ def gui():
     btn_export = ttk.Button(knoepfe, text="2. Pickliste + CSV erstellen", state="disabled")
     btn_export.pack(side="left", padx=8)
 
+    wartet = {"an": False}
+
+    def im_hintergrund(fn, timeout=20.0):
+        """Fuehrt fn (z.B. Lesezugriff auf das Netzlaufwerk mit den Statistik-
+        Dateien) in einem Thread aus, waehrend die GUI weiter Ereignisse
+        verarbeitet - ein nicht erreichbarer UNC-Pfad kann sonst das ganze
+        Fenster minutenlang einfrieren. Rueckgabe (True, wert) oder (False,
+        None) bei Fehler/Zeitueberschreitung. Waehrenddessen sind die
+        Hauptbuttons gesperrt (kein erneuter Klick moeglich)."""
+        erg = {}
+
+        def lauf():
+            try:
+                erg["wert"] = fn()
+            except Exception as e:
+                erg["fehler"] = e
+
+        t = threading.Thread(target=lauf, daemon=True)
+        t.start()
+        fertig = tk.BooleanVar(value=False)
+        start = time.monotonic()
+
+        def poll():
+            if not t.is_alive() or time.monotonic() - start > timeout:
+                fertig.set(True)
+            else:
+                root.after(50, poll)
+
+        alt = (str(btn_zuordnen["state"]), str(btn_export["state"]))
+        alter_status = status_var.get()
+        wartet["an"] = True
+        btn_zuordnen.configure(state="disabled")
+        btn_export.configure(state="disabled")
+        status_var.set("Lese Statistik-Dateien ...")
+        root.after(50, poll)
+        root.wait_variable(fertig)
+        wartet["an"] = False
+        btn_zuordnen.configure(state=alt[0])
+        btn_export.configure(state=alt[1])
+        status_var.set(alter_status)
+        if t.is_alive() or "fehler" in erg:
+            return False, None
+        return True, erg["wert"]
+
     def zeige_statistik():
         import carrier_statistik
-        messagebox.showinfo("Carrier-Dashboard - Kg-Statistik", carrier_statistik.statistik_text())
+        if wartet["an"]:
+            return
+        ok, text = im_hintergrund(carrier_statistik.statistik_text)
+        if not ok:
+            messagebox.showwarning("Carrier-Dashboard - Statistik",
+                                   "Die Statistik-Dateien sind gerade nicht erreichbar "
+                                   "(Netzlaufwerk?). Bitte spaeter erneut versuchen.")
+            return
+        messagebox.showinfo("Carrier-Dashboard - Kg-Statistik", text)
 
     ttk.Button(knoepfe, text="Statistik", command=zeige_statistik).pack(side="left", padx=(0, 8))
 
@@ -643,7 +698,7 @@ def gui():
         if b["status"] == "warn":
             b["status"] = "ok"
         if b["rnr"]:
-            quittiert.add(b["rnr"])
+            quittiert[b["rnr"]] = frozenset(b["hinweise"])
         fuelle()
 
     btn_quittieren.configure(command=quittiere_auswahl)
@@ -680,7 +735,7 @@ def gui():
             w["name"], w["zusatz"], w["strasse"], w["hausnr"], w["ortsteil"],
             w["plz"], w["ort"], w["land"])
         ergebnisse[idx] = bewerte_mit_korrektur(r, b)
-        quittiert.discard(r["rnr"])                 # neue Adresse -> Hinweise erneut pruefen
+        quittiert.pop(r["rnr"], None)                 # neue Adresse -> Hinweise erneut pruefen
         fuelle()
 
     btn_adresse.configure(command=adresse_bearbeiten)
@@ -758,7 +813,7 @@ def gui():
             "Sendung manuell in %d Pakete aufgeteilt: %s kg (Summe %s kg, "
             "Rechnung: %s kg)" % (len(pakete), pakete_txt, summe_txt, gtxt))
         b["quittiert"] = False                  # neue Aufteilung -> erneut quittieren
-        quittiert.discard(b["rnr"])
+        quittiert.pop(b["rnr"], None)
         b["status"] = "fehler" if b["fehler"] else ("warn" if b["hinweise"] else "ok")
         fuelle()
 
@@ -851,7 +906,7 @@ def gui():
                     # Schritt 1 nochmal gelaufen ist) - sonst muesste man
                     # dieselbe Rechnung jedes Mal neu quittieren.
                     for b in ergebnisse:
-                        if b["rnr"] in quittiert and b["hinweise"]:
+                        if b["hinweise"] and set(b["hinweise"]) <= quittiert.get(b["rnr"], frozenset()):
                             b["quittiert"] = True
                             if b["status"] == "warn":
                                 b["status"] = "ok"
@@ -933,7 +988,18 @@ def gui():
         # wird gepackt/exportiert/archiviert).
         rnr_liste = [r.get("rnr") or "" for r, _ in paare]
         doppelt_intern = carrier_statistik.doppelte_im_lauf(rnr_liste)
-        doppelt_historie = carrier_statistik.bereits_verarbeitet(rnr_liste)
+        ok_hist, doppelt_historie = im_hintergrund(
+            lambda: carrier_statistik.bereits_verarbeitet(rnr_liste))
+        if not ok_hist:
+            if not messagebox.askyesno(
+                    "Carrier-Dashboard - Statistik nicht erreichbar",
+                    "Die Statistik-Historie ist gerade nicht erreichbar (Netzlaufwerk?) - "
+                    "eine Doppel-Verarbeitung frueherer Laeufe kann NICHT geprueft werden "
+                    "(Doppelte im aktuellen Pool werden weiterhin erkannt).\n\n"
+                    "Trotzdem mit Schritt 2 fortfahren?", icon="warning",
+                    default=messagebox.NO):
+                return
+            doppelt_historie = {}
         if doppelt_intern or doppelt_historie:
             warnung = ["MÖGLICHE DOPPEL-VERARBEITUNG ERKANNT:", ""]
             if doppelt_intern:
@@ -1027,7 +1093,8 @@ def gui():
                     ergebnisse[:] = [b for i, b in enumerate(ergebnisse) if i not in verarbeitet]
                     for k in set(adress_korrekturen) - {b["rnr"] for b in ergebnisse}:
                         del adress_korrekturen[k]
-                    quittiert.intersection_update(b["rnr"] for b in ergebnisse)   # In-place: "&=" waere hier eine lokale Neubindung (UnboundLocalError)
+                    for k in set(quittiert) - {b["rnr"] for b in ergebnisse}:
+                        del quittiert[k]
                     filter_state["schluessel"] = None    # Indizes verschoben -> Filter zuruecksetzen
                     fuelle()
                     # Bleiben Zeilen stehen (Filter/uebersprungen), kann direkt ein

@@ -119,6 +119,16 @@ CARRIERS = [
         "muster": "DHL-VLS*.csv",
         "encoding": "latin-1",
         "ref_spalten": ["Empf\xe4ngerreferenz"],
+        # Zweite Rechnungsnummern-Quelle, NUR wenn die Empfaengerreferenz leer
+        # ist: Bei Labels, die nicht ueber den Import entstehen (z.B. von Hand
+        # im DHL-Portal), steht die Rechnungsnummer nur in der "Kostenstelle"
+        # (Sp. 135) - dort, wo sie auch aufs Label gedruckt wird. Real am
+        # 2026-09-28 beobachtet: 34 von 292 Zeilen des Tages-Exports hatten
+        # eine leere Empfaengerreferenz (Bestellungen 25666/25658 blieben
+        # deshalb ohne Sendungsnummer). Nur ueber den Kopfnamen, KEIN fester
+        # Fallback-Index (eine falsch getroffene Spalte waere gefaehrlicher als
+        # eine uebersprungene Zeile).
+        "ref2_spalten": ["Kostenstelle"],
         "track_spalten": ["Sendungsnummer"],
         "ref_fallback_idx": 23,
         "track_fallback_idx": 105,
@@ -257,18 +267,31 @@ def lies_carrier_csv(pfad, carrier, log):
         return [], False
     log("  %s [%s]: Rg-Nr via %s, Tracking via %s, %d Datenzeile(n)"
         % (os.path.basename(pfad), carrier["name"], ref_m, trk_m, len(rows) - 1))
+    ref2_i = None
+    if carrier.get("ref2_spalten"):
+        ref2_i, _ = _finde_spalte(header, carrier["ref2_spalten"], -1)  # nur per Kopfname
     out = []
+    ueber_ref2 = 0
     for r in rows[1:]:
         if len(r) <= max(ref_i, trk_i):
             continue
         ref = r[ref_i].strip()
         trk = r[trk_i].strip()
-        if not ref or not trk:
+        if not trk:
             continue
         # Rechnungsnummern sind bei Gasecenter reine Ziffern (7-stellig, 170xxxx).
+        # Ist die Hauptspalte leer/ungueltig, die zweite Quelle (Kostenstelle) nehmen.
+        if not ref.isdigit() and ref2_i is not None and len(r) > ref2_i:
+            ref2 = r[ref2_i].strip()
+            if ref2.isdigit():
+                ref = ref2
+                ueber_ref2 += 1
         if not ref.isdigit():
             continue
         out.append((ref, trk))
+    if ueber_ref2:
+        log("    davon %d Zeile(n) nur ueber '%s' (Empfaengerreferenz leer)"
+            % (ueber_ref2, carrier["ref2_spalten"][0]))
     return out, True
 
 

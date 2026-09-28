@@ -49,7 +49,7 @@ ist_auslands_kleinpaket() und die Konstanten KLEINPAKET_*.
 import html
 import re
 
-VERSION = "2026-09-28b"
+VERSION = "2026-09-28c"
 
 # --- Gewichtsgrenzen in kg (Klasse gilt bei Gewicht STRIKT UNTER der Grenze) -----
 G_BRIEF = 0.05
@@ -172,6 +172,11 @@ _PLZ_IN_ZEILE = re.compile(r"^(?P<vor>.*\S)\s+(?P<plz>\d{5})\s+(?P<ort>\S.*)$")
 # Ende als Hausnummer erkannt wird.
 _STRASSE_HNR = re.compile(
     r"^(?P<str>.*?\S)[\s:]*(?P<nr>\d+\s*[A-Za-z]?(?:\s*[-/]\s*\d+\s*[A-Za-z]?)?)[\s,.;]*$")
+# Hausnummer MITTEN in der Zeile, dahinter reiner Text ohne Ziffern ("In Der Loh 1
+# Campingplatz", Rechnung 1706290): Strasse + Hausnummer, der Rest ist Zusatz.
+# Nur Fallback, wenn _STRASSE_HNR (Hausnummer am Zeilenende) nicht passt.
+_HNR_MIT_TEXT = re.compile(
+    r"^(?P<str>[^\d]*?[A-Za-zÄÖÜäöüß.])\s+(?P<nr>\d+[A-Za-z]?)\s+(?P<rest>[A-Za-zÄÖÜäöüß][^\d]*)$")
 # Eine Zeile, die NUR aus der Hausnummer besteht (Strasse und Hausnummer auf
 # zwei eigenen Zeilen, real beobachtet an Rechnung 1705611/1705631: "Wiesenweg"
 # / "4", "lindenstrasse" / "8").
@@ -217,7 +222,8 @@ def _finde_strasse(kandidaten):
     for k in range(len(kandidaten) - 1, -1, -1):
         if _NUR_HAUSNUMMER.match(kandidaten[k]):
             continue
-        if _STRASSE_HNR.match(_trenne_ortsteil(kandidaten[k])[0]):
+        ohne_ot = _trenne_ortsteil(kandidaten[k])[0]
+        if _STRASSE_HNR.match(ohne_ot) or _HNR_MIT_TEXT.match(ohne_ot):
             return kandidaten[k], kandidaten[:k] + kandidaten[k + 1:]
     # 2) Keine Zeile passt einzeln - evtl. Strasse und Hausnummer auf zwei
     #    eigenen Zeilen: ist die letzte Zeile NUR die Hausnummer, mit der Zeile
@@ -366,7 +372,12 @@ def analysiere_adresse(zeilen):
         out["fehler"].append("Keine Straße gefunden")
     else:
         ms = _STRASSE_HNR.match(strasse_roh)
-        if ms:
+        mt = None if ms else _HNR_MIT_TEXT.match(strasse_roh)
+        if mt:
+            out["strasse"] = mt.group("str").strip()
+            out["hausnr"] = mt.group("nr")
+            out["zusatz"] = list(out["zusatz"]) + [mt.group("rest").strip()]
+        elif ms:
             out["strasse"] = ms.group("str").strip()
             out["hausnr"] = re.sub(r"\s+", " ", ms.group("nr")).strip()
         else:
@@ -761,6 +772,17 @@ def selftest():
     a = analysiere_adresse(["A B", "Weg 1", "12345 Ort", "Hinterhaus Zimmer 12"])
     check("adr: Zeile mit Ziffern bleibt 'unerwartet'",
           (a["ort"], any("Unerwartete" in h for h in a["hinweise"])), ("Ort", True))
+
+    # Hausnummer mitten in der Zeile, Text dahinter (real 1706290)
+    a = analysiere_adresse(["Heitkämper Sandra Möller", "In Der Loh 1 Campingplatz", "DE 37170 Uslar"])
+    check("adr real 1706290 (Hausnr mitten, Zusatz dahinter)",
+          (a["strasse"], a["hausnr"], a["zusatz"], a["hinweise"], a["fehler"]),
+          ("In Der Loh", "1", ["Campingplatz"], [], []))
+    a = analysiere_adresse(["A B", "Hauptstr. 12 B", "12345 Ort"])
+    check("adr: 'Hauptstr. 12 B' bleibt Hausnr 12 B (Fallback greift nicht)",
+          (a["strasse"], a["hausnr"], a["zusatz"]), ("Hauptstr.", "12 B", []))
+    a = analysiere_adresse(["A B", "Am Markt", "12345 Ort"])
+    check("adr: ohne Hausnummer weiterhin Hinweis", any("Keine Hausnummer" in h for h in a["hinweise"]), True)
 
     # Adresse (Faelle aus echten Rechnungen)
     a = analysiere_adresse(["Evi Schmid", "Jägerwirth 122", "DE-94081 Fürstenzell"])

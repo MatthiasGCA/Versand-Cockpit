@@ -505,6 +505,10 @@ def verarbeite(rgnr, bestellnr, trackings, carrier_name, api, cfg, state, dry, l
 
     ergebnis = "sync"
     geschrieben = []
+    weitere = []   # Nummern, fuer die Shiptastic keine eigene Sendung mehr zulaesst
+    # Sendung, die bereits eine unserer Nummern traegt (bzw. gleich bekommt) -
+    # dorthin kommen weitere Paketnummern als Hinweistext, s.u.
+    haupt = next((belegt[t] for t in trackings if t in belegt), None)
     for trk in offene_trackings:
         ziel = frei.pop(0) if frei else None
         if ziel is not None:
@@ -513,11 +517,13 @@ def verarbeite(rgnr, bestellnr, trackings, carrier_name, api, cfg, state, dry, l
                 log("  [TROCKEN] %s: PUT /shipments/%s  tracking_id='%s' provider='%s'%s"
                     % (rgnr, sid, trk, slug, "  status='shipped'" if cfg["set_status_shipped"] else ""))
                 geschrieben.append(trk)
+                haupt = haupt or ziel
                 continue
             st, body = api.shipment_put(sid, _payload(trk, slug, carrier_name, cfg))
             if st in (200, 201):
                 log("  %s: Sendung %s aktualisiert -> '%s' (%s/%s)" % (rgnr, sid, trk, carrier_name, slug))
                 geschrieben.append(trk)
+                haupt = haupt or ziel
             else:
                 log("  %s: PUT /shipments/%s fehlgeschlagen HTTP %s: %s" % (rgnr, sid, st, _kurz(body)))
                 ergebnis = "api_fehler"
@@ -528,22 +534,63 @@ def verarbeite(rgnr, bestellnr, trackings, carrier_name, api, cfg, state, dry, l
                 geschrieben.append(trk)
                 continue
             pl = _payload(trk, slug, carrier_name, cfg)
-            pl["order_id"] = int(bestellnr) if str(bestellnr).isdigit() else bestellnr
+            # Die API verlangt order_id als TEXT (Schema type=string) - eine Zahl
+            # wird mit HTTP 400 "rest_invalid_type" abgelehnt (2026-09-28 gefunden).
+            pl["order_id"] = str(bestellnr)
             st, body = api.shipment_post(pl)
             if st in (200, 201):
                 neu_id = body.get("id") if isinstance(body, dict) else "?"
                 log("  %s: neue Sendung %s angelegt -> '%s' (%s/%s)" % (rgnr, neu_id, trk, carrier_name, slug))
                 geschrieben.append(trk)
+            elif st == 400 and isinstance(body, dict) and body.get("code") == "woocommerce_stc_rest_invalid_id":
+                # "Diese Bestellung benoetigt keine Sendung": die vorhandene Sendung
+                # deckt schon ALLE Positionen ab (z.B. 2 Kanister in 2 Paketen, eine
+                # Sendung mit Menge 2). Eine zweite Sendung laesst Shiptastic dann
+                # nicht zu - die weitere Nummer geht als Hinweistext an die Sendung.
+                weitere.append(trk)
             else:
                 log("  %s: POST /shipments fehlgeschlagen HTTP %s: %s" % (rgnr, st, _kurz(body)))
                 ergebnis = "api_fehler"
 
+    if weitere and ergebnis != "api_fehler":
+        if haupt is not None and _weitere_nummern_notieren(api, haupt, weitere, carrier_name, dry, rgnr, log):
+            geschrieben.extend(weitere)
+        else:
+            log("  %s: weitere Sendungsnummer(n) %s konnten nicht eingetragen werden - spaeter erneut."
+                % (rgnr, ", ".join(weitere)))
+            ergebnis = "api_fehler"
+
     if geschrieben and ergebnis != "api_fehler" and not dry:
-        # nur die tatsaechlich geschriebenen Nummern vermerken; bereits zuvor
-        # vorhandene (belegt) muessen nicht erneut in den State.
-        _merke_sync(state, rgnr, bestellnr, geschrieben, carrier_name, slug)
+        # Alle Nummern dieser Rechnung, die jetzt im Shop stehen, vermerken - auch die
+        # schon frueher eingetragenen (belegt). Sonst passt trackings nie in den
+        # State-Eintrag, und die Rechnung wird jede Stunde erneut angefasst.
+        _merke_sync(state, rgnr, bestellnr,
+                    [t for t in trackings if t in belegt] + geschrieben, carrier_name, slug)
         state["offen"].pop(rgnr, None)
     return ergebnis
+
+
+def _weitere_nummern_notieren(api, haupt, weitere, carrier_name, dry, rgnr, log):
+    """Traegt weitere Paketnummern einer Bestellung als Hinweistext
+    (tracking_instruction) in die Hauptsendung ein - idempotent: Nummern, die
+    dort schon stehen, werden nicht doppelt geschrieben. True bei Erfolg."""
+    sid = haupt.get("id")
+    alt = (haupt.get("tracking_instruction") or "").strip()
+    fehlend = [t for t in weitere if t not in alt]
+    if not fehlend:
+        return True
+    zeile = "Weitere Sendungsnummer(n) (%s): %s" % (carrier_name, ", ".join(fehlend))
+    neu = (alt + "\n" + zeile) if alt else zeile
+    if dry:
+        log("  [TROCKEN] %s: PUT /shipments/%s  tracking_instruction='%s'" % (rgnr, sid, zeile))
+        return True
+    st, body = api.shipment_put(sid, {"tracking_instruction": neu})
+    if st in (200, 201):
+        log("  %s: weitere Sendungsnummer(n) als Hinweis an Sendung %s: %s"
+            % (rgnr, sid, ", ".join(fehlend)))
+        return True
+    log("  %s: PUT /shipments/%s (Hinweistext) fehlgeschlagen HTTP %s: %s" % (rgnr, sid, st, _kurz(body)))
+    return False
 
 
 def bereinige_offen(state, tage):

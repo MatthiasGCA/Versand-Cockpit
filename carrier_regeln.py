@@ -49,7 +49,7 @@ ist_auslands_kleinpaket() und die Konstanten KLEINPAKET_*.
 import html
 import re
 
-VERSION = "2026-09-28e"
+VERSION = "2026-09-28f"
 
 # --- Gewichtsgrenzen in kg (Klasse gilt bei Gewicht STRIKT UNTER der Grenze) -----
 G_BRIEF = 0.05
@@ -631,6 +631,30 @@ def je_paket_aufteilung(r, gewicht):
     return pakete, grund_zusatz
 
 
+def _pruefung_text(r):
+    """Text zum Hinweis 'Rechnungsprüfung nicht bestanden' MIT Details (wie die
+    Konsolenausgabe der Pickliste_erstellen.bat): welche Zeile nicht aufrechnet,
+    Positionssumme gegen Rechnungsbetrag, unvollstaendige Positionen."""
+    teile = []
+    if not r.get("zeilen_ok", True):
+        falsch = []
+        for p in r.get("positionen") or []:
+            m, ep, gp = p.get("menge"), p.get("ep"), p.get("gp")
+            if m is not None and ep is not None and gp is not None and abs(round(m * ep, 2) - gp) > 0.011:
+                falsch.append("%s (%s × %s ≠ %s)" % (
+                    p.get("art") or "?", ("%g" % m).replace(".", ","),
+                    ("%.2f" % ep).replace(".", ","), ("%.2f" % gp).replace(".", ",")))
+        teile.append("Zeile rechnet nicht auf: " + (", ".join(falsch[:3]) or "?"))
+    if not r.get("summe_ok", True):
+        s, t = r.get("summe"), r.get("total")
+        teile.append("Positionssumme %s ≠ Rechnungsbetrag %s" % (
+            ("%.2f" % s).replace(".", ",") if s is not None else "?",
+            ("%.2f" % t).replace(".", ",") if t is not None else "?"))
+    if not r.get("vollstaendig_ok", True):
+        teile.append("unvollständig: " + (", ".join(r.get("unvollstaendig") or []) or "?"))
+    return "Rechnungsprüfung nicht bestanden - " + "; ".join(teile)
+
+
 def bewerte_rechnung(r):
     """Ergebnis-dict fuer eine geparste Rechnung (siehe carrier_dashboard.py).
     status: 'ok' | 'warn' (offener Hinweis - blockiert den Export bis zum
@@ -677,7 +701,7 @@ def bewerte_rechnung(r):
                      ("%.2f" % warenwert(r)).replace(".", ",")))
     if not (r.get("zeilen_ok", True) and r.get("summe_ok", True)
             and r.get("vollstaendig_ok", True)):
-        hinweise.append("Rechnungsprüfung (Beträge/Vollständigkeit) nicht bestanden")
+        hinweise.append(_pruefung_text(r))
     kdnr = (r.get("kdnr") or "").strip()
     if carrier == DPD and not kdnr:
         # DPD-Export braucht die Kundennummer als Empfaengerreferenz (siehe
@@ -1122,6 +1146,24 @@ def selftest():
     b_unl = _wv(["wapo"], 0.66, None)
     check("Warenpreis nicht lesbar -> Carrier bleibt, Hinweis fuer Handpruefung",
           (b_unl["carrier"], any("Warenwert nicht lesbar" in h for h in b_unl["hinweise"])), (DPD, True))
+
+    # Rechnungspruefung mit Details (Hinweistext)
+    r_pr = {"rnr": "1700970", "datei": "x.pdf", "sendungsgewicht": 0.5,
+            "adresse_zeilen": ["A B", "Weg 1", "12345 Ort"],
+            "positionen": [dict(_pos("A1", 2.0), ep=10.0, gp=21.0),
+                           {"art": "", "bez": "", "menge": 1.0, "ep": None, "gp": None,
+                            "kennungen": [], "lagerorte": []}],
+            "zeilen_ok": False, "summe_ok": False, "vollstaendig_ok": False,
+            "summe": 21.0, "total": 23.5, "unvollstaendig": ["? (Betrag)"]}
+    b_pr = bewerte_rechnung(r_pr)
+    pruef = [h for h in b_pr["hinweise"] if h.startswith("Rechnungsprüfung")]
+    check("Rechnungspruefung: Hinweis mit Details (Zeile/Summe/unvollstaendig)",
+          (len(pruef) == 1, "A1 (2 × 10,00 ≠ 21,00)" in pruef[0],
+           "Positionssumme 21,00 ≠ Rechnungsbetrag 23,50" in pruef[0], "? (Betrag)" in pruef[0]),
+          (True, True, True, True))
+    r_ok = dict(r_pr, zeilen_ok=True, summe_ok=True, vollstaendig_ok=True)
+    check("Rechnungspruefung bestanden -> kein Hinweis",
+          [h for h in bewerte_rechnung(r_ok)["hinweise"] if h.startswith("Rechnungsprüfung")], [])
 
     # DHL-Kleinpaket Ausland (Regel von Matthias 2026-09-25)
     def _kp(kennung, gewicht, wert, land_zeilen=("A B", "Weg 1", "AT-8330 Feldbach"),

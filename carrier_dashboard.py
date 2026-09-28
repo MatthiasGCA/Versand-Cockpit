@@ -99,7 +99,7 @@ from tkinter import messagebox, simpledialog, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-09-25f"
+VERSION = "2026-09-28a"
 
 # Fenster-/Taskleisten-Symbol (siehe gui() unten) - liegt im selben Ordner
 # wie dieses Skript, damit es unveraendert auch nach einem Umzug funktioniert.
@@ -121,6 +121,7 @@ ROT_ZEILE = "#4A2020"
 GOLD = "#FFD54F"
 GOLD_ZEILE = "#4A3A12"
 ORANGE = "#F38808"
+GRUEN = "#81C784"
 
 
 class RundButton(tk.Canvas):
@@ -830,6 +831,11 @@ def gui():
             w.bind("<Button-1>", lambda _evt, s=k: wende_filter(s))
         zlabels[k] = lb
         zf.columnconfigure(i, weight=1)
+    # Ergebnis der Rechnungspruefung (Betraege/Vollstaendigkeit) - ersetzt das
+    # "OK" hinter jeder Rechnungsnummer in der Ausgabe der Pickliste_erstellen.bat.
+    pruef_lbl = tk.Label(zf, text="", bg=BG, fg=FG, anchor="w", font=("Segoe UI", 9))
+    pruef_lbl.grid(row=2, column=0, columnspan=len(GRUPPEN) + 2, sticky="w", padx=10,
+                   pady=(6, 0))
 
     # --- Tabelle + Detail ---------------------------------------------------
     pan = ttk.PanedWindow(root, orient="vertical")
@@ -1052,6 +1058,18 @@ def gui():
             zlabels[k].configure(text=str(z.get(k, 0)), fg=FG)
         zlabels["FEHLER"].configure(text=str(fehler), fg=(ROT if fehler else FG))
         zlabels["HINWEISE"].configure(text=str(hinweise), fg=(GOLD if hinweise else FG))
+        p_ok = p_warn = p_unles = 0
+        for r_i, b_i in zip(rechnungen_roh, ergebnisse):
+            if r_i is None:
+                p_unles += 1
+            elif any(h.startswith("Rechnungsprüfung") for h in b_i["hinweise"]):
+                p_warn += 1
+            else:
+                p_ok += 1
+        pruef_lbl.configure(
+            text="Rechnungsprüfung (Beträge/Vollständigkeit):  %d OK,  %d Warnung(en)%s"
+                 % (p_ok, p_warn, (",  %d nicht lesbar" % p_unles) if p_unles else ""),
+            fg=(GOLD if p_warn or p_unles else GRUEN) if ergebnisse else FG)
         if schluessel is None:
             zf.configure(text="Zuordnung")
         else:

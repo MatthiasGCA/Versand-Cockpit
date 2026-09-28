@@ -67,7 +67,12 @@ from reportlab.graphics.shapes import Drawing
 # KONFIGURATION
 # ----------------------------------------------------------------------------
 
-VERSION = "2026-09-25a"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+VERSION = "2026-09-28a"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+# 2026-09-28a: Sammeldruck zeigt jetzt den LAGERORT des Artikels (Deckblatt aus
+#   scan_druck.py + Sammeldruck-Block der Pickliste) - neue letzte Spalte
+#   "Lagerort" in sammel_zuordnung.csv (aeltere scan_druck.py-Versionen ignorieren
+#   sie). Anlass: Artikel 799 (Schlauchtuelle + Ueberwurfmutter, 2 Lagerkaesten
+#   "A2 + A7") - der Packer hat beim Sammeldruck oft nur das Deckblatt in der Hand.
 # 2026-09-23b: Neue Markierungszeile "<N>-je-Paket" (z.B. "1-je-Paket",
 #   "3-je-Paket", JE_PAKET_RE) - wie Lagerort/Fach-Artikel/Kennung eine eigene
 #   linksbuendige Zeile im Positionsblock, NICHT Teil der Bezeichnung. Neues
@@ -665,9 +670,11 @@ def finde_sammelgruppen(rechnungen, min_anzahl=SAMMEL_MIN):
         g = nach_artikel.setdefault(
             p["art"], {"art": p["art"], "bez": eff_bez, "einh": p["einh"],
                        "menge_je_text": mengentext(eff_menge, eff_einh),
-                       "ean": "", "rnr": []})
+                       "ean": "", "lagerort": "", "rnr": []})
         if not g["ean"] and p.get("ean"):
             g["ean"] = p["ean"]
+        if not g["lagerort"] and p.get("lagerorte"):
+            g["lagerort"] = ", ".join(p["lagerorte"])
         if r["rnr"]:
             g["rnr"].append(r["rnr"])
     gruppen = [g for g in nach_artikel.values() if len(g["rnr"]) >= min_anzahl]
@@ -698,6 +705,8 @@ def _lade_bestehende_sammelgruppen(csv_pfad):
             # Aeltere Zeilen (vor 2026-08-21h) haben diese Spalte noch nicht ->
             # Fallback auf die bis dahin einzig moegliche Annahme "1 Stück".
             "menge_je_text": t[7] if len(t) > 7 and t[7] else "1 Stück",
+            # Spalte 9 (seit 2026-09-28a): Lagerort fuer das Sammeldruck-Deckblatt.
+            "lagerort": t[8] if len(t) > 8 else "",
         })
     return gruppen
 
@@ -1652,9 +1661,10 @@ def baue_pdf(rechnungen, pdf_pfad, gruppen):
         """Sammeldruck-Gruppe: alle betroffenen Bestellungen in einem
         GESTRICHELTEN Rahmen, der Sammel-Barcode unten INNERHALB des Rahmens."""
         n = len(gruppe_rechnungen)
+        lager_txt = (f" &middot; Lagerort <b>{g['lagerort']}</b>" if g.get("lagerort") else "")
         titel = Paragraph(
             f"<b>Sammeldruck {g['code']}</b> &middot; Artikel <b>{g['art']}</b> &ndash; "
-            f"{g['bez']} &middot; {n} Bestellungen à {g.get('menge_je_text') or '1 Stück'}",
+            f"{g['bez']}{lager_txt} &middot; {n} Bestellungen à {g.get('menge_je_text') or '1 Stück'}",
             st_kopf)
         try:
             bc = code128.Code128(g["code"], barHeight=18 * mm, barWidth=0.5 * mm)
@@ -1948,11 +1958,11 @@ def schreibe_sammel_csv(gruppen, csv_pfad):
         w = csv.writer(f, delimiter=";", lineterminator="\n")
         w.writerow(["Code", "Artikelnr", "Bezeichnung", "Menge",
                      "Rechnungsnummern", "EAN", "Rechnungsdatum",
-                     "MengeJeBestellung"])
+                     "MengeJeBestellung", "Lagerort"])
         for g in gruppen:
             w.writerow([g["code"], g["art"], g["bez"], len(g["rnr"]),
                         ",".join(g["rnr"]), g.get("ean", ""), g.get("datum", ""),
-                        g.get("menge_je_text") or "1 Stück"])
+                        g.get("menge_je_text") or "1 Stück", g.get("lagerort", "")])
 
 
 def schreibe_mengen_csv(rechnungen, csv_pfad):

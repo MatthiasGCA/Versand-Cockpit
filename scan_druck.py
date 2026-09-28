@@ -50,7 +50,7 @@ try:
 except Exception:
     _HAS_REPORTLAB = False
 # ============================ KONFIGURATION ============================
-VERSION = "2026-09-24a"          # im Fenstertitel sichtbar -> Deployment pruefbar
+VERSION = "2026-09-28a"          # im Fenstertitel sichtbar -> Deployment pruefbar
 # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je Aenderung am selben Tag (erste
 # Aenderung des Tages = a, dann b, c ...; ein neuer Tag beginnt wieder bei a).
 # 2026-09-24a: Briefmarke "OHNE Zuordnung", obwohl schon gedruckt (real: Re
@@ -651,10 +651,11 @@ def lade_sammel_zuordnung(pfad):
                 code, art, bez, menge, rnrs = t[0], t[1], t[2], t[3], t[4]
                 ean = re.sub(r"\D", "", t[5]) if len(t) > 5 else ""
                 menge_je = (t[7].strip() if len(t) > 7 and t[7].strip() else "1 Stück")
+                lagerort = t[8].strip() if len(t) > 8 else ""   # seit packliste 2026-09-28a
                 rnr = [r.strip() for r in rnrs.split(",") if r.strip()]
                 lookup[code.strip().upper()] = {
                     "art": art, "bez": bez, "menge": menge, "rnr": rnr, "ean": ean,
-                    "menge_je": menge_je}
+                    "menge_je": menge_je, "lagerort": lagerort}
     except Exception:
         return
     SAMMEL_LOOKUP, _SAMMEL_CSV_SIG = lookup, sig
@@ -1368,7 +1369,8 @@ def _drucke_pdf(writer, drucker, name):
     with open(tmp, "wb") as f:
         writer.write(f)
     return _sende_an_drucker(tmp, drucker)
-def deckblatt_seite(breite, hoehe, code, art, bez, anzahl, versender, menge_je="1 Stück"):
+def deckblatt_seite(breite, hoehe, code, art, bez, anzahl, versender, menge_je="1 Stück",
+                    lagerort=""):
     """Deckblatt in Label-Groesse als PdfReader-Seite (oder None ohne reportlab).
     menge_je = die TATSAECHLICH je Bestellung zu verpackende Menge als Text
     (z.B. "3 Stück" bei einem 3-Fach-Artikel, kommt aus sammel_zuordnung.csv/
@@ -1398,6 +1400,11 @@ def deckblatt_seite(breite, hoehe, code, art, bez, anzahl, versender, menge_je="
     y[0] -= hoehe * 0.015
     zeile(f"Artikel {art}", hoehe * 0.085)
     zeile(bez, hoehe * 0.038, bold=False)
+    if lagerort:
+        # Lagerort(e) gross - der Packer holt die Ware oft nur anhand dieses Blatts
+        # (z.B. "A2 + A7" bei einem aus zwei Lagerkaesten zusammengesetzten Artikel).
+        y[0] -= hoehe * 0.01
+        zeile(f"Lagerort: {lagerort}", hoehe * 0.05)
     y[0] -= hoehe * 0.015
     zeile(f"{anzahl} x {menge_je}", hoehe * 0.06)
     c.setFont("Helvetica", max(7.0, hoehe * 0.028))
@@ -1460,7 +1467,7 @@ def drucke_sammel(z, code, ordner, station=None):
                 bseite, hseite = 283.0, 425.0
             deck = deckblatt_seite(bseite, hseite, code, g["art"], g["bez"],
                                    len(rnrs_je_versender[versender]), versender,
-                                   g.get("menge_je", "1 Stück"))
+                                   g.get("menge_je", "1 Stück"), g.get("lagerort", ""))
             if deck is not None:
                 writer.add_page(deck)
             for (pfad, idx) in seiten:

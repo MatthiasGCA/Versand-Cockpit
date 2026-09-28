@@ -49,7 +49,7 @@ ist_auslands_kleinpaket() und die Konstanten KLEINPAKET_*.
 import html
 import re
 
-VERSION = "2026-09-28c"
+VERSION = "2026-09-28d"
 
 # --- Gewichtsgrenzen in kg (Klasse gilt bei Gewicht STRIKT UNTER der Grenze) -----
 G_BRIEF = 0.05
@@ -171,7 +171,7 @@ _PLZ_IN_ZEILE = re.compile(r"^(?P<vor>.*\S)\s+(?P<plz>\d{5})\s+(?P<ort>\S.*)$")
 # NICHT-gierig, damit bei mehreren Ziffern in der Zeile trotzdem nur die am
 # Ende als Hausnummer erkannt wird.
 _STRASSE_HNR = re.compile(
-    r"^(?P<str>.*?\S)[\s:]*(?P<nr>\d+\s*[A-Za-z]?(?:\s*[-/]\s*\d+\s*[A-Za-z]?)?)[\s,.;]*$")
+    r"^(?P<str>.*?\S)[\s:]*(?P<nr>\d+\s*[A-Za-z]?(?:\s*[-/]\s*\d+\s*[A-Za-z]?)*)[\s,.;]*$")
 # Hausnummer MITTEN in der Zeile, dahinter reiner Text ohne Ziffern ("In Der Loh 1
 # Campingplatz", Rechnung 1706290): Strasse + Hausnummer, der Rest ist Zusatz.
 # Nur Fallback, wenn _STRASSE_HNR (Hausnummer am Zeilenende) nicht passt.
@@ -244,7 +244,9 @@ def analysiere_adresse(zeilen):
     Rueckgabe dict: name, zusatz (Liste), strasse, hausnr, plz, ort, land (ISO2 oder
     ''), fehler (Liste, blockiert den Export), hinweise (Liste, nur Warnung)."""
     zl = [bereinige(z) for z in (zeilen or [])]
-    zl = [z for z in zl if z]
+    # Zeilen ganz ohne Buchstaben/Ziffern ("-", ".", "'-") sind Fuellzeichen der
+    # Kundeneingabe (real 1706360: Zusatzzeile "-") und gehoeren nicht ins Label.
+    zl = [z for z in zl if z and re.search(r"\w", z)]
     out = {"name": "", "zusatz": [], "strasse": "", "hausnr": "", "plz": "",
            "ort": "", "ortsteil": "", "land": "", "fehler": [], "hinweise": [],
            "packstation": False}
@@ -783,6 +785,17 @@ def selftest():
           (a["strasse"], a["hausnr"], a["zusatz"]), ("Hauptstr.", "12 B", []))
     a = analysiere_adresse(["A B", "Am Markt", "12345 Ort"])
     check("adr: ohne Hausnummer weiterhin Hinweis", any("Keine Hausnummer" in h for h in a["hinweise"]), True)
+
+    # Mehrfache Hausnummer-Bestandteile (Oesterreich: Haus-Stiege/Tuer) - 1706384
+    a = analysiere_adresse(["Patricia Resch", "Canavesegasse 9-15 /3/12", "AT-1230 Wien"])
+    check("adr real 1706384 (Hausnr 9-15 /3/12)", (a["strasse"], a["hausnr"], a["fehler"], a["hinweise"]),
+          ("Canavesegasse", "9-15 /3/12", [], []))
+    a = analysiere_adresse(["Karl Nummer", "Ring 36/6", "AT-9991 Kals"])
+    check("adr Hausnr 36/6 unveraendert", (a["strasse"], a["hausnr"]), ("Ring", "36/6"))
+    # Fuellzeichen-Zeile "-" als Zusatz (1706360)
+    a = analysiere_adresse(["Muehlegg Michael", "-", "Radlkoferstr. 15", "DE 81373 München"])
+    check("adr real 1706360 (Zeile '-' entfaellt)", (a["zusatz"], a["strasse"], a["hausnr"]),
+          ([], "Radlkoferstr.", "15"))
 
     # Adresse (Faelle aus echten Rechnungen)
     a = analysiere_adresse(["Evi Schmid", "Jägerwirth 122", "DE-94081 Fürstenzell"])

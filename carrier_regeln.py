@@ -49,7 +49,7 @@ ist_auslands_kleinpaket() und die Konstanten KLEINPAKET_*.
 import html
 import re
 
-VERSION = "2026-09-28d"
+VERSION = "2026-09-28e"
 
 # --- Gewichtsgrenzen in kg (Klasse gilt bei Gewicht STRIKT UNTER der Grenze) -----
 G_BRIEF = 0.05
@@ -62,6 +62,10 @@ G_DHL_MAX = 31.5
 KLEINPAKET_MIN_KG = 0.6
 KLEINPAKET_MAX_KG = 1.0
 KLEINPAKET_MIN_WARENWERT = 40.0               # EUR, strikt darueber
+# Versicherungsgrenze (Matthias 2026-09-28): AB diesem Warenwert (Summe der
+# Artikelpreise ohne Versandkosten) geht jede Sendung auf DHL - nur dort sind
+# solche Werte versichert -, egal welche Versandart sonst gewaehlt wuerde.
+DHL_MIN_WARENWERT = 50.0
 KLEINPAKET_KENNUNGEN = {"wapo", "pox1"}
 # Nur EU-Laender (Matthias 2026-09-25): ausserhalb der EU (CH, LI, NO, GB ...)
 # braeuchte Warenpost International Zolldaten, die die CSV nicht enthaelt.
@@ -643,6 +647,19 @@ def bewerte_rechnung(r):
     carrier, grund, f2, h2 = bestimme_carrier(kenn, gewicht, adr["land"], adr["packstation"])
     fehler += f2
     hinweise += h2
+    # Versicherungsgrenze: ab DHL_MIN_WARENWERT immer DHL (siehe Konstante).
+    wert = warenwert(r)
+    if carrier and carrier != DHL:
+        if wert is not None and wert >= DHL_MIN_WARENWERT:
+            grund += (", Warenwert %s EUR ab %s EUR → DHL (nur dort versichert)"
+                      % (("%.2f" % wert).replace(".", ","),
+                         ("%.0f" % DHL_MIN_WARENWERT)))
+            carrier = DHL
+        elif wert is None and any("gp" in q and q["gp"] is None
+                                  for q in (r.get("positionen") or [])
+                                  if not _ist_versandposition(q)):
+            hinweise.append("Warenwert nicht lesbar - Versicherungsgrenze (%s EUR → DHL) "
+                            "bitte von Hand prüfen" % ("%.0f" % DHL_MIN_WARENWERT))
     # "<N>-je-Paket"-markierte Artikel (siehe je_paket_aufteilung()) automatisch
     # in mehrere DHL-Pakete aufteilen - loest dabei ggf. den Uebergewichts-
     # Fehler, den bestimme_carrier() oben anhand des GESAMTgewichts gesetzt
@@ -1079,6 +1096,32 @@ def selftest():
     b_edit2 = bewerte_rechnung(dict(r_edit, adresse_zeilen=adresse_zeilen_aus_feldern(
         "Anna Test", [], "Wiesenweg", "4", "", "12345", "Musterstadt", "DE")))
     check("Nach Korrektur: ok, DHL", (b_edit2["status"], b_edit2["carrier"]), ("ok", DHL))
+
+    # Versicherungsgrenze: ab 50 EUR Warenwert immer DHL (Matthias 2026-09-28,
+    # real 1706171: Wapo 0,66 kg, 69 EUR -> DHL statt DPD)
+    def _wv(kennung, gewicht, wert, land_zeilen=("A B", "Weg 1", "12345 Ort")):
+        pos = _pos("A1", 1.0)
+        pos["kennungen"] = kennung
+        pos["gp"] = wert
+        ver = {"art": "660", "bez": "Versandkosten", "menge": 1.0, "kennungen": [],
+               "lagerorte": [], "gp": 2.9}
+        return bewerte_rechnung({"rnr": "1700980", "datei": "x.pdf", "sendungsgewicht": gewicht,
+                                 "adresse_zeilen": list(land_zeilen), "positionen": [pos, ver],
+                                 "zeilen_ok": True, "summe_ok": True, "vollstaendig_ok": True})
+    check("Warenwert 69 EUR, wapo 0,66 kg -> DHL statt DPD", _wv(["wapo"], 0.66, 69.0)["carrier"], DHL)
+    check("Warenwert 69 EUR -> Grund nennt die Versicherung", "versichert" in _wv(["wapo"], 0.66, 69.0)["grund"], True)
+    check("Warenwert genau 50,00 EUR -> DHL (ab 50)", _wv(["wapo"], 0.66, 50.0)["carrier"], DHL)
+    check("Warenwert 49,99 EUR -> weiter DPD", _wv(["wapo"], 0.66, 49.99)["carrier"], DPD)
+    check("Warenwert 49 EUR, pox1 0,18 kg -> weiter Grossbrief", _wv(["pox1"], 0.18, 49.0)["carrier"], GROSSBRIEF)
+    check("Brx1 Brief mit 60 EUR -> DHL", _wv(["brx1"], 0.03, 60.0)["carrier"], DHL)
+    check("Warenwert zaehlt OHNE Versandkosten (45 EUR + 2,90 Versand -> weiter DPD)",
+          _wv(["wapo"], 0.66, 45.0)["carrier"], DPD)
+    check("Ausland: Grossbrief-Ware 60 EUR -> DHL",
+          _wv(["pox1"], 0.3, 60.0, ("A B", "Weg 1", "AT-8330 Feldbach"))["carrier"], DHL)
+    check("pax1 bleibt DHL (kein doppelter Grund-Zusatz)", "versichert" in _wv(["pax1"], 3.0, 80.0)["grund"], False)
+    b_unl = _wv(["wapo"], 0.66, None)
+    check("Warenpreis nicht lesbar -> Carrier bleibt, Hinweis fuer Handpruefung",
+          (b_unl["carrier"], any("Warenwert nicht lesbar" in h for h in b_unl["hinweise"])), (DPD, True))
 
     # DHL-Kleinpaket Ausland (Regel von Matthias 2026-09-25)
     def _kp(kennung, gewicht, wert, land_zeilen=("A B", "Weg 1", "AT-8330 Feldbach"),

@@ -38,7 +38,7 @@ ABLAUF
    verfallen ist.
 5. Nach einem --commit-Lauf: verarbeitete Carrier-CSVs, die aelter als
    "archive_after_days" sind (Standard 14), nach
-   <Eingangsordner>\Archiv\<Datum>\ verschieben - sonst wuerde der Ordner
+   <Eingangsordner>/Archiv/<Datum>/ verschieben - sonst wuerde der Ordner
    unbegrenzt weiterwachsen (PaketImport-Mover.ps1 haengt bei einer Namens-
    kollision wie "DHL-VLS-Export.csv" einen Zeitstempel an, ueberschreibt
    also nie) UND jeder Lauf wuerde jede Datei fuer immer erneut einlesen.

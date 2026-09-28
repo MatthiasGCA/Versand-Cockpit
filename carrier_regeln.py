@@ -49,7 +49,7 @@ ist_auslands_kleinpaket() und die Konstanten KLEINPAKET_*.
 import html
 import re
 
-VERSION = "2026-09-25c"
+VERSION = "2026-09-28a"
 
 # --- Gewichtsgrenzen in kg (Klasse gilt bei Gewicht STRIKT UNTER der Grenze) -----
 G_BRIEF = 0.05
@@ -440,10 +440,12 @@ def bestimme_carrier(kennungen, gewicht, land, packstation=False):
     if klasse == DPD and land != "DE":
         klasse = DHL
         grund += ", DPD nur Deutschland → DHL"
-    if klasse == DHL and packstation:
-        # Gilt unabhaengig davon, WARUM es DHL wurde (Kennung Pax1 direkt oder
-        # DPD->DHL-Umschreibung oben) - bei DHL-Packstationszustellung muss das
-        # Produkt im DHL-System manuell auf "Kleinpaket" umgestellt werden.
+    if klasse == DHL and packstation and gewicht <= KLEINPAKET_MAX_KG and "pax1" not in kenn:
+        # Gilt unabhaengig davon, WARUM es DHL wurde (DPD->DHL-Umschreibung oben
+        # oder Gewicht) - bei DHL-Packstationszustellung muss das Produkt im
+        # DHL-System manuell auf "Kleinpaket" umgestellt werden. Nur, wenn es
+        # ueberhaupt ein Kleinpaket sein kann: hoechstens 1 kg UND keine Pax1
+        # (Pax1 = Paket-Pflicht, Matthias 2026-09-28, Rechnung 1706130 Pax1 4,5 kg).
         hinweise.append("Achtung bei DHL auf Kleinpaket abändern")
     if klasse == DHL and gewicht > G_DHL_MAX:
         # DHL nimmt schwerere Pakete nicht an (Matthias bestaetigt) - blockiert
@@ -718,8 +720,17 @@ def selftest():
     check("wapo OHNE Packstation -> weiterhin DPD, kein Hinweis",
           bestimme_carrier(["wapo"], 0.2512, "DE", packstation=False), (DPD, "Kennung wapo → DPD", [], []))
     carrier_pax_ps, _, _, hinweise_pax_ps = bestimme_carrier(["pax1"], 3.0, "DE", packstation=True)
-    check("pax1 Packstation -> bleibt DHL, aber trotzdem Kleinpaket-Hinweis",
-          (carrier_pax_ps, hinweise_pax_ps), (DHL, ["Achtung bei DHL auf Kleinpaket abändern"]))
+    check("pax1 Packstation 3 kg -> bleibt DHL, KEIN Kleinpaket-Hinweis (Pax1 = Paket)",
+          (carrier_pax_ps, hinweise_pax_ps), (DHL, []))
+    check("pax1 Packstation 0,3 kg -> ebenfalls kein Kleinpaket-Hinweis",
+          bestimme_carrier(["pax1"], 0.3, "DE", packstation=True)[3], [])
+    check("wapo Packstation 1,0 kg -> DPD->DHL, Kleinpaket-Hinweis (Grenze inklusive)",
+          bestimme_carrier(["wapo"], 1.0, "DE", packstation=True)[3],
+          ["Achtung bei DHL auf Kleinpaket abändern"])
+    check("wapo Packstation 1,5 kg -> DHL, KEIN Kleinpaket-Hinweis (ueber 1 kg)",
+          bestimme_carrier(["wapo"], 1.5, "DE", packstation=True)[3], [])
+    check("pax1+wapo Packstation 0,3 kg -> kein Kleinpaket-Hinweis (Pax1 dabei)",
+          bestimme_carrier(["pax1", "wapo"], 0.3, "DE", packstation=True)[3], [])
 
     # Adresse (Faelle aus echten Rechnungen)
     a = analysiere_adresse(["Evi Schmid", "Jägerwirth 122", "DE-94081 Fürstenzell"])

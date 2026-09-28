@@ -49,7 +49,7 @@ ist_auslands_kleinpaket() und die Konstanten KLEINPAKET_*.
 import html
 import re
 
-VERSION = "2026-09-28f"
+VERSION = "2026-09-28g"
 
 # --- Gewichtsgrenzen in kg (Klasse gilt bei Gewicht STRIKT UNTER der Grenze) -----
 G_BRIEF = 0.05
@@ -631,6 +631,20 @@ def je_paket_aufteilung(r, gewicht):
     return pakete, grund_zusatz
 
 
+def versand_doppelt(r):
+    """Anzahl der Versandkosten auf der Rechnung, wenn sie MEHRFACH vorkommen, sonst
+    0. Real: kauft ein eBay-Kunde zwei Artikel, erscheint der Versand versehentlich
+    2x auf der Rechnung (Matthias 2026-09-28). Gezaehlt werden Versandzeilen MIT
+    Betrag; eine einzelne Versandzeile mit Menge >= 2 zaehlt ebenfalls (Menge ist bei
+    Versandzeilen sonst immer 1)."""
+    zeilen = [p for p in (r.get("positionen") or [])
+              if _ist_versandposition(p) and p.get("gp") is not None]
+    n = len(zeilen)
+    if n == 1 and (zeilen[0].get("menge") or 1) >= 2:
+        n = int(zeilen[0]["menge"])
+    return n if n >= 2 else 0
+
+
 def _pruefung_text(r):
     """Text zum Hinweis 'Rechnungsprüfung nicht bestanden' MIT Details (wie die
     Konsolenausgabe der Pickliste_erstellen.bat): welche Zeile nicht aufrechnet,
@@ -699,6 +713,10 @@ def bewerte_rechnung(r):
         grund += (", DHL Warenpost International = Kleinpaket Ausland (%s kg, Warenwert %s EUR)"
                   % (("%.3f" % gewicht).replace(".", ","),
                      ("%.2f" % warenwert(r)).replace(".", ",")))
+    n_versand = versand_doppelt(r)
+    if n_versand:
+        hinweise.append("Versandkosten %dx auf der Rechnung - Rechnung in Amicron überarbeiten "
+                        "(Versand nur 1x, doppelte Zeile löschen)" % n_versand)
     if not (r.get("zeilen_ok", True) and r.get("summe_ok", True)
             and r.get("vollstaendig_ok", True)):
         hinweise.append(_pruefung_text(r))
@@ -1146,6 +1164,27 @@ def selftest():
     b_unl = _wv(["wapo"], 0.66, None)
     check("Warenpreis nicht lesbar -> Carrier bleibt, Hinweis fuer Handpruefung",
           (b_unl["carrier"], any("Warenwert nicht lesbar" in h for h in b_unl["hinweise"])), (DPD, True))
+
+    # Versand doppelt auf der Rechnung (eBay, 2 Artikel)
+    def _vd(*versand_zeilen):
+        pos = _pos("A1", 1.0)
+        pos["gp"] = 20.0
+        return bewerte_rechnung({"rnr": "1700960", "datei": "x.pdf", "sendungsgewicht": 0.5,
+                                 "adresse_zeilen": ["A B", "Weg 1", "12345 Ort"],
+                                 "positionen": [pos] + list(versand_zeilen),
+                                 "zeilen_ok": True, "summe_ok": True, "vollstaendig_ok": True})
+    v1 = {"art": "660", "bez": "Versandkosten", "menge": 1.0, "gp": 2.9, "kennungen": [], "lagerorte": []}
+    v_blank = {"art": "", "bez": "", "menge": 1.0, "gp": 2.9, "kennungen": [], "lagerorte": []}
+    check("Versand 1x -> kein Hinweis", any("Versandkosten" in h for h in _vd(v1)["hinweise"]), False)
+    check("Versand 1x als leere Zeile -> kein Hinweis", any("Versandkosten" in h for h in _vd(v_blank)["hinweise"]), False)
+    b_v2 = _vd(v1, dict(v1))
+    check("Versand 2x (2 Zeilen) -> Hinweis, Status warn",
+          (any("Versandkosten 2x" in h for h in b_v2["hinweise"]), b_v2["status"]), (True, "warn"))
+    check("Versand 2x (Mischform 660 + leere Zeile) -> Hinweis",
+          any("Versandkosten 2x" in h for h in _vd(v1, v_blank)["hinweise"]), True)
+    check("Versand 1 Zeile mit Menge 2 -> Hinweis",
+          any("Versandkosten 2x" in h for h in _vd(dict(v1, menge=2.0))["hinweise"]), True)
+    check("Versandzeile ohne Betrag zaehlt nicht", any("Versandkosten" in h for h in _vd(v1, dict(v1, gp=None))["hinweise"]), False)
 
     # Rechnungspruefung mit Details (Hinweistext)
     r_pr = {"rnr": "1700970", "datei": "x.pdf", "sendungsgewicht": 0.5,

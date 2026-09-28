@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="iso-8859-1"?>
+<!-- Importdefinition für WooCommerce wp-api Bestellimport -->
+<!-- Geändert von Aftersell development e.K. -->
+<!-- Version 2.0.2 vom 6.8.2019 -->
+<!-- Angepasst für wc_auftragsimport.py (Gasecenter, 28.09.2026):
+     - Versandkosten kommen als eigene Position mit Artikelnummer 660 in line_items,
+       deshalb hier KEINE Zuordnung von shipping_lines/total auf #AUFTRAG.VERSANDKOSTEN mehr
+     - Tippfehler #AUFRAG.ENDBETRAG -> #AUFTRAG.ENDBETRAG korrigiert -->
+<orders>
+    <DEFINES>
+        <!-- Dokumentation dieser Einstellungen: siehe Kapitel "Datenimport > Auftragsimport > Definitionsdatei: Aufbau und Inhalt"-->
+        <DATESEPARATOR>-</DATESEPARATOR>
+        <TIMESEPARATOR>:</TIMESEPARATOR>
+        <DATEFORMAT>yyyy-mm-dd hh:nn:ss</DATEFORMAT>
+        <DECIMALSEPARATOR>.</DECIMALSEPARATOR>
+
+        <!-- Konvertierung der Landeskürzel ist für Amicron-Faktura notwendig für die korrekte Ermittlung der Steuerkürzel bei  Auslandsrechnungen. -->
+        <!-- Importierte Landeskürzel für Inland und EU-Länder müssen übereinstimmen mit denen, die in der Faktura in -->
+        <!-- den Programmoptionen unter "System > Einstellungen 2/2" eingetragen wurden -->
+        <!---<INLAND>A,AT</INLAND>-->
+        <!--<CONVERTLAND>AUT=A,AUS=A,Austria=A,AU=A,GERMANY=D,DE=D,GER=D,Netherlands=NL,France=FR,Slovenia=SL,Switzerland=CH,Spain=E,Greece=GR</CONVERTLAND> -->
+        <CONVERTVERSANDKOSTEN>0</CONVERTVERSANDKOSTEN>
+        <CONVERTNACHNAHMEKOSTEN>+</CONVERTNACHNAHMEKOSTEN>
+        <!-- Konvertierung der Lieferart bzw. Zahlweise
+        <CONVERTLIEFERART>"englische Bezeichnung1=deutsche Bezeichnung1","englische Bezeichnung2=deutsche Bezeichnung2"</CONVERTLIEFERART>
+        <CONVERTZAHLWEISE>"englische Bezeichnung1=deutsche Bezeichnung1","englische Bezeichnung2=deutsche Bezeichnung2"</CONVERTZAHLWEISE>
+
+        <CONVERTLIEFERART>"Flat Rate - Fixed=Pauschale Versandkosten"</CONVERTLIEFERART>
+        <CONVERTZAHLWEISE>"checkmo=Vorkasse","bankpayment=Vorkasse"</CONVERTZAHLWEISE>-->
+    </DEFINES>
+    <item NewData="AUFTRAG">
+        <number>#AUFTRAG.AUFTRAGNR</number>
+        <date_created>#AUFTRAG.DATUM</date_created>
+
+        <!-- die Shop-Bestellnummer in FREIFELD1 (Vermerk),
+         das Bestelldatum in den FREIFELD2 (Bestellung vom) und
+        der Shopname des Auftrags wird in Freifeld3 (Bestellart) übernommen
+        Bei Bedarf können die geändert werden: -->
+        <number>#AUFTRAG.FREIFELD1</number>
+        <date_created_formatted>#AUFTRAG.FREIFELD2</date_created_formatted>
+        <freifeld3>#AUFTRAG.FREIFELD3</freifeld3>
+        <freifeld4>#AUFTRAG.FREIFELD4</freifeld4>
+        <shipping>
+            <first_name>#LFRADRESSE.VORNAME</first_name>
+            <last_name>#LFRADRESSE.NAME</last_name>
+            <company>#LFRADRESSE.NAME2</company>
+            <address_1>#LFRADRESSE.STRASSE</address_1>
+            <address_2>#LFRADRESSE.NAME3</address_2>
+            <city>#LFRADRESSE.ORT</city>
+            <postcode>#LFRADRESSE.PLZ</postcode>
+            <country>#LFRADRESSE.LAND</country>
+        </shipping>
+        <billing>
+            <first_name>#KUNADRESSE.VORNAME</first_name>
+            <last_name>#KUNADRESSE.NAME</last_name>
+            <company>#KUNADRESSE.NAME2</company>
+            <address_1>#KUNADRESSE.STRASSE</address_1>
+            <address_2>#KUNADRESSE.NAME3</address_2>
+            <city>#KUNADRESSE.ORT</city>
+            <postcode>#KUNADRESSE.PLZ</postcode>
+            <country>#KUNADRESSE.LAND</country>
+            <phone>#KUNADRESSE.TELEFON1</phone>
+            <email>#KUNADRESSE.EMAIL</email>
+            <birthday>#KUNADRESSE.GEBURTSTAG</birthday>
+        </billing>
+        <line_items>
+            <item NewData="ATRPOS">
+                <sku>#ATRPOS.ARTIKELNR</sku>
+                <name>#ATRPOS.BEZEICHNUNG</name>
+                <discription>#ATRPOS.TEXT</discription>
+                <quantity>#ATRPOS.MENGE</quantity>
+                <!--price_incl_tax>#ATRPOS.EPREIS</price_incl_tax-->
+                <price_incl_tax>#ATRPOS.EPREIS</price_incl_tax>
+                <!--<tax_percent>#ATRPOS.STEUER</tax_percent>-->
+            </item>
+        </line_items>
+        <payment_method_title>#AUFTRAG.ZAHLWEISE</payment_method_title>
+        <shipping_lines>
+            <item>
+                <method_title>#AUFTRAG.LIEFERART</method_title>
+            </item>
+        </shipping_lines>
+        <fee_lines>
+            <item>
+                <total>#AUFTRAG.NACHNAHMEKOSTEN</total>
+            </item>
+        </fee_lines>
+        <customer_note>#AUFTRAG.BEMERKUNG</customer_note>
+        <footer_note>#AUFTRAG.FUSSTEXT</footer_note>
+        <total>#AUFTRAG.ENDBETRAG</total>
+        <tax_flag>#AUFTRAG.STEUERINKL</tax_flag>
+    </item>
+</orders>

@@ -1,0 +1,11 @@
+{
+  "base_url": "https://www.gasecenter-onlineshop.de",
+  "consumer_key": "ck_HIER_EINEN_LESE_KEY",
+  "consumer_secret": "cs_HIER_DAS_LESE_SECRET",
+  "output_dir": "C:\Scripts\WC_Auftragsimport",
+  "state_path": "C:\Scripts\wc_auftragsimport_state.json",
+  "status": "processing",
+  "versand_artikelnr": "660",
+  "versand_bezeichnung": "Versandkosten",
+  "bestellart": "Onlineshop"
+}

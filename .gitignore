@@ -9,3 +9,7 @@ __pycache__/
 
 # Log des per VBS unsichtbar gestarteten Carrier-Dashboards.
 Carrier-Dashboard.log
+
+# WooCommerce-Auftragsimport: Konfig mit Klartext-Key und Statusdatei (Kundendaten).
+wc_auftragsimport_config.json
+wc_auftragsimport_state.json

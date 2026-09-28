@@ -49,7 +49,7 @@ ist_auslands_kleinpaket() und die Konstanten KLEINPAKET_*.
 import html
 import re
 
-VERSION = "2026-09-28a"
+VERSION = "2026-09-28b"
 
 # --- Gewichtsgrenzen in kg (Klasse gilt bei Gewicht STRIKT UNTER der Grenze) -----
 G_BRIEF = 0.05
@@ -267,6 +267,20 @@ def analysiere_adresse(zeilen):
 
     out["plz"] = m.group("plz")
     out["ort"] = m.group("ort").strip()
+    # Langer Ortsname im Rechnungsfeld UMBROCHEN: die Folgezeile(n) gehoeren zum
+    # Ort (real 1706203 "Brandenburg An Der" / "Havel", 1706261 "Bad" /
+    # "Frankenhausen/Kyffhaeuser OT" / "Esperste"). Nur kurze Zeilen ohne Ziffern,
+    # die kein Laendername sind, hoechstens 2 - alles andere bleibt "Unerwartete
+    # Zeile". Ein angehaengtes "OT xyz" wird unten wie sonst als Ortsteil abgetrennt.
+    fortsetzung = []
+    if out["ort"]:
+        for z in zl[idx + 1:idx + 3]:
+            if (len(z) > 30 or re.search(r"\d", z) or _LAND_NAME.get(_norm_land(z))
+                    or not re.match(r"^[A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß .\-/()]*$", z)):
+                break
+            fortsetzung.append(z)
+        if fortsetzung:
+            out["ort"] = " ".join([out["ort"]] + fortsetzung)
     if kombiniert:
         strasse_roh = m.group("vor")
         zusatz = zl[1:idx]
@@ -312,7 +326,7 @@ def analysiere_adresse(zeilen):
         land = _PRAEFIX_SONDER.get(p, p if p in LAENDER else "")
         if not land:
             out["fehler"].append("Länderkürzel '%s' vor der PLZ unbekannt" % pre)
-    rest = zl[idx + 1:]
+    rest = zl[idx + 1 + len(fortsetzung):]
     if not land and rest:
         cand = _LAND_NAME.get(_norm_land(rest[-1]))
         if cand:
@@ -731,6 +745,22 @@ def selftest():
           bestimme_carrier(["wapo"], 1.5, "DE", packstation=True)[3], [])
     check("pax1+wapo Packstation 0,3 kg -> kein Kleinpaket-Hinweis (Pax1 dabei)",
           bestimme_carrier(["pax1", "wapo"], 0.3, "DE", packstation=True)[3], [])
+
+    # Ortsname im Rechnungsfeld umbrochen (real 1706203 / 1706261)
+    a = analysiere_adresse(["Silva Mara da", "Eichhorstweg 1b", "DE 14776 Brandenburg An Der", "Havel"])
+    check("adr real 1706203 (Ort umbrochen)", (a["ort"], a["plz"], a["land"], a["hinweise"], a["fehler"]),
+          ("Brandenburg An Der Havel", "14776", "DE", [], []))
+    a = analysiere_adresse(["Majewski Alexander", "Am Anger 19a", "DE 06567 Bad",
+                            "Frankenhausen/Kyffhäuser OT", "Esperste"])
+    check("adr real 1706261 (Ort umbrochen + Ortsteil)",
+          (a["ort"], a["ortsteil"], a["hinweise"], a["fehler"]),
+          ("Bad Frankenhausen/Kyffhäuser", "OT Esperste", [], []))
+    a = analysiere_adresse(["Jan Peeters", "Rue Haute 5", "1000 Bruxelles", "BELGIEN"])
+    check("adr: Laenderzeile wird NICHT als Ortsfortsetzung gelesen", (a["ort"], a["land"]),
+          ("Bruxelles", "BE"))
+    a = analysiere_adresse(["A B", "Weg 1", "12345 Ort", "Hinterhaus Zimmer 12"])
+    check("adr: Zeile mit Ziffern bleibt 'unerwartet'",
+          (a["ort"], any("Unerwartete" in h for h in a["hinweise"])), ("Ort", True))
 
     # Adresse (Faelle aus echten Rechnungen)
     a = analysiere_adresse(["Evi Schmid", "Jägerwirth 122", "DE-94081 Fürstenzell"])

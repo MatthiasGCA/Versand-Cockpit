@@ -711,8 +711,15 @@ def main(argv):
                 zaehler["keine_zuordnung"] += 1
                 ergebnis_je_rgnr[rgnr] = "keine_zuordnung"
                 _offen(state, rgnr, "keine WC-Bestellnummer bekannt", "", carrier_name, trackings)
-                log("  %s: keine WC-Bestellnummer bekannt (weder wc_bestellnummern.csv noch "
-                    "Statusdatei) - Carrier %s, Tracking %s" % (rgnr, carrier_name, ", ".join(trackings)))
+                # Kein Einzelzeilen-Log: das sind fast nur Nicht-Shop-Sendungen
+                # (Zaehltheke/ERP), ~1.500 Zeilen je Lauf machten das Log nach
+                # 10 Tagen 7 MB gross und unlesbar. Nur die Zaehlung in der
+                # Zusammenfassung; die Einzelheiten stehen in state["offen"].
+                # Bei --only weiterhin je Rechnung, damit sich eine gezielte
+                # Pruefung erklaert.
+                if args.only:
+                    log("  %s: keine WC-Bestellnummer bekannt (weder wc_bestellnummern.csv noch "
+                        "Statusdatei) - Carrier %s, Tracking %s" % (rgnr, carrier_name, ", ".join(trackings)))
                 continue
 
             if args.limit and geschrieben >= args.limit:
@@ -750,7 +757,8 @@ def main(argv):
     log("  eingetragen/aktualisiert     : %d" % zaehler["sync"])
     log("  bereits im Shop              : %d" % zaehler["schon"])
     log("  schon laut Statusdatei       : %d" % zaehler["uebersprungen_state"])
-    log("  keine WC-Bestellnummer       : %d" % zaehler["keine_zuordnung"])
+    log("  keine WC-Bestellnummer       : %d  (i.d.R. Nicht-Shop-Sendungen, Details in der Statusdatei)"
+        % zaehler["keine_zuordnung"])
     log("  Bestellnummer nicht im Shop  : %d" % zaehler["order_fehlt"])
     log("  Konflikt (nicht ueberschrieben): %d" % zaehler["konflikt"])
     log("  API-Fehler (spaeter erneut)  : %d" % zaehler["api_fehler"])

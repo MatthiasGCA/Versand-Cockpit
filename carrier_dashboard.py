@@ -261,6 +261,14 @@ POOL_ORDNER = r"C:\Carrier-Dashboard\Pool"
 AUSGABE_ORDNER = r"C:\Carrier-Dashboard\Pool\Pickliste"
 ARCHIV_ORDNER = r"C:\Carrier-Dashboard\Pool\Archiv"
 CARRIER_EXPORT_ORDNER = r"C:\Carrier_Export"
+# Eingangsordner des WooCommerce-Sendungsnummer-Syncs (wc_sendungsnummer_sync.py).
+# Jeder Export kopiert wc_bestellnummern.csv (Rechnungsnr -> WC-Bestellnr) als
+# "wc_bestellnummern_dashboard.csv" dorthin - EIGENER Dateiname, damit die Kopie
+# der Pickliste_erstellen.bat ("wc_bestellnummern.csv") nicht ueberschrieben wird
+# und umgekehrt; der Sync liest alle wc_bestellnummern*.csv. Ohne diese Kopie
+# fehlte die Zuordnung fuer alle ueber das Dashboard verarbeiteten Rechnungen
+# (real 2026-09-28: Bestellung 25662/Rg 1706406 blieb ohne Sendungsnummer).
+WC_SYNC_ORDNER = r"C:\Scripts\Sendungsnummern_WC"
 
 REFRESH_MS = 5000
 # Automatisches Einlesen neuer Rechnungen (siehe auto_scan() in gui()): Pool
@@ -419,6 +427,21 @@ def _markiere_pool_duplikate(ergebnisse):
             b["status"] = "ok"
 
 
+def kopiere_wc_bestellnummern(quelle, ziel_ordner):
+    """Kopiert wc_bestellnummern.csv (kumulativ) als wc_bestellnummern_dashboard.csv
+    in den Eingangsordner des WooCommerce-Sendungsnummer-Syncs. Best effort: ein
+    fehlender/nicht beschreibbarer Ordner darf den Export NIE abbrechen. Rueckgabe:
+    None = nicht noetig/Ordner fehlt, True = kopiert, False = Fehler."""
+    import shutil
+    if not ziel_ordner or not os.path.isdir(ziel_ordner):
+        return None
+    try:
+        shutil.copyfile(quelle, os.path.join(ziel_ordner, "wc_bestellnummern_dashboard.csv"))
+        return True
+    except OSError:
+        return False
+
+
 def exportiere_alles(rechnungen, ergebnisse, ausgabe_pfad, archiv_ordner, carrier_ordner):
     """Schritt 2: rechnungen (gueltige parse_pdf()-Dicts, "quelle" gesetzt) UND
     ergebnisse (dazu bewertete Carrier-Ergebnisse, GLEICHE Reihenfolge/Laenge)
@@ -448,8 +471,9 @@ def exportiere_alles(rechnungen, ergebnisse, ausgabe_pfad, archiv_ordner, carrie
     packliste.schreibe_sammel_csv(gruppen_fuer_csv, sammel_pfad)
     packliste.schreibe_mengen_csv(rechnungen, os.path.join(out_dir, "mengen_zuordnung.csv"))
     packliste.schreibe_ean_csv(rechnungen, os.path.join(out_dir, "ean_zuordnung.csv"))
-    wc_neu = packliste.schreibe_wc_bestellnummern_csv(
-        rechnungen, os.path.join(out_dir, "wc_bestellnummern.csv"))
+    wc_pfad = os.path.join(out_dir, "wc_bestellnummern.csv")
+    wc_neu = packliste.schreibe_wc_bestellnummern_csv(rechnungen, wc_pfad)
+    wc_kopie = kopiere_wc_bestellnummern(wc_pfad, WC_SYNC_ORDNER)
 
     carrier_dateien = carrier_export.exportiere(ergebnisse, carrier_ordner)
     # Kg-/Artikel-Statistik im Hintergrund mitschreiben (Nice-to-have, blockiert
@@ -467,7 +491,8 @@ def exportiere_alles(rechnungen, ergebnisse, ausgabe_pfad, archiv_ordner, carrie
 
     return {
         "pickliste": ausgabe_pfad, "anzahl": len(rechnungen), "gruppen": gruppen,
-        "wc_neu": wc_neu, "carrier_dateien": carrier_dateien, "kg_geloggt": kg_geloggt,
+        "wc_neu": wc_neu, "wc_kopie": wc_kopie,
+        "carrier_dateien": carrier_dateien, "kg_geloggt": kg_geloggt,
         "artikel_geloggt": artikel_geloggt,
         "archiviert": verschoben, "archiv_fehler": archiv_fehler, "archiv_ziel": archiv_ziel,
     }

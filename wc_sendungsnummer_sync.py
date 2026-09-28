@@ -329,8 +329,16 @@ def sammle_eingang(eingang_dir, log):
                      (fuer archiviere_carrier_dateien() - welche Rechnungsnummern
                      kamen aus welcher Datei, und ob sie sauber gelesen wurde)
     """
-    mapping_neu = lies_bestellnummern_csv(
-        os.path.join(eingang_dir, "wc_bestellnummern.csv"), log)
+    # ALLE wc_bestellnummern*.csv zusammenfuehren: Pickliste_erstellen.bat liefert
+    # "wc_bestellnummern.csv", das Carrier-Dashboard "wc_bestellnummern_dashboard.csv".
+    # Getrennte Namen, damit sich beide nicht gegenseitig ueberschreiben - jede
+    # Quelle kennt nur die Rechnungen, die SIE verarbeitet hat.
+    mapping_neu = {}
+    zuordnungs_dateien = sorted(glob.glob(os.path.join(eingang_dir, "wc_bestellnummern*.csv")))
+    for pfad in zuordnungs_dateien:
+        mapping_neu.update(lies_bestellnummern_csv(pfad, log))
+    if not zuordnungs_dateien:
+        lies_bestellnummern_csv(os.path.join(eingang_dir, "wc_bestellnummern.csv"), log)  # loggt den Hinweis
 
     sendungen = {}
     carrier_info = {}

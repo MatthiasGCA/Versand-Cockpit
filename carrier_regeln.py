@@ -37,19 +37,25 @@ Rechnung mit GENAU EINEM so markierten Artikel automatisch in mehrere
 DHL-Pakete auf (gleichmaessig verteilt, inkl. Fach-Artikel-Faktor fuer z.B.
 einen schweren "2-Fach-Artikel"-Doppelpack mit "1-je-Paket").
 
-DHL-Kleinpaket (2026-09-25, Regel von Matthias): eine DHL-Sendung ins AUSLAND
-wird als Kleinpaket statt Paket exportiert, wenn ALLE Bedingungen zutreffen:
-Gewicht von 0,6 bis 1,0 kg (Grenzen inklusive), Warenwert ueber 40 EUR (Summe
-der Positionspreise OHNE Versandkosten, wie auf der Rechnung gedruckt), eine
-Kennung Wapo oder Pox1, KEINE Pax1 (Pax1 = Paket-Pflicht) und Zielland in der EU
-(nicht CH/LI/NO/GB - Zoll). Siehe
-ist_auslands_kleinpaket() und die Konstanten KLEINPAKET_*.
+DHL-Kleinpaket (Regel von Matthias, Zielland immer EU - nicht CH/LI/NO/GB,
+dort fehlen der Warenpost International die noetigen Zolldaten): eine
+DHL-Sendung ins AUSLAND wird als Kleinpaket statt Paket exportiert, wenn KEINE
+Pax1 dabei ist (Pax1 = Paket-Pflicht) und zusaetzlich EINE der beiden Regeln
+zutrifft:
+  1) Wapo (2026-09-29, real Rechnung 1706545): Gewicht unter 1,1 kg (wie die
+     Inlands-Grenze zu DPD, siehe G_DPD) - OHNE Warenwert-Pruefung und OHNE
+     Untergrenze, weil eine Wapo-Sendung im Inland bei diesem Gewicht ohnehin
+     immer DPD waere.
+  2) Pox1 (2026-09-25): Gewicht von 0,6 bis 1,0 kg (Grenzen inklusive) UND
+     Warenwert ueber 40 EUR (Summe der Positionspreise OHNE Versandkosten,
+     wie auf der Rechnung gedruckt).
+Siehe ist_auslands_kleinpaket() und die Konstanten KLEINPAKET_*.
 """
 
 import html
 import re
 
-VERSION = "2026-09-28g"
+VERSION = "2026-09-29b"
 
 # --- Gewichtsgrenzen in kg (Klasse gilt bei Gewicht STRIKT UNTER der Grenze) -----
 G_BRIEF = 0.05
@@ -532,10 +538,26 @@ def warenwert(r):
 
 def ist_auslands_kleinpaket(r, kenn, gewicht, land):
     """True, wenn eine DHL-Auslandssendung als Kleinpaket exportiert werden
-    soll (Regel siehe Modulkopf). Erwartet, dass der Carrier schon DHL ist."""
+    soll (Regel siehe Modulkopf). Erwartet, dass der Carrier schon DHL ist.
+
+    Zwei unabhaengige Faelle:
+    1) Wapo (Matthias 2026-09-29, real Rechnung 1706545): Wapo waere im
+       Inland IMMER DPD, solange das Gewicht unter der DPD-Obergrenze
+       G_DPD=1,1 kg bleibt (siehe bestimme_carrier/klasse_nach_gewicht) - DPD
+       faehrt aber nicht ins Ausland. Die Auslands-Entsprechung ist dann
+       IMMER ein Kleinpaket, OHNE Warenwert-Pruefung und OHNE Untergrenze
+       (anders als Fall 2) - es geht nur um denselben Gewichtsschwellwert wie
+       im Inland.
+    2) Pox1 (2026-09-25, Warenwert-Regel): 0,6-1,0 kg UND Warenwert > 40 EUR.
+       Gilt weiterhin unveraendert fuer Pox1 (auch wenn zusaetzlich Wapo
+       vorliegt, greift dann aber ohnehin schon Fall 1)."""
     if land not in EU_LAENDER or land == "DE" or gewicht is None:
         return False
-    if not (KLEINPAKET_KENNUNGEN & set(kenn)) or "pax1" in kenn:
+    if "pax1" in kenn:
+        return False
+    if "wapo" in kenn and round(gewicht, 5) < G_DPD:
+        return True
+    if not (KLEINPAKET_KENNUNGEN & set(kenn)):
         return False
     g = round(gewicht, 5)
     if not (KLEINPAKET_MIN_KG <= g <= KLEINPAKET_MAX_KG):
@@ -710,9 +732,13 @@ def bewerte_rechnung(r):
             grund += ", " + je_paket_grund
     kleinpaket = carrier == DHL and ist_auslands_kleinpaket(r, kenn, gewicht, adr["land"])
     if kleinpaket:
+        wert_kp = warenwert(r)
+        # Warenwert kann hier None sein (Preis nicht lesbar) - die Wapo-Regel
+        # braucht ihn gar nicht (siehe ist_auslands_kleinpaket()), der Grundtext
+        # darf deshalb nicht an einem fehlenden Wert scheitern.
+        wert_txt = ("%.2f" % wert_kp).replace(".", ",") if wert_kp is not None else "?"
         grund += (", DHL Warenpost International = Kleinpaket Ausland (%s kg, Warenwert %s EUR)"
-                  % (("%.3f" % gewicht).replace(".", ","),
-                     ("%.2f" % warenwert(r)).replace(".", ",")))
+                  % (("%.3f" % gewicht).replace(".", ","), wert_txt))
     n_versand = versand_doppelt(r)
     if n_versand:
         hinweise.append("Versandkosten %dx auf der Rechnung - Rechnung in Amicron überarbeiten "
@@ -1215,30 +1241,50 @@ def selftest():
         return bewerte_rechnung({"rnr": "1700990", "datei": "x.pdf", "sendungsgewicht": gewicht,
                                  "adresse_zeilen": list(land_zeilen), "positionen": [pos, pos_ver],
                                  "zeilen_ok": True, "summe_ok": True, "vollstaendig_ok": True})
-    check("Kleinpaket: AT, wapo, 0,8 kg, 45 EUR -> Kleinpaket (DHL)",
-          (_kp(["wapo"], 0.8, 45.0)["carrier"], _kp(["wapo"], 0.8, 45.0)["kleinpaket"]), (DHL, True))
-    check("Kleinpaket: pox1 zaehlt ebenfalls", _kp(["pox1"], 0.7, 45.0)["kleinpaket"], True)
+    check("Kleinpaket: AT, pox1, 0,8 kg, 45 EUR -> Kleinpaket (DHL)",
+          (_kp(["pox1"], 0.8, 45.0)["carrier"], _kp(["pox1"], 0.8, 45.0)["kleinpaket"]), (DHL, True))
     check("Kleinpaket: Grenze 0,6 kg inklusive", _kp(["pox1"], 0.6, 45.0)["kleinpaket"], True)
-    check("Kleinpaket: Grenze 1,0 kg inklusive", _kp(["wapo"], 1.0, 45.0)["kleinpaket"], True)
-    check("Kleinpaket: 0,59 kg -> nein", _kp(["wapo"], 0.59, 45.0)["kleinpaket"], False)
-    check("Kleinpaket: 1,05 kg -> nein", _kp(["wapo"], 1.05, 45.0)["kleinpaket"], False)
-    check("Kleinpaket: Warenwert genau 40 EUR -> nein (strikt darueber)",
-          _kp(["wapo"], 0.8, 40.0)["kleinpaket"], False)
-    check("Kleinpaket: Warenwert 40,01 EUR -> ja", _kp(["wapo"], 0.8, 40.01)["kleinpaket"], True)
-    check("Kleinpaket: Warenwert zaehlt OHNE Versandkosten (30 EUR + 12,50 Versand -> nein)",
-          _kp(["wapo"], 0.8, 30.0)["kleinpaket"], False)
+    check("Kleinpaket: Grenze 1,0 kg inklusive", _kp(["pox1"], 1.0, 45.0)["kleinpaket"], True)
+    check("Kleinpaket: Pox1 0,59 kg -> nein (unter der Untergrenze)", _kp(["pox1"], 0.59, 45.0)["kleinpaket"], False)
+    check("Kleinpaket: Pox1 1,05 kg -> nein (ueber der Obergrenze)", _kp(["pox1"], 1.05, 45.0)["kleinpaket"], False)
+    check("Kleinpaket: Pox1 Warenwert genau 40 EUR -> nein (strikt darueber)",
+          _kp(["pox1"], 0.8, 40.0)["kleinpaket"], False)
+    check("Kleinpaket: Pox1 Warenwert 40,01 EUR -> ja", _kp(["pox1"], 0.8, 40.01)["kleinpaket"], True)
+    check("Kleinpaket: Pox1 Warenwert zaehlt OHNE Versandkosten (30 EUR + 12,50 Versand -> nein)",
+          _kp(["pox1"], 0.8, 30.0)["kleinpaket"], False)
+    check("Kleinpaket: Pox1 Warenwert unbekannt (Preis fehlt) -> nein", _kp(["pox1"], 0.8, None)["kleinpaket"], False)
     check("Kleinpaket: mit Pax1 -> nein (Paket-Pflicht)", _kp(["pax1", "wapo"], 0.8, 45.0)["kleinpaket"], False)
     check("Kleinpaket: nur Brx1 -> nein", _kp(["brx1"], 0.8, 45.0)["kleinpaket"], False)
     check("Kleinpaket: Inland -> nein (auch DHL-Packstation)",
-          _kp(["wapo"], 0.8, 45.0, ("A B", "Weg 1", "12345 Ort"))["kleinpaket"], False)
-    check("Kleinpaket: Warenwert unbekannt (Preis fehlt) -> nein", _kp(["wapo"], 0.8, None)["kleinpaket"], False)
+          _kp(["pox1"], 0.8, 45.0, ("A B", "Weg 1", "12345 Ort"))["kleinpaket"], False)
     for nicht_eu, zeile in (("CH", "CH-8001 Zuerich"), ("GB", "GB-SW1A 1AA London"),
                             ("NO", "NO-0150 Oslo"), ("LI", "LI-9490 Vaduz")):
         check("Kleinpaket: %s (kein EU-Land) -> nein" % nicht_eu,
-              _kp(["wapo"], 0.8, 45.0, ("A B", "Weg 1", zeile))["kleinpaket"], False)
+              _kp(["pox1"], 0.8, 45.0, ("A B", "Weg 1", zeile))["kleinpaket"], False)
     check("Kleinpaket: NL (EU) -> ja",
           _kp(["pox1"], 0.8, 45.0, ("A B", "Weg 1", "NL-1012 Amsterdam"))["kleinpaket"], True)
-    check("Kleinpaket: Grund nennt Kleinpaket", "Kleinpaket" in _kp(["wapo"], 0.8, 45.0)["grund"], True)
+    check("Kleinpaket: Grund nennt Kleinpaket", "Kleinpaket" in _kp(["pox1"], 0.8, 45.0)["grund"], True)
+
+    # Wapo Ausland unter 1,1 kg -> IMMER Kleinpaket, OHNE Warenwert-Pruefung und
+    # OHNE Untergrenze (Matthias 2026-09-29, real Rechnung 1706545: Wapo,
+    # Oesterreich, 0,5 kg, Warenwert nur 17,50 EUR - waere nach der reinen
+    # Warenwert-Regel oben NICHT Kleinpaket geworden, muss es laut Matthias aber
+    # sein, weil Wapo im Inland bei diesem Gewicht ohnehin immer DPD waere).
+    check("Kleinpaket: real 1706545 (wapo, AT, 0,5 kg, 17,50 EUR) -> Kleinpaket",
+          _kp(["wapo"], 0.5, 17.5)["kleinpaket"], True)
+    check("Kleinpaket: wapo sehr leicht (0,05 kg) -> ja (keine Untergrenze)",
+          _kp(["wapo"], 0.05, 5.0)["kleinpaket"], True)
+    check("Kleinpaket: wapo knapp unter 1,1 kg (1,09 kg) -> ja",
+          _kp(["wapo"], 1.09, 5.0)["kleinpaket"], True)
+    check("Kleinpaket: wapo genau 1,1 kg -> nein (Grenze gehoert zur hoeheren Klasse)",
+          _kp(["wapo"], 1.1, 45.0)["kleinpaket"], False)
+    check("Kleinpaket: wapo 1,15 kg -> nein", _kp(["wapo"], 1.15, 45.0)["kleinpaket"], False)
+    check("Kleinpaket: wapo Warenwert unbekannt (Preis fehlt) -> trotzdem ja",
+          _kp(["wapo"], 0.5, None)["kleinpaket"], True)
+    check("Kleinpaket: wapo Inland (DE) -> nein (bleibt normale DPD-Sendung)",
+          _kp(["wapo"], 0.5, 17.5, ("A B", "Weg 1", "12345 Ort"))["kleinpaket"], False)
+    check("Kleinpaket: wapo+pax1 unter 1,1 kg -> nein (Paket-Pflicht)",
+          _kp(["pax1", "wapo"], 0.5, 17.5)["kleinpaket"], False)
 
     if n_fail:
         print("SELBSTTEST FEHLGESCHLAGEN (%d von %d):" % (len(n_fail), n_ok + len(n_fail)))

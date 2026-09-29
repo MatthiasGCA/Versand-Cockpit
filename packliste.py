@@ -67,7 +67,13 @@ from reportlab.graphics.shapes import Drawing
 # KONFIGURATION
 # ----------------------------------------------------------------------------
 
-VERSION = "2026-09-28a"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+VERSION = "2026-09-29a"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+# 2026-09-29a: Fix Rechnung 1706490 - "Lagerort:" stand ausnahmsweise in
+#   derselben Zeile wie Artikelnr/Menge/Preis, dadurch ging die Artikelnr
+#   verloren (Rechnungspruefung faelschlich "unvollstaendig") UND der
+#   Lagerort-Wert war mit Einheit/Preisspalten verunreinigt. Artikelnr-
+#   Erfassung laeuft jetzt IMMER zuerst je Zeile; _lagerort_wert() nimmt nur
+#   noch Woerter im Bezeichnungs-Band statt der ganzen Zeile.
 # 2026-09-28a: Sammeldruck zeigt jetzt den LAGERORT des Artikels (Deckblatt aus
 #   scan_druck.py + Sammeldruck-Block der Pickliste) - neue letzte Spalte
 #   "Lagerort" in sammel_zuordnung.csv (aeltere scan_druck.py-Versionen ignorieren
@@ -518,15 +524,41 @@ def line_text(line):
     return " ".join(w["text"] for w in sorted(line, key=lambda w: w["x0"]))
 
 
-def _lagerort_wert(txt):
-    """Vollstaendigen Lagerort-Wert aus einer 'Lagerort:'-Zeile ziehen.
-    Nimmt ALLES nach dem letzten ':' und normalisiert Mehrfach-Leerzeichen,
-    damit mehrteilige Angaben ('R8 E2', 'A8 + A9') vollstaendig erhalten
-    bleiben (frueher wurde nur das erste Token genommen -> 'R8 E2' landete auf
-    'Allgemein' statt Kleinteile, und die Fachanzeige war unvollstaendig).
-    Leere Zeile ('Lagerort:' ohne Wert) -> ''."""
-    after = txt.rsplit(":", 1)[-1]
-    return " ".join(after.split())
+def _lagerort_wert(ln):
+    """Vollstaendigen Lagerort-Wert aus einer Zeile mit 'Lagerort:' ziehen -
+    NUR die Woerter im Bezeichnungs-Band (BEZ_LO..BEZ_HI, per Mittelpunkt wie
+    bei der normalen Bezeichnung), nicht die ganze Zeile. Sonst wuerden bei
+    einer Rechnung, bei der "Lagerort:" AUSNAHMSWEISE in derselben Zeile wie
+    Artikelnr/Einheit/Preis steht (real: Rechnung 1706490, Artikel MB25-F-5),
+    Einheit und Preisspalten mit in den Wert gezogen (real beobachtet:
+    'E1 VE 1,00 2,50 2,50' statt 'E1'). Nimmt alles nach dem Wort 'Lagerort:'
+    innerhalb des Bandes, normalisiert Mehrfach-Leerzeichen, damit mehrteilige
+    Angaben ('R8 E2', 'A8 + A9') vollstaendig erhalten bleiben. Leere Zeile
+    ('Lagerort:' ohne Wert) -> ''."""
+    gefunden = False
+    teile = []
+    for w in sorted(ln, key=lambda w: w["x0"]):
+        t = w["text"]
+        if not gefunden:
+            if "Lagerort" in t:
+                gefunden = True
+                rest = t.split(":", 1)
+                if len(rest) > 1 and rest[1]:
+                    teile.append(rest[1])
+            continue
+        if not in_band(w, BEZ_LO, BEZ_HI):
+            continue
+        if t.endswith(":"):
+            # Ein eingebettetes ':' im vermeintlichen Wert ist kein echter
+            # Lagerort-Code (Werte wie 'E1'/'K4'/'A6+A7'/'R8 E2' enthalten nie
+            # ':') - real beobachtet an Rechnung 1706158: "Lagerort" (ohne
+            # eigenes ':') lag zufaellig auf derselben Zeile wie ein Fragment
+            # der umgebrochenen Bezeichnung ("Tülle+ Überwurfmutter:"). Zeile
+            # gilt dann als wertlos, der Aufrufer sucht den Wert wie gehabt in
+            # der Folgezeile (bestehende Fallback-Logik).
+            return ""
+        teile.append(t)
+    return " ".join(" ".join(teile).split())
 
 
 # "<N>-Fach-Artikel" (z.B. "2-Fach-Artikel", "5-Fach-Artikel"): steht wie die
@@ -848,13 +880,26 @@ def parse_block(words):
         if "Artikelnr" in txt or "Bezeichnung" in txt:      # Tabellenkopf
             i += 1
             continue
+        # Artikelnr (x0 < ART_MAX) IMMER zuerst aus dieser Zeile ziehen, bevor
+        # geprueft wird, ob die Zeile sonst nur ein Marker (Lagerort/Fach-
+        # Artikel/Kennung/...) ist - real beobachtet (Rechnung 1706490):
+        # "Lagerort:" stand AUSNAHMSWEISE in derselben Zeile wie Artikelnr/
+        # Menge/Preis. Ohne diese Reihenfolge wuerde die ganze Zeile (samt
+        # Artikelnr) vom jeweiligen Marker-Zweig uebersprungen und die
+        # Artikelnummer verloren gehen (Rechnungspruefung meldete faelschlich
+        # "unvollstaendig (Artikelnr)", obwohl die Rechnung vollstaendig war).
+        links = [w for w in sorted(ln, key=lambda w: w["x0"])
+                 if w["x0"] < ART_MAX and w["text"] != "."]
+        if links and not art_done:
+            art_toks = [w["text"] for w in links]
+            art_done = True
         if "Lagerort" in txt:
             # VOLLSTAENDIGEN Lagerort-Wert ziehen (nicht nur das erste Token),
             # damit mehrteilige Angaben wie 'R8 E2' oder 'A8 + A9' erhalten
             # bleiben. Wichtig fuer die Fachanzeige UND die Einsortierung: bei
             # 'R8 E2' bringt erst das 'E2' die Bestellung aufs Kleinteile-Blatt
             # (classify -> GRID_RE); 'R8' allein liefe auf 'Allgemein'.
-            wert = _lagerort_wert(txt)
+            wert = _lagerort_wert(ln)
             if not wert and i + 1 < len(lines):
                 # 'Lagerort:'-Zeile ohne Wert -> der Wert steht umbrochen in der
                 # Folgezeile. Diese nur uebernehmen, wenn sie KEINE Positions-/
@@ -902,11 +947,6 @@ def parse_block(words):
             je_paket = int(m_je_paket.group(1))
             i += 1
             continue
-        links = [w for w in sorted(ln, key=lambda w: w["x0"])
-                 if w["x0"] < ART_MAX and w["text"] != "."]
-        if links and not art_done:                          # erste Positionszeile
-            art_toks = [w["text"] for w in links]
-            art_done = True
         for w in sorted(ln, key=lambda w: w["x0"]):
             t = w["text"]
             if t == "." or w["x0"] < ART_MAX:

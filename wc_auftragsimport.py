@@ -29,6 +29,26 @@ nur EINMAL als Datei geschrieben, auch wenn sie noch tagelang "processing" ist.
 Wird eine Datei in Amicron versehentlich nicht importiert, bleibt sie im
 Ausgabeordner liegen; neu erzeugen: --only <nr> --neu.
 
+STORNO-WARNUNG
+--------------
+Der Dateiimport kann einen Auftrag in Amicron nur ANLEGEN, nicht aendern oder
+loeschen. Wird eine schon uebergebene Bestellung im Shop spaeter storniert,
+erstattet, widerrufen oder wieder unbezahlt, schreibt das Skript deshalb einen
+WARNAUFTRAG WC_<nr>-ST.xml mit der Auftragsnummer "<nr>-ST": keine Positionen,
+0,00 EUR, Name/Strasse "!!! STORNIERT - Auftrag <nr> NICHT versenden !!!".
+Er wird beim normalen Import mit eingelesen und faellt in der Auftragsliste auf.
+Bei einer Teilerstattung (Bestellung bleibt "processing") entsprechend
+"<nr>-TE<n>".
+Getestet am 2026-09-29 in Amicron (Bestellung 25680):
+  - Eine Datei mit einer Nummer, die es schon gibt, ueberspringt Amicron
+    OHNE Fehlermeldung -> der Warnauftrag braucht eine eigene Nummer (-ST).
+  - Ein Auftrag ohne Positionen wird angelegt.
+  - Amicron legt fuer den Warnauftrag einen NEUEN Kunden "!!! STORNIERT..." an,
+    der echte Kundenstamm bleibt unberuehrt. E-Mail und Telefon werden trotzdem
+    weggelassen, damit der Hilfskunde nie eine Mail bekommt.
+Geprueft werden nur uebergebene Bestellungen, die noch nicht "completed" sind
+(versendet -> Pruefung beendet). Jede Warnung kommt genau einmal.
+
 UMSTIEG VON AFTERSELL
 ---------------------
 Beim Umstieg sind die aktuell offenen processing-Bestellungen meist schon ueber
@@ -356,6 +376,122 @@ def _kunde(o):
 
 
 # ==========================================================================
+# Storno-Warnung
+# ==========================================================================
+
+# "withdrawn" ("Widerrufen") ist ein shop-eigener Status, kein WooCommerce-
+# Standard - siehe Skill woocommerce-vorkasse-datev-export (Bestellung 25291).
+STORNO_STATUS = {"cancelled", "refunded", "failed", "withdrawn", "trash"}
+UNBEZAHLT_STATUS = {"on-hold", "pending", "checkout-draft", "draft"}
+STATUS_TEXT = {
+    "cancelled": "storniert", "refunded": "erstattet", "failed": "fehlgeschlagen",
+    "withdrawn": "widerrufen", "trash": "geloescht", "on-hold": "wieder unbezahlt (on-hold)",
+    "pending": "wieder unbezahlt (pending)", "geloescht": "geloescht",
+}
+
+
+def _erstattet(o):
+    return round(sum(abs(_num(r.get("total"))) for r in (o.get("refunds") or [])), 2)
+
+
+def warnauftrag_xml(o, nummer_neu, kopf, grund, cfg):
+    """Warnauftrag als XML: gleiche Bestellung, aber eigene Nummer, keine
+    Positionen, 0,00 EUR, Warntext statt Name/Strasse, ohne E-Mail/Telefon."""
+    nummer = str(o.get("number") or o["id"])
+    w = dict(o)
+    warn = {"first_name": "!!! %s" % kopf,
+            "last_name": "Auftrag %s NICHT versenden !!!" % nummer,
+            "company": "Kunde: %s" % _kunde(o),
+            "address_1": "!!! %s !!!" % kopf,
+            "address_2": "", "email": "", "phone": ""}
+    for k in ("billing", "shipping"):
+        w[k] = dict(o.get(k) or {}, **warn)
+    w.update(number=nummer_neu, line_items=[], shipping_lines=[], fee_lines=[], total="0.00",
+             date_created=datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+             customer_note="WARNUNG zu Shop-Bestellung %s (%s, %s EUR): %s. "
+                           "Originalauftrag %s in Amicron pruefen, nicht versenden/fakturieren "
+                           "bzw. Gutschrift. Diesen Warnauftrag danach loeschen."
+                           % (nummer, _kunde(o), _geld(o.get("total")), grund, nummer))
+    x = bestellung_zu_xml(w, cfg)
+    return x.replace("<!-- erzeugt von", "<!-- WARNAUFTRAG, erzeugt von", 1)
+
+
+def schreibe_warnung(ordner, o, nummer_neu, kopf, grund, cfg):
+    os.makedirs(ordner, exist_ok=True)
+    pfad = os.path.join(ordner, "WC_%s.xml" % nummer_neu)
+    tmp = pfad + ".tmp"
+    with open(tmp, "wb") as f:
+        f.write(warnauftrag_xml(o, nummer_neu, kopf, grund, cfg).encode("iso-8859-1", "xmlcharrefreplace"))
+    os.replace(tmp, pfad)
+    return pfad
+
+
+def pruefe_stornos(api, offene_orders, state, cfg, dry, log):
+    """Prueft alle uebergebenen, noch nicht abgeschlossenen Bestellungen.
+    Bestellungen, die noch in der processing-Liste stehen, brauchen keinen
+    Einzelabruf (nur Teilerstattung pruefen); alle anderen haben den Status
+    gewechselt und werden einzeln geholt. -> Anzahl geschriebener Warnungen."""
+    aktuell = {str(o["id"]): o for o in offene_orders}
+    warnungen = 0
+    for oid, e in sorted(state["exportiert"].items()):
+        if e.get("erledigt"):
+            continue
+        nummer = e.get("nummer") or oid
+        o = aktuell.get(oid)
+        if o is None:
+            st, body, _ = api.get("/orders/%s" % oid)
+            if st == 404:
+                o = {"id": oid, "number": nummer, "status": "geloescht",
+                     "billing": {"first_name": e.get("kunde", "")}, "total": e.get("total")}
+            elif st != 200 or not isinstance(body, dict):
+                log("  %s: Status nicht abrufbar (HTTP %s) - naechster Lauf versucht es erneut."
+                    % (nummer, st))
+                continue
+            else:
+                o = body
+            time.sleep(0.3)
+
+        status = o.get("status")
+        kopf = grund = None
+        if status == "completed":
+            if not dry:
+                e["erledigt"] = "completed"
+            continue
+        if status == "processing":
+            erst = _erstattet(o)
+            if erst > (e.get("erstattet") or 0) + 0.004:
+                n = int(e.get("te_nr") or 0) + 1
+                kopf, grund = "TEILERSTATTUNG", "Teilerstattung im Shop, insgesamt %.2f EUR erstattet" % erst
+                nummer_neu = "%s-TE%d" % (nummer, n)
+                if not dry:
+                    e["erstattet"], e["te_nr"] = erst, n
+            else:
+                continue
+        else:
+            text = STATUS_TEXT.get(status)
+            if status in STORNO_STATUS or status in UNBEZAHLT_STATUS or status == "geloescht":
+                kopf = "STORNIERT" if status not in UNBEZAHLT_STATUS else "UNBEZAHLT"
+            else:
+                kopf, text = "STATUS PRUEFEN", "UNBEKANNTER Shop-Status '%s'" % status
+            grund = "Bestellung im Shop %s" % (text or status)
+            nummer_neu = "%s-ST" % nummer
+            if not dry:
+                e["erledigt"] = "warnung:%s" % status
+
+        if dry:
+            log("  !! %s: %s -> wuerde Warnauftrag %s schreiben" % (nummer, grund, nummer_neu))
+        else:
+            pfad = schreibe_warnung(cfg["output_dir"], o, nummer_neu, kopf, grund, cfg)
+            e.setdefault("warnungen", []).append(
+                {"datei": os.path.basename(pfad), "grund": grund,
+                 "ts": datetime.now().isoformat(timespec="seconds")})
+            speichere_state(cfg["state_path"], state)
+            log("  !! %s: %s -> Warnauftrag %s" % (nummer, grund, os.path.basename(pfad)))
+        warnungen += 1
+    return warnungen
+
+
+# ==========================================================================
 # Hauptprogramm
 # ==========================================================================
 
@@ -444,6 +580,15 @@ def main(argv):
     if args.only and not zaehler["neu"] and not zaehler["schon"]:
         log("  Bestellung %s ist nicht im Status '%s'." % (args.only, cfg["status"]))
 
+    # Storno-Warnung nur im regulaeren Lauf (Trockenlauf zeigt sie nur an)
+    warnungen = 0
+    if not args.only and not args.vorschau and not args.baseline:
+        log("-" * 70)
+        log("Storno-Pruefung der uebergebenen, noch nicht versendeten Bestellungen:")
+        warnungen = pruefe_stornos(api, orders, state, cfg, dry, log)
+        if not warnungen:
+            log("  keine Auffaelligkeiten.")
+
     if not dry and not args.vorschau and not args.only:
         speichere_state(cfg["state_path"], state)
 
@@ -454,6 +599,8 @@ def main(argv):
     log("  schon frueher uebergeben : %d" % zaehler["schon"])
     if zaehler["abweichung"]:
         log("  Summen-Abweichungen      : %d  (siehe '!!' oben)" % zaehler["abweichung"])
+    if warnungen:
+        log("  WARNAUFTRAEGE (Storno)   : %d  (siehe '!!' oben)" % warnungen)
     if dry and not args.vorschau:
         log("  Mit --commit erneut ausfuehren, um die Dateien wirklich zu schreiben.")
     return 0

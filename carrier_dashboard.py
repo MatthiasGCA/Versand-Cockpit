@@ -99,7 +99,7 @@ from tkinter import messagebox, simpledialog, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-09-28a"
+VERSION = "2026-09-29a"
 
 # Fenster-/Taskleisten-Symbol (siehe gui() unten) - liegt im selben Ordner
 # wie dieses Skript, damit es unveraendert auch nach einem Umzug funktioniert.
@@ -1430,6 +1430,10 @@ def gui():
                     if bericht["artikel_geloggt"]:
                         zeilen.append("Artikel-Statistik: %d Rechnung(en) erfasst" %
                                       bericht["artikel_geloggt"])
+                    if bericht["wc_kopie"] is False:
+                        zeilen.append("ACHTUNG: wc_bestellnummern.csv konnte NICHT nach %s "
+                                      "kopiert werden - WooCommerce-Sendungsnummer-Sync "
+                                      "bekommt fuer diesen Lauf keine Zuordnung." % WC_SYNC_ORDNER)
                     if bericht["carrier_dateien"]:
                         zeilen.append("")
                         zeilen.append("Carrier-CSVs:")

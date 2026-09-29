@@ -55,7 +55,7 @@ Siehe ist_auslands_kleinpaket() und die Konstanten KLEINPAKET_*.
 import html
 import re
 
-VERSION = "2026-09-29c"
+VERSION = "2026-09-29d"
 
 # --- Gewichtsgrenzen in kg (Klasse gilt bei Gewicht STRIKT UNTER der Grenze) -----
 G_BRIEF = 0.05
@@ -683,10 +683,17 @@ def _pruefung_text(r):
     Positionssumme gegen Rechnungsbetrag, unvollstaendige Positionen."""
     teile = []
     if not r.get("zeilen_ok", True):
+        # Toleranz MUSS mit packliste.CENT (0,005) uebereinstimmen, sonst kann
+        # eine Zeile knapp ausserhalb dieser (engeren) Toleranz liegen, obwohl
+        # packliste.parse_pdf() sie schon als "zeilen_ok=False" markiert hat -
+        # der Hinweis zeigt dann nur "?" statt der betroffenen Position
+        # (carrier_regeln.py bleibt bewusst frei von packliste.py-Importen,
+        # siehe Modulkopf - deshalb hier dupliziert statt importiert).
+        CENT = 0.005
         falsch = []
         for p in r.get("positionen") or []:
             m, ep, gp = p.get("menge"), p.get("ep"), p.get("gp")
-            if m is not None and ep is not None and gp is not None and abs(round(m * ep, 2) - gp) > 0.011:
+            if m is not None and ep is not None and gp is not None and abs(round(m * ep, 2) - gp) > CENT:
                 falsch.append("%s (%s × %s ≠ %s)" % (
                     p.get("art") or "?", ("%g" % m).replace(".", ","),
                     ("%.2f" % ep).replace(".", ","), ("%.2f" % gp).replace(".", ",")))
@@ -1236,6 +1243,17 @@ def selftest():
           (len(pruef) == 1, "A1 (2 × 10,00 ≠ 21,00)" in pruef[0],
            "Positionssumme 21,00 ≠ Rechnungsbetrag 23,50" in pruef[0], "? (Betrag)" in pruef[0]),
           (True, True, True, True))
+    # Toleranz muss exakt packliste.CENT (0,005) entsprechen - eine Abweichung
+    # von 0,007 liegt UNTER der alten (versehentlich zu laxen) 0,011-Toleranz,
+    # aber UEBER 0,005, und muss deshalb weiterhin als "falsch" benannt werden
+    # (sonst nur "Zeile rechnet nicht auf: ?" ohne den betroffenen Artikel).
+    r_pr2 = dict(r_pr, positionen=[dict(_pos("A2", 1.0), ep=10.0, gp=10.007)],
+                zeilen_ok=False, summe_ok=True, vollstaendig_ok=True)
+    pruef2 = [h for h in bewerte_rechnung(r_pr2)["hinweise"] if h.startswith("Rechnungsprüfung")]
+    check("Rechnungspruefung: 0,007-Abweichung wird weiterhin benannt (Toleranz = packliste.CENT)",
+          (len(pruef2) == 1, "A2" in pruef2[0], "?" == pruef2[0].split(": ")[1] if pruef2 else True),
+          (True, True, False))
+
     r_ok = dict(r_pr, zeilen_ok=True, summe_ok=True, vollstaendig_ok=True)
     check("Rechnungspruefung bestanden -> kein Hinweis",
           [h for h in bewerte_rechnung(r_ok)["hinweise"] if h.startswith("Rechnungsprüfung")], [])

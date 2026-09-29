@@ -55,7 +55,7 @@ Siehe ist_auslands_kleinpaket() und die Konstanten KLEINPAKET_*.
 import html
 import re
 
-VERSION = "2026-09-29b"
+VERSION = "2026-09-29c"
 
 # --- Gewichtsgrenzen in kg (Klasse gilt bei Gewicht STRIKT UNTER der Grenze) -----
 G_BRIEF = 0.05
@@ -182,11 +182,15 @@ _PLZ_IN_ZEILE = re.compile(r"^(?P<vor>.*\S)\s+(?P<plz>\d{5})\s+(?P<ort>\S.*)$")
 # Ende als Hausnummer erkannt wird.
 _STRASSE_HNR = re.compile(
     r"^(?P<str>.*?\S)[\s:]*(?P<nr>\d+\s*[A-Za-z]?(?:\s*[-/]\s*\d+\s*[A-Za-z]?)*)[\s,.;]*$")
-# Hausnummer MITTEN in der Zeile, dahinter reiner Text ohne Ziffern ("In Der Loh 1
-# Campingplatz", Rechnung 1706290): Strasse + Hausnummer, der Rest ist Zusatz.
-# Nur Fallback, wenn _STRASSE_HNR (Hausnummer am Zeilenende) nicht passt.
+# Hausnummer MITTEN in der Zeile, dahinter reiner Text ohne (weitere) Ziffern
+# ("In Der Loh 1 Campingplatz", Rechnung 1706290; "Rotterdamer Str. 49 / Im
+# Navi falsche St", Rechnung 1706718 - Kunde haengt eine eigene Notiz an):
+# Strasse + Hausnummer, der Rest ist Zusatz. Der Rest darf mit IRGENDEINEM
+# Zeichen beginnen (nicht nur einem Buchstaben) - bei 1706718 folgt der
+# Hausnummer ein "/" ("/ Im Navi"). Nur Fallback, wenn _STRASSE_HNR
+# (Hausnummer am Zeilenende) nicht passt.
 _HNR_MIT_TEXT = re.compile(
-    r"^(?P<str>[^\d]*?[A-Za-zÄÖÜäöüß.])\s+(?P<nr>\d+[A-Za-z]?)\s+(?P<rest>[A-Za-zÄÖÜäöüß][^\d]*)$")
+    r"^(?P<str>[^\d]*?[A-Za-zÄÖÜäöüß.])\s+(?P<nr>\d+[A-Za-z]?)\s+(?P<rest>\S.*)$")
 # Eine Zeile, die NUR aus der Hausnummer besteht (Strasse und Hausnummer auf
 # zwei eigenen Zeilen, real beobachtet an Rechnung 1705611/1705631: "Wiesenweg"
 # / "4", "lindenstrasse" / "8").
@@ -330,11 +334,6 @@ def analysiere_adresse(zeilen):
             schon.add(_n(z))
     zusatz = rein
     out["zusatz"] = zusatz
-    if len(zusatz) + bool(out["ortsteil"]) > 2:
-        # DHL/DPD haben nur Name 2 + Name 3 - ab der 3. Zeile wird in Name 3
-        # zusammengefasst (carrier_export._name2_name3), bitte pruefen.
-        out["hinweise"].append("Mehr als 2 Zusatzzeilen - bei DHL/DPD in Name 3 "
-                               "zusammengefasst: %s" % " | ".join(zusatz[1:]))
 
     # --- Land -----------------------------------------------------------------
     land = ""
@@ -399,8 +398,19 @@ def analysiere_adresse(zeilen):
             out["packstation"] = True
             out["hinweise"].append("Packstation/Postfach - bitte manuell prüfen")
 
+    # ">2 Zusatzzeilen"-Hinweis ERST HIER (nicht vor der Strasse/Hausnr-Erkennung
+    # oben) pruefen - _HNR_MIT_TEXT haengt bei einer Hausnummer MITTEN in der
+    # Zeile (z.B. "Rotterdamer Str. 49 / Im Navi", Rechnung 1706718) den Rest
+    # NACHTRAEGLICH an out["zusatz"] an; ein Test VOR dieser Ergaenzung wuerde
+    # eine zu lange Zusatzliste sonst uebersehen.
+    if len(out["zusatz"]) + bool(out["ortsteil"]) > 2:
+        # DHL/DPD haben nur Name 2 + Name 3 - ab der 3. Zeile wird in Name 3
+        # zusammengefasst (carrier_export._name2_name3), bitte pruefen.
+        out["hinweise"].append("Mehr als 2 Zusatzzeilen - bei DHL/DPD in Name 3 "
+                               "zusammengefasst: %s" % " | ".join(out["zusatz"][1:]))
+
     # --- Feld-Pruefungen ------------------------------------------------------
-    felder = [out["name"], out["strasse"], out["ort"]] + list(zusatz)
+    felder = [out["name"], out["strasse"], out["ort"]] + list(out["zusatz"])
     if any(len(f) > MAX_ZEILENLAENGE for f in felder):
         out["hinweise"].append("Ein Adressfeld ist länger als %d Zeichen" % MAX_ZEILENLAENGE)
     for f in felder:

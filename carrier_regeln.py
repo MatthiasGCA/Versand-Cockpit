@@ -55,7 +55,7 @@ Siehe ist_auslands_kleinpaket() und die Konstanten KLEINPAKET_*.
 import html
 import re
 
-VERSION = "2026-09-29d"
+VERSION = "2026-09-30a"
 
 # --- Gewichtsgrenzen in kg (Klasse gilt bei Gewicht STRIKT UNTER der Grenze) -----
 G_BRIEF = 0.05
@@ -179,9 +179,13 @@ _PLZ_IN_ZEILE = re.compile(r"^(?P<vor>.*\S)\s+(?P<plz>\d{5})\s+(?P<ort>\S.*)$")
 # ("Rohrwangstr.3", Rechnung 1705548; "Heidelstein str.21", Rechnung 1705551) -
 # [\s:]* (0 bis n Zeichen) deckt alle drei Faelle ab. ".*?" ist bewusst
 # NICHT-gierig, damit bei mehreren Ziffern in der Zeile trotzdem nur die am
-# Ende als Hausnummer erkannt wird.
+# Ende als Hausnummer erkannt wird. Eine Hausnummer-SPANNE ("131-143") darf
+# auch OHNE Bindestrich nur mit Leerzeichen stehen ("Hauenhorster Straße 131
+# 143", Rechnung 1706911, gemeint "131 bis 143") - das Leerzeichen zaehlt
+# deshalb als weiterer gueltiger Trenner zwischen den Zifferngruppen, nicht
+# nur "-"/"/".
 _STRASSE_HNR = re.compile(
-    r"^(?P<str>.*?\S)[\s:]*(?P<nr>\d+\s*[A-Za-z]?(?:\s*[-/]\s*\d+\s*[A-Za-z]?)*)[\s,.;]*$")
+    r"^(?P<str>.*?\S)[\s:]*(?P<nr>\d+\s*[A-Za-z]?(?:\s*[-/ ]\s*\d+\s*[A-Za-z]?)*)[\s,.;]*$")
 # Hausnummer MITTEN in der Zeile, dahinter reiner Text ohne (weitere) Ziffern
 # ("In Der Loh 1 Campingplatz", Rechnung 1706290; "Rotterdamer Str. 49 / Im
 # Navi falsche St", Rechnung 1706718 - Kunde haengt eine eigene Notiz an):
@@ -923,6 +927,14 @@ def selftest():
     check("adr Komma nach Hausnr", (a["strasse"], a["hausnr"]), ("Clara Zetkin Straße", "358"))
     a = analysiere_adresse(["Karl Nummer", "Ring 36/6", "AT-9991 Kals"])
     check("adr Hausnr 36/6", a["hausnr"], "36/6")
+    # Hausnummer-Spanne OHNE Bindestrich, nur Leerzeichen (real 1706911: Firma
+    # Dyckhoff GmbH, "131 bis 143" gemeint) - Leerzeichen zaehlt als weiterer
+    # gueltiger Trenner zwischen den Zifferngruppen.
+    a = analysiere_adresse(["Viets Florian", "Dyckhoff Gmbh", "Hauenhorster Straße 131 143",
+                            "DE 48431 Rheine"])
+    check("adr real 1706911 (Hausnr-Spanne ohne Bindestrich)",
+          (a["strasse"], a["hausnr"], a["zusatz"], a["hinweise"]),
+          ("Hauenhorster Straße", "131 143", ["Dyckhoff Gmbh"], []))
     a = analysiere_adresse(["X Y", "Hauptstr. 12 B", "12345 Ort"])
     check("adr Hausnr 12 B", a["hausnr"], "12 B")
     # Zusaetzliche Zeile NACH der echten Strassenzeile (anders als "adr Zusatz"

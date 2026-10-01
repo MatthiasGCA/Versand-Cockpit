@@ -99,7 +99,7 @@ from tkinter import messagebox, simpledialog, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-09-29a"
+VERSION = "2026-10-01a"
 
 # Fenster-/Taskleisten-Symbol (siehe gui() unten) - liegt im selben Ordner
 # wie dieses Skript, damit es unveraendert auch nach einem Umzug funktioniert.
@@ -466,7 +466,11 @@ def exportiere_alles(rechnungen, ergebnisse, ausgabe_pfad, archiv_ordner, carrie
         g["datum"] = heute_str
     sammel_pfad = os.path.join(out_dir, "sammel_zuordnung.csv")
     gruppen, gruppen_fuer_csv = packliste.merge_sammelgruppen(gruppen_roh, sammel_pfad)
-    packliste.baue_pdf(rechnungen, ausgabe_pfad, gruppen)
+    # DPD-Bestellungen sollen auf der Pickliste vor allen anderen stehen (frueherer
+    # Abholtermin als DHL, Matthias 2026-10-01) - carrier_je_rnr geht NUR in
+    # baue_pdf() ein, packliste.py bleibt sonst frei von carrier_regeln-Bezug.
+    carrier_je_rnr = {b["rnr"]: b["carrier"] for b in ergebnisse if b.get("rnr")}
+    packliste.baue_pdf(rechnungen, ausgabe_pfad, gruppen, carrier_je_rnr)
 
     packliste.schreibe_csv(rechnungen, os.path.join(out_dir, "post_zuordnung.csv"))
     packliste.schreibe_sammel_csv(gruppen_fuer_csv, sammel_pfad)

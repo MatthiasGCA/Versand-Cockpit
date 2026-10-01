@@ -68,7 +68,14 @@ from reportlab.graphics.shapes import Drawing
 # KONFIGURATION
 # ----------------------------------------------------------------------------
 
-VERSION = "2026-10-01a"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+VERSION = "2026-10-01b"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+# 2026-10-01b: baue_pdf() bekommt optional carrier_je_rnr ({rnr: Carrier}) vom
+#   Dashboard - DPD-Bestellungen (frueherer Abholtermin als DHL, Matthias)
+#   stehen damit in der Packuebersicht je Lagerort-Abschnitt IMMER vor allen
+#   anderen (stabile Sortierung) und tragen im Rahmen eine kleine rote "DPD"-
+#   Notiz vor der Rechnungsnummer. Ohne carrier_je_rnr (z.B. ueber den alten
+#   Pickliste_erstellen.bat-Weg via main(), der keine Carrier-Zuordnung kennt)
+#   unveraendertes Verhalten. Siehe ist_dpd() in baue_pdf().
 # 2026-10-01a: Neue Kommissionierliste "Verpackungsraum" auf Kundenwunsch -
 #   classify() gibt fuer Lagerort woertlich "Verpackungsraum" UND fuer das
 #   bisherige Buchstabe+Zahl-Regalraster (A1 bis K8, GRID_RE) jetzt
@@ -1560,7 +1567,21 @@ def _story_to_reader(story, fusstext=None):
     return PdfReader(buf)
 
 
-def baue_pdf(rechnungen, pdf_pfad, gruppen):
+def baue_pdf(rechnungen, pdf_pfad, gruppen, carrier_je_rnr=None):
+    """carrier_je_rnr (optional): {Rechnungsnummer: Carrier-Name} aus
+    carrier_regeln.bewerte_rechnung() (carrier_dashboard.py) - packliste.py
+    bleibt bewusst frei von carrier_regeln-Importen (siehe Modulkopf), daher
+    hier nur der fertige String je rnr statt des Moduls. None/leer (z.B. beim
+    alten Pickliste_erstellen.bat-Weg ueber main(), der keine Carrier-
+    Zuordnung kennt) -> keine DPD-Sonderbehandlung, Verhalten unveraendert.
+    DPD-Bestellungen erscheinen dann VOR allen anderen je Lagerort-Abschnitt
+    (frueherer Abholtermin als DHL, 2026-10-01 auf Wunsch von Matthias) und
+    tragen im Rahmen eine kleine "DPD"-Notiz, siehe ist_dpd()/einzel_block()."""
+    carrier_je_rnr = carrier_je_rnr or {}
+
+    def ist_dpd(r):
+        return carrier_je_rnr.get(r["rnr"]) == "DPD"
+
     styles = getSampleStyleSheet()
     st_titel = ParagraphStyle("titel", parent=styles["Title"], fontSize=16, spaceAfter=4)
     st_cell = ParagraphStyle("cell", parent=styles["Normal"], fontSize=9, leading=11)
@@ -1666,8 +1687,10 @@ def baue_pdf(rechnungen, pdf_pfad, gruppen):
             bc = code128.Code128(r["rnr"], barHeight=14 * mm, barWidth=0.42 * mm)
         except Exception:
             bc = Paragraph(r["rnr"], st_kopf)
+        dpd_notiz = ('<font color="#C62828"><b>DPD</b></font> &nbsp;&middot;&nbsp; '
+                    if ist_dpd(r) else "")
         kopf_rechts = (
-            f"<font size=8>Rechnung Nr. {r['rnr']} &nbsp;&middot;&nbsp; {r['datum']}</font>"
+            f"<font size=8>{dpd_notiz}Rechnung Nr. {r['rnr']} &nbsp;&middot;&nbsp; {r['datum']}</font>"
             f"<br/><font size=15><b>{r['name']}</b></font>"
         )
         kopf = Table([[bc, Paragraph(kopf_rechts, st_pack_kopf)]],
@@ -1793,6 +1816,10 @@ def baue_pdf(rechnungen, pdf_pfad, gruppen):
     einzel_nach_kat = {k: [] for k in kategorien}
     for r in einzel:
         einzel_nach_kat[kat_von(r)].append(r)
+    # DPD-Bestellungen je Lagerort-Abschnitt nach vorne (frueherer Abholtermin
+    # als DHL) - stabile Sortierung, sonstige Reihenfolge bleibt unveraendert.
+    for k in einzel_nach_kat:
+        einzel_nach_kat[k].sort(key=lambda r: 0 if ist_dpd(r) else 1)
 
     gruppen_nach_kat = {k: [] for k in kategorien}
     for g in gruppen:

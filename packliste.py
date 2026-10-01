@@ -52,6 +52,8 @@ import shutil
 from datetime import datetime
 
 import pdfplumber
+from PIL import Image as PILImage       # nur fuer die Logo-Massermittlung (_dpd_logo) -
+                                         # reportlab.platypus.Image braucht Pillow ohnehin
 from pypdf import PdfReader, PdfWriter
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
@@ -59,7 +61,7 @@ from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import (
     SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Flowable,
-    KeepTogether, PageBreak,
+    KeepTogether, PageBreak, Image as RLImage,
 )
 from reportlab.graphics.barcode import code128
 from reportlab.graphics.shapes import Drawing
@@ -68,7 +70,13 @@ from reportlab.graphics.shapes import Drawing
 # KONFIGURATION
 # ----------------------------------------------------------------------------
 
-VERSION = "2026-10-01b"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+VERSION = "2026-10-01c"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+# 2026-10-01c: DPD-Kennzeichnung im Rahmen zeigt jetzt das echte DPD-Logo oben
+#   rechts in der Rahmenecke (dpd_logo.png im selben Ordner) statt der reinen
+#   Text-Notiz - Matthias wollte das Logo statt des Schriftzugs. Fehlt die
+#   Bilddatei (z.B. auf einem PC, auf den sie noch nicht mitkopiert wurde),
+#   faellt einzel_block() automatisch auf die alte Text-Notiz zurueck, die
+#   Pickliste-Erstellung bricht nie deswegen ab. Siehe _dpd_logo().
 # 2026-10-01b: baue_pdf() bekommt optional carrier_je_rnr ({rnr: Carrier}) vom
 #   Dashboard - DPD-Bestellungen (frueherer Abholtermin als DHL, Matthias)
 #   stehen damit in der Packuebersicht je Lagerort-Abschnitt IMMER vor allen
@@ -1567,6 +1575,31 @@ def _story_to_reader(story, fusstext=None):
     return PdfReader(buf)
 
 
+# DPD-Logo fuer die Packuebersicht (siehe baue_pdf()/einzel_block() - Matthias
+# wollte statt der reinen Text-Notiz "DPD" das echte Logo in der Rahmenecke,
+# 2026-10-01). Liegt im selben Ordner wie dieses Skript; fehlt die Datei (z.B.
+# noch nicht mitkopiert), faellt einzel_block() auf die alte Text-Notiz zurueck
+# - eine fehlende Bilddatei darf die Pickliste-Erstellung nie verhindern.
+DPD_LOGO_PFAD = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dpd_logo.png")
+_DPD_LOGO_GROESSE = None       # (Breite, Hoehe) des Originalbilds, einmalig ermittelt
+
+
+def _dpd_logo(breite):
+    """RLImage mit dem DPD-Logo in der gewuenschten Breite (Seitenverhaeltnis
+    bleibt erhalten), oder None, wenn die Logo-Datei fehlt/nicht lesbar ist."""
+    global _DPD_LOGO_GROESSE
+    if not os.path.exists(DPD_LOGO_PFAD):
+        return None
+    try:
+        if _DPD_LOGO_GROESSE is None:
+            with PILImage.open(DPD_LOGO_PFAD) as im:
+                _DPD_LOGO_GROESSE = im.size
+        w, h = _DPD_LOGO_GROESSE
+        return RLImage(DPD_LOGO_PFAD, width=breite, height=breite * h / w)
+    except Exception:
+        return None
+
+
 def baue_pdf(rechnungen, pdf_pfad, gruppen, carrier_je_rnr=None):
     """carrier_je_rnr (optional): {Rechnungsnummer: Carrier-Name} aus
     carrier_regeln.bewerte_rechnung() (carrier_dashboard.py) - packliste.py
@@ -1687,17 +1720,28 @@ def baue_pdf(rechnungen, pdf_pfad, gruppen, carrier_je_rnr=None):
             bc = code128.Code128(r["rnr"], barHeight=14 * mm, barWidth=0.42 * mm)
         except Exception:
             bc = Paragraph(r["rnr"], st_kopf)
+        # DPD-Kennzeichnung: bevorzugt das echte Logo oben rechts in der
+        # Rahmenecke (Matthias 2026-10-01), faellt ohne lesbare Logo-Datei auf
+        # die alte kleine Text-Notiz vor der Rechnungsnummer zurueck.
+        dpd_logo_breite = 46
+        logo = _dpd_logo(dpd_logo_breite) if ist_dpd(r) else None
         dpd_notiz = ('<font color="#C62828"><b>DPD</b></font> &nbsp;&middot;&nbsp; '
-                    if ist_dpd(r) else "")
+                    if ist_dpd(r) and logo is None else "")
         kopf_rechts = (
             f"<font size=8>{dpd_notiz}Rechnung Nr. {r['rnr']} &nbsp;&middot;&nbsp; {r['datum']}</font>"
             f"<br/><font size=15><b>{r['name']}</b></font>"
         )
-        kopf = Table([[bc, Paragraph(kopf_rechts, st_pack_kopf)]],
-                     colWidths=[150, inner - 150])
+        if logo is not None:
+            kopf = Table([[bc, Paragraph(kopf_rechts, st_pack_kopf), logo]],
+                         colWidths=[150, inner - 150 - dpd_logo_breite, dpd_logo_breite])
+        else:
+            kopf = Table([[bc, Paragraph(kopf_rechts, st_pack_kopf)]],
+                         colWidths=[150, inner - 150])
         kopf.setStyle(TableStyle([
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("ALIGN", (-1, 0), (-1, -1), "RIGHT"),
             ("LEFTPADDING", (0, 0), (0, 0), 0),
+            ("RIGHTPADDING", (-1, 0), (-1, -1), 0),
             ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
         ]))
         inhalt = [kopf]

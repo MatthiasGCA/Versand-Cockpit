@@ -55,7 +55,7 @@ Siehe ist_auslands_kleinpaket() und die Konstanten KLEINPAKET_*.
 import html
 import re
 
-VERSION = "2026-09-30a"
+VERSION = "2026-10-01a"
 
 # --- Gewichtsgrenzen in kg (Klasse gilt bei Gewicht STRIKT UNTER der Grenze) -----
 G_BRIEF = 0.05
@@ -183,9 +183,16 @@ _PLZ_IN_ZEILE = re.compile(r"^(?P<vor>.*\S)\s+(?P<plz>\d{5})\s+(?P<ort>\S.*)$")
 # auch OHNE Bindestrich nur mit Leerzeichen stehen ("Hauenhorster Straße 131
 # 143", Rechnung 1706911, gemeint "131 bis 143") - das Leerzeichen zaehlt
 # deshalb als weiterer gueltiger Trenner zwischen den Zifferngruppen, nicht
-# nur "-"/"/".
+# nur "-"/"/". Der Buchstaben-Zusatz einer einzelnen Hausnummer darf auch per
+# "/" statt direkt/per Leerzeichen angehaengt sein ("Kaiserpfalzstr 26/a",
+# Rechnung 1707158) - NUR "/" (nicht "-", das bleibt dem Spannen-Trenner
+# vorbehalten, siehe "Allee 12-14" oben) und NUR wenn direkt ein Buchstabe
+# folgt (sonst waere "/" bereits der SPANNEN-Trenner zur naechsten Zahl,
+# siehe "36/6" oder "9-15 /3/12").
+_NR_EINHEIT = r"\d+(?:\s*/?\s*[A-Za-z])?"
 _STRASSE_HNR = re.compile(
-    r"^(?P<str>.*?\S)[\s:]*(?P<nr>\d+\s*[A-Za-z]?(?:\s*[-/ ]\s*\d+\s*[A-Za-z]?)*)[\s,.;]*$")
+    r"^(?P<str>.*?\S)[\s:]*(?P<nr>" + _NR_EINHEIT + r"(?:\s*[-/ ]\s*" + _NR_EINHEIT
+    + r")*)[\s,.;]*$")
 # Hausnummer MITTEN in der Zeile, dahinter reiner Text ohne (weitere) Ziffern
 # ("In Der Loh 1 Campingplatz", Rechnung 1706290; "Rotterdamer Str. 49 / Im
 # Navi falsche St", Rechnung 1706718 - Kunde haengt eine eigene Notiz an):
@@ -937,6 +944,14 @@ def selftest():
           ("Hauenhorster Straße", "131 143", ["Dyckhoff Gmbh"], []))
     a = analysiere_adresse(["X Y", "Hauptstr. 12 B", "12345 Ort"])
     check("adr Hausnr 12 B", a["hausnr"], "12 B")
+    # Buchstaben-Zusatz per "/" statt Leerzeichen angehaengt (real 1707158)
+    a = analysiere_adresse(["max meckelburg", "Kaiserpfalzstr 26/a",
+                            "DE 78351 Bodman-Ludwigshafen"])
+    check("adr real 1707158 (Hausnr 26/a)", (a["strasse"], a["hausnr"], a["hinweise"]),
+          ("Kaiserpfalzstr", "26/a", []))
+    a = analysiere_adresse(["A B", "Allee 12-14", "12345 Ort"])
+    check("adr Spanne 12-14 bleibt unveraendert (keine Verwechslung mit 26/a-Fall)",
+          a["hausnr"], "12-14")
     # Zusaetzliche Zeile NACH der echten Strassenzeile (anders als "adr Zusatz"
     # oben, wo die Zusatzzeile VOR der Strasse steht) - real beobachtet, siehe
     # _finde_strasse()-Docstring.

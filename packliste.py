@@ -38,7 +38,8 @@ Protokoll und mit einem Hinweis in der Packuebersicht deutlich markiert.
 
 Kategorie-Zuordnung allein aus dem Lagerort-Feld der Packliste:
   Topseller, Eigenfertigung, Schlauchlager, Palettenlager, Poolchemie,
-  Kleinteile, Regallager, DPD / Warenpost, Allgemein  (Regeln unten in classify()).
+  Kleinteile, Verpackungsraum, Regallager, DPD / Warenpost, Allgemein
+  (Regeln unten in classify()).
 """
 
 import os
@@ -67,7 +68,16 @@ from reportlab.graphics.shapes import Drawing
 # KONFIGURATION
 # ----------------------------------------------------------------------------
 
-VERSION = "2026-09-29a"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+VERSION = "2026-10-01a"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+# 2026-10-01a: Neue Kommissionierliste "Verpackungsraum" auf Kundenwunsch -
+#   classify() gibt fuer Lagerort woertlich "Verpackungsraum" UND fuer das
+#   bisherige Buchstabe+Zahl-Regalraster (A1 bis K8, GRID_RE) jetzt
+#   "Verpackungsraum" zurueck statt "Kleinteile" (deckt den GESAMTEN
+#   Rasterbereich ab, nicht nur 1-6 - mit Matthias abgestimmt: 7/8 soll NICHT
+#   getrennt als Kleinteile bleiben). Die woertliche "Kleinteile"-Erkennung
+#   (Lagerort enthaelt das Wort "Kleinteile") UND die Regal-21-30-Sonderregel
+#   bleiben unveraendert "Kleinteile". Neue Kategorie in KATEGORIE_REIHENFOLGE
+#   direkt nach Kleinteile eingefuegt (Laufweg ggf. auf Zuruf anpassen).
 # 2026-09-29a: Fix Rechnung 1706490 - "Lagerort:" stand ausnahmsweise in
 #   derselben Zeile wie Artikelnr/Menge/Preis, dadurch ging die Artikelnr
 #   verloren (Rechnungspruefung faelschlich "unvollstaendig") UND der
@@ -390,7 +400,8 @@ VERSION = "2026-09-29a"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe j
 # Reihenfolge der Kategorien in der Sammelliste (Laufweg im Lager).
 KATEGORIE_REIHENFOLGE = [
     "Topseller", "Eigenfertigung", "Schlauchlager", "Palettenlager",
-    "Poolchemie", "Kleinteile", "Regallager", "DPD / Warenpost", "Allgemein",
+    "Poolchemie", "Kleinteile", "Verpackungsraum", "Regallager",
+    "DPD / Warenpost", "Allgemein",
 ]
 
 # Kleine Nachlaeufe kurz vor der Abhol-Deadline (meist nur ein paar Bestellungen)
@@ -635,12 +646,20 @@ def classify(lagerorte, art):
         return "Poolchemie"
     if "kleinteile" in low:                 # Lagerort woertlich "Kleinteile"
         return "Kleinteile"
+    if "verpackungsraum" in low:             # Lagerort woertlich "Verpackungsraum"
+        return "Verpackungsraum"
     mreg = re.search(r"regal\s*0*(\d+)", low)
     if mreg:
         nr = int(mreg.group(1))
         return "Kleinteile" if 21 <= nr <= 30 else "Regallager"
     if GRID_RE.search(text.upper()):
-        return "Kleinteile"
+        # Regalraster Buchstabe+Zahl (A1 bis K8, z.B. "C2", "E5", "R8 E2") -
+        # bis 2026-09-30 noch "Kleinteile" genannt; auf Kundenwunsch jetzt
+        # eine eigene Liste "Verpackungsraum" (deckt den GESAMTEN Rasterbereich
+        # 1-8 ab, nicht nur 1-6 - bewusste Entscheidung vom 2026-10-01: die
+        # alte woertliche "Kleinteile"-Erkennung bleibt unveraendert bestehen,
+        # betrifft aber nur Lagerorte, in denen das Wort "Kleinteile" steht).
+        return "Verpackungsraum"
     return "Allgemein"
 
 
@@ -897,8 +916,8 @@ def parse_block(words):
             # VOLLSTAENDIGEN Lagerort-Wert ziehen (nicht nur das erste Token),
             # damit mehrteilige Angaben wie 'R8 E2' oder 'A8 + A9' erhalten
             # bleiben. Wichtig fuer die Fachanzeige UND die Einsortierung: bei
-            # 'R8 E2' bringt erst das 'E2' die Bestellung aufs Kleinteile-Blatt
-            # (classify -> GRID_RE); 'R8' allein liefe auf 'Allgemein'.
+            # 'R8 E2' bringt erst das 'E2' die Bestellung aufs Verpackungsraum-
+            # Blatt (classify -> GRID_RE); 'R8' allein liefe auf 'Allgemein'.
             wert = _lagerort_wert(ln)
             if not wert and i + 1 < len(lines):
                 # 'Lagerort:'-Zeile ohne Wert -> der Wert steht umbrochen in der

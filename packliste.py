@@ -70,7 +70,12 @@ from reportlab.graphics.shapes import Drawing
 # KONFIGURATION
 # ----------------------------------------------------------------------------
 
-VERSION = "2026-10-02b"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+VERSION = "2026-10-02c"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+# 2026-10-02c: Belegnummern-Sperre - nur Packlisten mit AKTUELLER Rechnungsnummer
+#   (7 Ziffern, beginnt mit "17") werden verarbeitet; Gutschriften (Nr. beginnt
+#   mit 111) und Auftragsbestaetigungen (444) koennen ueber Umwege als Packliste
+#   exportiert werden und duerfen NIE gepackt/archiviert/exportiert werden.
+#   Siehe pruefe_belegnummer(); Konstanten RNR_* direkt darueber.
 # 2026-10-02b: Feste Artikelnummern-Liste POOLCHEMIE_ARTIKEL (leeres Relikt aus den
 #   Anfaengen) entfernt - Poolchemie wird allein ueber den Lagerort gesteuert.
 # 2026-10-02a: Neue Kommissionierliste "Rollwägen" auf Kundenwunsch - classify()
@@ -433,6 +438,35 @@ KATEGORIE_REIHENFOLGE = [
 # Bestellungen im Lauf wird wieder wie gewohnt nach Lagerort/Kategorie getrennt.
 KOMBINIERT_SCHWELLE = 20
 KOMBINIERT_LABEL = "Alle Bestellungen"
+
+# Belegnummern-Sperre (Matthias 2026-10-02): ueber Umwege laesst sich auch eine
+# Gutschrift oder Auftragsbestaetigung als "Packliste" exportieren (Beispiel:
+# DHL_RG1118209.csv mit Nr. 1118209/1118217 und 4440035/4440040). Verarbeitet
+# werden darf NUR ein Beleg mit aktueller RECHNUNGSnummer. RNR_GESPERRT = bekannte
+# andere Belegarten (Praefix -> Name, "wenigstens im Moment"), zusaetzlich muss die
+# Nummer dem Rechnungsformat entsprechen (RNR_PRAEFIX + insgesamt RNR_LAENGE
+# Ziffern) - so faellt auch eine UNBEKANNTE dritte Belegart durch. Neuer
+# Nummernkreis (z.B. 18xxxxx)? Dann RNR_PRAEFIX anpassen.
+RNR_GESPERRT = {"111": "Gutschrift", "444": "Auftragsbestätigung"}
+RNR_PRAEFIX = "17"
+RNR_LAENGE = 7
+
+
+def pruefe_belegnummer(rnr):
+    """None, wenn rnr eine aktuelle Rechnungsnummer ist - sonst der Grund
+    (Text), warum dieser Beleg NICHT verarbeitet werden darf."""
+    rnr = (rnr or "").strip()
+    if not rnr:
+        return "Keine Rechnungsnummer erkannt - Beleg wird nicht verarbeitet"
+    for praefix, name in RNR_GESPERRT.items():
+        if rnr.startswith(praefix):
+            return ("%s statt Rechnung (Nr. %s beginnt mit %s) - wird NICHT verarbeitet"
+                    % (name, rnr, praefix))
+    if not (rnr.isdigit() and len(rnr) == RNR_LAENGE and rnr.startswith(RNR_PRAEFIX)):
+        return ("Keine aktuelle Rechnungsnummer (Nr. %s, erwartet %d Ziffern ab %s) - "
+                "wird NICHT verarbeitet" % (rnr, RNR_LAENGE, RNR_PRAEFIX))
+    return None
+
 
 # Sammeldruck: ab wie vielen gleichen Einzel-Artikel-Bestellungen (je 1 Stueck,
 # nur ein Artikel in der Bestellung) ein gemeinsamer Sammel-Barcode erzeugt wird.
@@ -2305,6 +2339,10 @@ def main(argv):
             continue
         if not r["positionen"]:
             print(f"  uebersprungen (keine Positionen erkannt): {os.path.basename(p)}")
+            continue
+        sperre = pruefe_belegnummer(r.get("rnr"))
+        if sperre:
+            print(f"  uebersprungen (KEINE RECHNUNG): {os.path.basename(p)}: {sperre}")
             continue
         r["quelle"] = p          # Quellpfad fuer die spaetere Archivierung merken
         rechnungen.append(r)

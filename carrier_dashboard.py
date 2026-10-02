@@ -99,7 +99,7 @@ from tkinter import messagebox, simpledialog, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-10-01a"
+VERSION = "2026-10-02a"
 
 # Fenster-/Taskleisten-Symbol (siehe gui() unten) - liegt im selben Ordner
 # wie dieses Skript, damit es unveraendert auch nach einem Umzug funktioniert.
@@ -360,8 +360,16 @@ def lese_datei(pfad):
         r = packliste.parse_pdf(pfad)
     except Exception as e:
         return fehler("PDF nicht lesbar: %s" % e)
-    if not r.get("positionen"):
+    sperre = packliste.pruefe_belegnummer(r.get("rnr"))
+    if sperre and not (r.get("rnr") or "").strip() and not r.get("positionen"):
+        sperre = None      # weder Nummer noch Positionen: Meldung unten ("keine Rechnung?")
+    if not r.get("positionen") and not sperre:
         return fehler("Keine Positionen erkannt (keine Rechnung?)", r.get("rnr", ""))
+    if sperre:
+        # Gutschrift/Auftragsbestaetigung/unbekannter Beleg: wie eine nicht lesbare
+        # PDF behandeln (Fehlerzeile, r=None) - wird in Schritt 2 NICHT gepackt,
+        # exportiert oder archiviert und bleibt im Pool liegen.
+        return fehler(sperre, r.get("rnr", ""))
     r["datei"] = name
     r["quelle"] = pfad
     try:
@@ -456,6 +464,14 @@ def exportiere_alles(rechnungen, ergebnisse, ausgabe_pfad, archiv_ordner, carrie
     import carrier_export
     import carrier_statistik
     import packliste
+
+    # Letzte Sicherung (die Tabelle laesst solche Belege nie bis hierher durch,
+    # siehe lese_datei()): ein Beleg ohne aktuelle Rechnungsnummer bricht den
+    # GANZEN Lauf ab, BEVOR irgendetwas geschrieben/verschoben wird.
+    for r in rechnungen:
+        sperre = packliste.pruefe_belegnummer(r.get("rnr"))
+        if sperre:
+            raise ValueError("%s: %s" % (r.get("datei") or r.get("rnr"), sperre))
 
     out_dir = os.path.dirname(os.path.abspath(ausgabe_pfad))
     os.makedirs(out_dir, exist_ok=True)

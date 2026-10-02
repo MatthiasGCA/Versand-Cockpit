@@ -70,12 +70,13 @@ from reportlab.graphics.shapes import Drawing
 # KONFIGURATION
 # ----------------------------------------------------------------------------
 
-VERSION = "2026-10-02c"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
-# 2026-10-02c: Belegnummern-Sperre - nur Packlisten mit AKTUELLER Rechnungsnummer
-#   (7 Ziffern, beginnt mit "17") werden verarbeitet; Gutschriften (Nr. beginnt
+VERSION = "2026-10-02d"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+# 2026-10-02d: Belegnummern-Sperre nur noch Praefix 111/444 (+ leere Nummer), KEINE
+#   Format-Pruefung mehr (Entscheidung Matthias).
+# 2026-10-02c: Belegnummern-Sperre - nur Packlisten mit AKTUELLER Rechnungsnummer; Gutschriften (Nr. beginnt
 #   mit 111) und Auftragsbestaetigungen (444) koennen ueber Umwege als Packliste
 #   exportiert werden und duerfen NIE gepackt/archiviert/exportiert werden.
-#   Siehe pruefe_belegnummer(); Konstanten RNR_* direkt darueber.
+#   Siehe pruefe_belegnummer(); Konstante RNR_GESPERRT direkt darueber.
 # 2026-10-02b: Feste Artikelnummern-Liste POOLCHEMIE_ARTIKEL (leeres Relikt aus den
 #   Anfaengen) entfernt - Poolchemie wird allein ueber den Lagerort gesteuert.
 # 2026-10-02a: Neue Kommissionierliste "Rollwägen" auf Kundenwunsch - classify()
@@ -443,18 +444,15 @@ KOMBINIERT_LABEL = "Alle Bestellungen"
 # Gutschrift oder Auftragsbestaetigung als "Packliste" exportieren (Beispiel:
 # DHL_RG1118209.csv mit Nr. 1118209/1118217 und 4440035/4440040). Verarbeitet
 # werden darf NUR ein Beleg mit aktueller RECHNUNGSnummer. RNR_GESPERRT = bekannte
-# andere Belegarten (Praefix -> Name, "wenigstens im Moment"), zusaetzlich muss die
-# Nummer dem Rechnungsformat entsprechen (RNR_PRAEFIX + insgesamt RNR_LAENGE
-# Ziffern) - so faellt auch eine UNBEKANNTE dritte Belegart durch. Neuer
-# Nummernkreis (z.B. 18xxxxx)? Dann RNR_PRAEFIX anpassen.
+# andere Belegarten (Praefix -> Name, "wenigstens im Moment"). Bewusst KEINE
+# Format-Whitelist (Entscheidung Matthias): Neue Nummernkreise brauchen keine
+# Anpassung; kommt eine weitere Belegart dazu, hier eintragen.
 RNR_GESPERRT = {"111": "Gutschrift", "444": "Auftragsbestätigung"}
-RNR_PRAEFIX = "17"
-RNR_LAENGE = 7
 
 
 def pruefe_belegnummer(rnr):
-    """None, wenn rnr eine aktuelle Rechnungsnummer ist - sonst der Grund
-    (Text), warum dieser Beleg NICHT verarbeitet werden darf."""
+    """None, wenn der Beleg verarbeitet werden darf - sonst der Grund (Text).
+    Gesperrt: Praefixe aus RNR_GESPERRT und ein Beleg ganz ohne Nummer."""
     rnr = (rnr or "").strip()
     if not rnr:
         return "Keine Rechnungsnummer erkannt - Beleg wird nicht verarbeitet"
@@ -462,9 +460,6 @@ def pruefe_belegnummer(rnr):
         if rnr.startswith(praefix):
             return ("%s statt Rechnung (Nr. %s beginnt mit %s) - wird NICHT verarbeitet"
                     % (name, rnr, praefix))
-    if not (rnr.isdigit() and len(rnr) == RNR_LAENGE and rnr.startswith(RNR_PRAEFIX)):
-        return ("Keine aktuelle Rechnungsnummer (Nr. %s, erwartet %d Ziffern ab %s) - "
-                "wird NICHT verarbeitet" % (rnr, RNR_LAENGE, RNR_PRAEFIX))
     return None
 
 

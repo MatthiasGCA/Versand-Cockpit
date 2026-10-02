@@ -70,7 +70,9 @@ from reportlab.graphics.shapes import Drawing
 # KONFIGURATION
 # ----------------------------------------------------------------------------
 
-VERSION = "2026-10-02a"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+VERSION = "2026-10-02b"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+# 2026-10-02b: Feste Artikelnummern-Liste POOLCHEMIE_ARTIKEL (leeres Relikt aus den
+#   Anfaengen) entfernt - Poolchemie wird allein ueber den Lagerort gesteuert.
 # 2026-10-02a: Neue Kommissionierliste "Rollwägen" auf Kundenwunsch - classify()
 #   erkennt Lagerorte mit "Rollwagen"/"Rollwägen"/"Rollwaegen" (mit oder ohne
 #   Nummer, z.B. "Rollwagen 5") und gibt "Rollwägen" zurueck, VOR der Wapo-/
@@ -432,11 +434,6 @@ KATEGORIE_REIHENFOLGE = [
 KOMBINIERT_SCHWELLE = 20
 KOMBINIERT_LABEL = "Alle Bestellungen"
 
-# Poolchemie wird ueber den Lagerort "Poolchemie" erkannt. Falls einzelne
-# Artikelnummern fest zu Poolchemie gehoeren (ohne dass der Lagerort es sagt),
-# hier eintragen:  POOLCHEMIE_ARTIKEL = {"12345", "67890"}
-POOLCHEMIE_ARTIKEL = set()
-
 # Sammeldruck: ab wie vielen gleichen Einzel-Artikel-Bestellungen (je 1 Stueck,
 # nur ein Artikel in der Bestellung) ein gemeinsamer Sammel-Barcode erzeugt wird.
 SAMMEL_MIN = 2
@@ -649,8 +646,6 @@ def classify(lagerorte, art):
     """Lagerkategorie aus den Lagerort-Strings (Reihenfolge = Prioritaet)."""
     text = " ".join(lagerorte)
     low = text.lower()
-    if art and art in POOLCHEMIE_ARTIKEL:
-        return "Poolchemie"
     if not lagerorte:
         return "Allgemein"
     if re.search(r"rollw(?:a|ä|ae)gen", low):   # "Rollwagen 5", "Rollwägen", "Rollwaegen"

@@ -99,7 +99,12 @@ from tkinter import messagebox, simpledialog, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-10-02a"
+VERSION = "2026-10-02b"
+# 2026-10-02b: Button "Gewicht bearbeiten" - das Sendungsgewicht einer Rechnung kann von
+#   Hand korrigiert werden (Anlass: im Artikelgewicht ist teils der Karton schon
+#   enthalten; bei 70 Stueck desselben Artikels war das Rechnungsgewicht stark
+#   verfaelscht). Wirkt wie die Adresskorrektur: Carrier/Klasse/N-je-Paket werden mit dem
+#   neuen Gewicht neu bewertet; die Korrektur gilt bis Export bzw. Programmende.
 
 # Fenster-/Taskleisten-Symbol (siehe gui() unten) - liegt im selben Ordner
 # wie dieses Skript, damit es unveraendert auch nach einem Umzug funktioniert.
@@ -550,7 +555,10 @@ def detailtext(b):
     zeilen = ["Rechnung:  %s   (%s)" % (b["rnr"] or "?", b["datei"])]
     zeilen.append("Kennung:   %s" % (", ".join(b["kennungen"]) or "-"))
     g = b["gewicht"]
-    zeilen.append("Gewicht:   %s" % (("%.3f kg" % g).replace(".", ",") if g is not None else "-"))
+    zeilen.append("Gewicht:   %s%s" % (
+        ("%.3f kg" % g).replace(".", ",") if g is not None else "-",
+        ("   (manuell korrigiert, Rechnung: %s kg)" % ("%.3f" % b["gewicht_rechnung"]).replace(".", ","))
+        if b.get("gewicht_bearbeitet") and b.get("gewicht_rechnung") is not None else ""))
     if b.get("pakete"):
         zeilen.append("Pakete:    %s (%d DHL-Sendungen, gleiche Rechnungsnummer als Referenz)"
                       % (" + ".join(("%.3f kg" % p).replace(".", ",") for p in b["pakete"]),
@@ -706,6 +714,8 @@ def gui():
     # nach jedem Schritt-1-Lauf erneut angewendet, damit die Nachtragung (z.B.
     # Hausnummer nach Rueckfrage beim Kunden) nicht verloren geht.
     adress_korrekturen = {}
+    # rnr -> von Hand korrigiertes Sendungsgewicht in kg (Button "Gewicht bearbeiten")
+    gewicht_korrekturen = {}
     auto = {"gesehen": {}, "letzte": 0.0}     # Zustand des automatischen Einlesens
     busy = {"n": 0}                           # >0: Dialog/Schritt-2-Vorbereitung offen
 
@@ -831,6 +841,8 @@ def gui():
     btn_aufteilen.pack(side="left", padx=(0, 8))
     btn_adresse = RundButton(knoepfe, text="Adresse bearbeiten", state="disabled")
     btn_adresse.pack(side="left", padx=(0, 8))
+    btn_gewicht = RundButton(knoepfe, text="Gewicht bearbeiten", state="disabled")
+    btn_gewicht.pack(side="left", padx=(0, 8))
     auto_var = tk.BooleanVar(value=True)
     ttk.Checkbutton(knoepfe, text="Neue Rechnungen automatisch einlesen",
                     variable=auto_var).pack(side="left", padx=(12, 0))
@@ -885,10 +897,12 @@ def gui():
         if not sel:
             btn_quittieren.configure(state="disabled")
             btn_adresse.configure(state="disabled")
+            btn_gewicht.configure(state="disabled")
             return
         idx = int(sel[0])
         b = ergebnisse[idx]
         btn_adresse.configure(state=("normal" if rechnungen_roh[idx] is not None else "disabled"))
+        btn_gewicht.configure(state=("normal" if rechnungen_roh[idx] is not None else "disabled"))
         detail.configure(state="normal")
         detail.delete("1.0", "end")
         detail.insert("1.0", detailtext(b))
@@ -921,11 +935,26 @@ def gui():
     def bewerte_mit_korrektur(r, b_alt):
         """Bewertet r mit der gemerkten Adresskorrektur neu (gleiche Validierung
         wie im Original) und uebernimmt die Pool-Duplikat-Hinweise aus b_alt."""
-        r["adresse_zeilen"] = adress_korrekturen[r["rnr"]]
+        rnr = r["rnr"]
+        if rnr in adress_korrekturen:
+            r["adresse_zeilen"] = adress_korrekturen[rnr]
+        # Originalgewicht der Rechnung einmalig merken (Rueckkehr zum Rechnungsgewicht
+        # = Korrektur wieder entfernen, siehe gewicht_bearbeiten()).
+        r.setdefault("gewicht_rechnung", r.get("sendungsgewicht"))
+        if rnr in gewicht_korrekturen:
+            r["sendungsgewicht"] = gewicht_korrekturen[rnr]
+        else:
+            r["sendungsgewicht"] = r["gewicht_rechnung"]
         b = regeln.bewerte_rechnung(r)
         b["quelle"] = r.get("quelle", "")
         b["sig"] = b_alt.get("sig")
-        b["adresse_bearbeitet"] = True
+        b["adresse_bearbeitet"] = rnr in adress_korrekturen
+        if rnr in gewicht_korrekturen:
+            b["gewicht_bearbeitet"] = True
+            b["gewicht_rechnung"] = r["gewicht_rechnung"]
+            g0 = r["gewicht_rechnung"]
+            b["grund"] += (", Gewicht manuell korrigiert (Rechnung: %s kg)"
+                           % (("%.3f" % g0).replace(".", ",") if g0 is not None else "?"))
         dup = [h for h in b_alt["hinweise"] if h.startswith("ACHTUNG: Rechnungsnummer kommt")]
         if dup:
             b["hinweise"] += dup
@@ -958,6 +987,40 @@ def gui():
         fuelle()
 
     btn_adresse.configure(command=lambda: mit_busy(adresse_bearbeiten))
+
+    def gewicht_bearbeiten():
+        sel = tv.selection()
+        if not sel:
+            return
+        idx = int(sel[0])
+        r, b = rechnungen_roh[idx], ergebnisse[idx]
+        if r is None:
+            return
+        if not r.get("rnr"):
+            messagebox.showinfo("Carrier-Dashboard", "Ohne Rechnungsnummer nicht bearbeitbar.")
+            return
+        g_rechnung = r.get("gewicht_rechnung", r.get("sendungsgewicht"))
+        g_rtxt = ("%.3f" % g_rechnung).replace(".", ",") if g_rechnung is not None else "unbekannt"
+        neu = _frage_gewicht(
+            root, "Carrier-Dashboard - Gewicht bearbeiten",
+            "Rechnung %s: Gewicht laut Rechnung %s kg.\n\nGesamtgewicht der Sendung in kg "
+            "(inkl. Verpackung, wie es tatsächlich versendet wird):" % (r["rnr"], g_rtxt),
+            minvalue=0.001, maxvalue=1000.0,
+            initialvalue=b["gewicht"] if b["gewicht"] is not None else g_rechnung)
+        if neu is None:
+            return
+        if g_rechnung is not None and abs(neu - g_rechnung) < 0.0005:
+            gewicht_korrekturen.pop(r["rnr"], None)    # wieder = Rechnungsgewicht
+        else:
+            gewicht_korrekturen[r["rnr"]] = neu
+        idx = next((i for i, x in enumerate(ergebnisse) if x is b), None)
+        if idx is None:
+            return
+        ergebnisse[idx] = bewerte_mit_korrektur(r, b)
+        quittiert.pop(r["rnr"], None)                 # neues Gewicht -> Hinweise erneut pruefen
+        fuelle()
+
+    btn_gewicht.configure(command=lambda: mit_busy(gewicht_bearbeiten))
 
     def paket_aufteilen():
         sel = tv.selection()
@@ -1122,7 +1185,8 @@ def gui():
     def wende_sitzung_an(r, b):
         """Adresskorrektur + quittierte Hinweise dieser GUI-Sitzung auf ein frisch
         gelesenes Ergebnis anwenden (rnr-basiert)."""
-        if r is not None and r.get("rnr") in adress_korrekturen:
+        if r is not None and (r.get("rnr") in adress_korrekturen
+                              or r.get("rnr") in gewicht_korrekturen):
             b = bewerte_mit_korrektur(r, b)
         if b["hinweise"] and set(b["hinweise"]) <= quittiert.get(b["rnr"], frozenset()):
             b["quittiert"] = True
@@ -1416,6 +1480,8 @@ def gui():
                     ergebnisse[:] = [b for i, b in enumerate(ergebnisse) if i not in verarbeitet]
                     for k in set(adress_korrekturen) - {b["rnr"] for b in ergebnisse}:
                         del adress_korrekturen[k]
+                    for k in set(gewicht_korrekturen) - {b["rnr"] for b in ergebnisse}:
+                        del gewicht_korrekturen[k]
                     for k in set(quittiert) - {b["rnr"] for b in ergebnisse}:
                         del quittiert[k]
                     filter_state["schluessel"] = None    # Indizes verschoben -> Filter zuruecksetzen

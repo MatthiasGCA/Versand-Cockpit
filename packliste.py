@@ -38,7 +38,7 @@ Protokoll und mit einem Hinweis in der Packuebersicht deutlich markiert.
 
 Kategorie-Zuordnung allein aus dem Lagerort-Feld der Packliste:
   Topseller, Eigenfertigung, Schlauchlager, Palettenlager, Poolchemie,
-  Kleinteile, Verpackungsraum, Regallager, DPD / Warenpost, Allgemein
+  Kleinteile, Verpackungsraum, Rollwägen, Regallager, DPD / Warenpost, Allgemein
   (Regeln unten in classify()).
 """
 
@@ -70,7 +70,13 @@ from reportlab.graphics.shapes import Drawing
 # KONFIGURATION
 # ----------------------------------------------------------------------------
 
-VERSION = "2026-10-01c"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+VERSION = "2026-10-02a"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+# 2026-10-02a: Neue Kommissionierliste "Rollwägen" auf Kundenwunsch - classify()
+#   erkennt Lagerorte mit "Rollwagen"/"Rollwägen"/"Rollwaegen" (mit oder ohne
+#   Nummer, z.B. "Rollwagen 5") und gibt "Rollwägen" zurueck, VOR der Wapo-/
+#   Warenpost-Erkennung (ein "Rollwagen 5, Wapo" liegt physisch auf dem
+#   Rollwagen). Neue Kategorie in KATEGORIE_REIHENFOLGE direkt nach
+#   Verpackungsraum (Laufweg ggf. auf Zuruf anpassen).
 # 2026-10-01c: DPD-Kennzeichnung im Rahmen zeigt jetzt das echte DPD-Logo oben
 #   rechts in der Rahmenecke (dpd_logo.png im selben Ordner) statt der reinen
 #   Text-Notiz - Matthias wollte das Logo statt des Schriftzugs. Fehlt die
@@ -415,7 +421,7 @@ VERSION = "2026-10-01c"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe j
 # Reihenfolge der Kategorien in der Sammelliste (Laufweg im Lager).
 KATEGORIE_REIHENFOLGE = [
     "Topseller", "Eigenfertigung", "Schlauchlager", "Palettenlager",
-    "Poolchemie", "Kleinteile", "Verpackungsraum", "Regallager",
+    "Poolchemie", "Kleinteile", "Verpackungsraum", "Rollwägen", "Regallager",
     "DPD / Warenpost", "Allgemein",
 ]
 
@@ -647,6 +653,8 @@ def classify(lagerorte, art):
         return "Poolchemie"
     if not lagerorte:
         return "Allgemein"
+    if re.search(r"rollw(?:a|ä|ae)gen", low):   # "Rollwagen 5", "Rollwägen", "Rollwaegen"
+        return "Rollwägen"
     if "wapo" in low or "warenpost" in low:
         return "DPD / Warenpost"
     if "topseller" in low:

@@ -55,7 +55,7 @@ Siehe ist_auslands_kleinpaket() und die Konstanten KLEINPAKET_*.
 import html
 import re
 
-VERSION = "2026-10-01a"
+VERSION = "2026-10-05a"
 
 # --- Gewichtsgrenzen in kg (Klasse gilt bei Gewicht STRIKT UNTER der Grenze) -----
 G_BRIEF = 0.05
@@ -200,8 +200,11 @@ _STRASSE_HNR = re.compile(
 # Zeichen beginnen (nicht nur einem Buchstaben) - bei 1706718 folgt der
 # Hausnummer ein "/" ("/ Im Navi"). Nur Fallback, wenn _STRASSE_HNR
 # (Hausnummer am Zeilenende) nicht passt.
+# Nach einem PUNKT darf das Leerzeichen vor der Hausnummer fehlen ("Junckerstr.26
+# EKZ REIZ", Rechnung 1707369 - sonst blieb die Zeile "ohne Hausnummer" und die
+# danach stehende Notizzeile wurde faelschlich zur Strasse).
 _HNR_MIT_TEXT = re.compile(
-    r"^(?P<str>[^\d]*?[A-Za-zÄÖÜäöüß.])\s+(?P<nr>\d+[A-Za-z]?)\s+(?P<rest>\S.*)$")
+    r"^(?P<str>[^\d]*?[A-Za-zÄÖÜäöüß.])(?:\s+|(?<=\.))(?P<nr>\d+[A-Za-z]?)\s+(?P<rest>\S.*)$")
 # Eine Zeile, die NUR aus der Hausnummer besteht (Strasse und Hausnummer auf
 # zwei eigenen Zeilen, real beobachtet an Rechnung 1705611/1705631: "Wiesenweg"
 # / "4", "lindenstrasse" / "8").
@@ -893,6 +896,12 @@ def selftest():
     check("adr real 1706290 (Hausnr mitten, Zusatz dahinter)",
           (a["strasse"], a["hausnr"], a["zusatz"], a["hinweise"], a["fehler"]),
           ("In Der Loh", "1", ["Campingplatz"], [], []))
+    # Punkt direkt vor der Hausnummer, Notiz dahinter, weitere Zeile danach (real 1707369)
+    a = analysiere_adresse(["Marc Murphy", "Junckerstr.26 EKZ REIZ", "GRILLHÜTTE Aussenbereich",
+                            "DE-16816 Neuruppin"])
+    check("adr real 1707369 ('Junckerstr.26 EKZ REIZ' + Zusatzzeile)",
+          (a["strasse"], a["hausnr"], a["zusatz"], a["hinweise"], a["fehler"]),
+          ("Junckerstr.", "26", ["GRILLHÜTTE Aussenbereich", "EKZ REIZ"], [], []))
     a = analysiere_adresse(["A B", "Hauptstr. 12 B", "12345 Ort"])
     check("adr: 'Hauptstr. 12 B' bleibt Hausnr 12 B (Fallback greift nicht)",
           (a["strasse"], a["hausnr"], a["zusatz"]), ("Hauptstr.", "12 B", []))

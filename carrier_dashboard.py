@@ -99,7 +99,12 @@ from tkinter import messagebox, simpledialog, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-10-02b"
+VERSION = "2026-10-05a"
+# 2026-10-05a: Doppelte Rechnungsnummer im Pool -> jede KOPIE (alle ausser der Datei mit dem
+#   alphabetisch ersten Namen) ist jetzt ein FEHLER und wird in Schritt 2 wie eine nicht lesbare
+#   PDF behandelt: nicht gepackt (nicht auf der Pickliste), nicht exportiert, nicht archiviert,
+#   bleibt im Pool, bis sie geloescht wird. Anlass: Rg 1707360 lag 2x im Pool (08:30/08:31),
+#   der Hinweis wurde quittiert -> doppelte Pickliste (80 statt 40 Stueck) + 2 Label-Zeilen.
 # 2026-10-02b: Button "Gewicht bearbeiten" - das Sendungsgewicht einer Rechnung kann von
 #   Hand korrigiert werden (Anlass: im Artikelgewicht ist teils der Karton schon
 #   enthalten; bei 70 Stueck desselben Artikels war das Rechnungsgewicht stark
@@ -411,25 +416,43 @@ def lese_pool(ordner, melde=None):
 
 
 _DUP_PREFIX = "ACHTUNG: Rechnungsnummer kommt"
+_DUP_FEHLER = "Doppelt:"
 
 
 def _markiere_pool_duplikate(ergebnisse):
-    """Haengt an jede Rechnung, deren Rechnungsnummer MEHRFACH (mit
-    unterschiedlichen Dateien) im selben Pool vorkommt, einen Hinweis an -
-    schon in der Schritt-1-Tabelle sichtbar, statt erst bei der Schritt-2-
-    Bestaetigung zu ueberraschen (siehe dort: starte_export()). IDEMPOTENT
-    (beim automatischen Nachladen wiederholt aufrufbar): alte Duplikat-Hinweise
-    werden ersetzt/entfernt, ein neu hinzukommender Hinweis macht eine schon
-    quittierte Zeile wieder offen."""
+    """Rechnungsnummer MEHRFACH (mit unterschiedlichen Dateien) im selben Pool:
+    JEDE Zeile bekommt einen Hinweis (schon in der Schritt-1-Tabelle sichtbar),
+    zusaetzlich ist jede KOPIE - alle ausser der Datei mit dem alphabetisch ersten
+    Namen - ein FEHLER ("Doppelt: ...") und als b["dup_kopie"] markiert: Schritt 2
+    verarbeitet sie nicht (siehe starte_export()), sie bleibt im Pool, bis die
+    doppelte Datei geloescht/verschoben wird. Einen Fehler kann man NICHT
+    wegquittieren - frueher reichte der quittierbare Hinweis, und beide Dateien
+    wurden gepackt (Rg 1707360: doppelte Pickliste + 2 Label-Zeilen).
+    IDEMPOTENT (beim automatischen Nachladen wiederholt aufrufbar): alte
+    Duplikat-Meldungen werden ersetzt/entfernt, ein neu hinzukommender Hinweis
+    macht eine schon quittierte Zeile wieder offen."""
     import carrier_statistik
     doppelt = carrier_statistik.doppelte_im_lauf([b["rnr"] for b in ergebnisse])
+    erste = {}                       # rnr -> (sortierschluessel, b) der ersten Datei
+    for b in ergebnisse:
+        if b["rnr"] in doppelt:
+            k = (b.get("datei") or "", b.get("quelle") or "")
+            if b["rnr"] not in erste or k < erste[b["rnr"]][0]:
+                erste[b["rnr"]] = (k, b)
     for b in ergebnisse:
         alt = [h for h in b["hinweise"] if h.startswith(_DUP_PREFIX)]
+        alt_f = [f for f in b["fehler"] if f.startswith(_DUP_FEHLER)]
         neu = ("%s %dx im Pool vor (mögliche Doppel-Verarbeitung)"
                % (_DUP_PREFIX, doppelt[b["rnr"]])) if b["rnr"] in doppelt else None
-        if alt == ([neu] if neu else []):
+        kopie = b["rnr"] in doppelt and erste[b["rnr"]][1] is not b
+        neu_f = ["%s Rechnungsnummer %s liegt schon als '%s' im Pool - diese Kopie wird NICHT "
+                 "verarbeitet (doppelte Datei löschen oder verschieben)"
+                 % (_DUP_FEHLER, b["rnr"], erste[b["rnr"]][1].get("datei") or "?")] if kopie else []
+        if alt == ([neu] if neu else []) and alt_f == neu_f:
             continue
         b["hinweise"] = [h for h in b["hinweise"] if not h.startswith(_DUP_PREFIX)]
+        b["fehler"] = [f for f in b["fehler"] if not f.startswith(_DUP_FEHLER)] + neu_f
+        b["dup_kopie"] = kopie
         if neu:
             b["hinweise"].append(neu)
             b["quittiert"] = False
@@ -960,6 +983,11 @@ def gui():
             b["hinweise"] += dup
             if b["status"] == "ok":
                 b["status"] = "warn"
+        dup_f = [f for f in b_alt["fehler"] if f.startswith(_DUP_FEHLER)]
+        if dup_f:                                    # Kopie bleibt Kopie (siehe _markiere_pool_duplikate)
+            b["fehler"] += dup_f
+            b["dup_kopie"] = True
+            b["status"] = "fehler"
         return b
 
     def adresse_bearbeiten():
@@ -1336,12 +1364,18 @@ def gui():
         # (siehe export_fertig-Behandlung unten), nicht nur im Pool-Ordner.
         sichtbare_indizes = {int(iid) for iid in tv.get_children()}
         alle = list(enumerate(zip(rechnungen_roh, ergebnisse)))
-        paare = [(r, b) for i, (r, b) in alle if r is not None and i in sichtbare_indizes]
+        # Kopien einer doppelten Rechnungsnummer (b["dup_kopie"], siehe
+        # _markiere_pool_duplikate) zaehlen wie nicht lesbare PDFs: nicht verarbeiten.
+        paare = [(r, b) for i, (r, b) in alle
+                 if r is not None and not b.get("dup_kopie") and i in sichtbare_indizes]
         # Rechnungen, deren PDF gar nicht erst gelesen werden konnte (kein Positionen
         # erkannt / PDF nicht lesbar) - die werden von Schritt 2 komplett uebersprungen
         # (nicht gepackt, nicht archiviert) und bleiben unveraendert im Pool liegen.
-        uebersprungen = [b for i, (r, b) in alle if r is None and i in sichtbare_indizes]
-        verarbeitete_indizes = {i for i, (r, _) in alle if r is not None and i in sichtbare_indizes}
+        uebersprungen = [b for i, (r, b) in alle
+                         if (r is None or b.get("dup_kopie")) and i in sichtbare_indizes]
+        verarbeitete_indizes = {i for i, (r, b) in alle
+                                if r is not None and not b.get("dup_kopie")
+                                and i in sichtbare_indizes}
         if not paare:
             messagebox.showinfo("Carrier-Dashboard",
                                 "Keine gueltigen Rechnungen zum Verarbeiten - bitte zuerst "
@@ -1434,7 +1468,8 @@ def gui():
                              "geschrieben - erst \"Hinweis quittieren\" (oder beheben) und "
                              "danach erneut verarbeiten." % n_hinweis_offen
                              ) if n_hinweis_offen else ""
-        hinweis_uebersprungen = ("\n\n%d Rechnung(en) konnten gar nicht gelesen werden "
+        hinweis_uebersprungen = ("\n\n%d Rechnung(en) konnten gar nicht gelesen werden bzw. "
+                                 "sind KOPIEN einer doppelten Rechnungsnummer "
                                  "(siehe Fehlermeldung in der Tabelle) und werden JETZT NICHT "
                                  "gepackt oder verschoben - sie bleiben unveraendert im "
                                  "Pool-Ordner liegen und muessen manuell geprueft werden."

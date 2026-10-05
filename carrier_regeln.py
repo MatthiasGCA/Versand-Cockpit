@@ -55,7 +55,7 @@ Siehe ist_auslands_kleinpaket() und die Konstanten KLEINPAKET_*.
 import html
 import re
 
-VERSION = "2026-10-05b"
+VERSION = "2026-10-05c"
 
 # --- Gewichtsgrenzen in kg (Klasse gilt bei Gewicht STRIKT UNTER der Grenze) -----
 G_BRIEF = 0.05
@@ -188,8 +188,9 @@ _PLZ_IN_ZEILE = re.compile(r"^(?P<vor>.*\S)\s+(?P<plz>\d{5})\s+(?P<ort>\S.*)$")
 # Rechnung 1707158) - NUR "/" (nicht "-", das bleibt dem Spannen-Trenner
 # vorbehalten, siehe "Allee 12-14" oben) und NUR wenn direkt ein Buchstabe
 # folgt (sonst waere "/" bereits der SPANNEN-Trenner zur naechsten Zahl,
-# siehe "36/6" oder "9-15 /3/12").
-_NR_EINHEIT = r"\d+(?:\s*/?\s*[A-Za-z])?"
+# siehe "36/6" oder "9-15 /3/12"). Auch ein PUNKT vor dem Buchstaben kommt vor
+# ("unterm bodenberg 2.a", Rechnung 1707529) - wird unten zu "2a" normalisiert.
+_NR_EINHEIT = r"\d+(?:\s*[/.]?\s*[A-Za-z])?"
 _STRASSE_HNR = re.compile(
     r"^(?P<str>.*?\S)[\s:]*(?P<nr>" + _NR_EINHEIT + r"(?:\s*[-/ ]\s*" + _NR_EINHEIT
     + r")*)[\s,.;]*$")
@@ -427,6 +428,7 @@ def analysiere_adresse(zeilen):
         elif ms:
             out["strasse"] = ms.group("str").strip()
             out["hausnr"] = re.sub(r"\s+", " ", ms.group("nr")).strip()
+            out["hausnr"] = re.sub(r"^(\d+)\.([A-Za-z])$", r"\1\2", out["hausnr"])   # "2.a" -> "2a"
         else:
             out["strasse"] = strasse_roh
             out["hinweise"].append("Keine Hausnummer erkannt (%s)" % strasse_roh)
@@ -940,6 +942,13 @@ def selftest():
     check("adr: Landname im Ort ohne Praefix -> Land AT, Ort bereinigt, kein Land-Hinweis",
           (a["ort"], a["land"], any("Länderkürzel" in h for h in a["hinweise"])),
           ("Waldneukirchen", "AT", False))
+    a = analysiere_adresse(["vanessa rutsatz", "unterm bodenberg 2.a", "38271 baddeckenstedt"])
+    check("adr real 1707529 ('2.a' -> Hausnr 2a)",
+          (a["strasse"], a["hausnr"], a["hinweise"], a["fehler"]),
+          ("unterm bodenberg", "2a", [], []))
+    a = analysiere_adresse(["A B", "Hauptstr. 12.", "12345 Ort"])
+    check("adr: 'Hauptstr. 12.' (Schlusspunkt) unveraendert Hausnr 12",
+          (a["strasse"], a["hausnr"]), ("Hauptstr.", "12"))
     a = analysiere_adresse(["A B", "Hauptstr. 12 B", "12345 Ort"])
     check("adr: 'Hauptstr. 12 B' bleibt Hausnr 12 B (Fallback greift nicht)",
           (a["strasse"], a["hausnr"], a["zusatz"]), ("Hauptstr.", "12 B", []))

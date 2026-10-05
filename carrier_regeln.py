@@ -55,7 +55,7 @@ Siehe ist_auslands_kleinpaket() und die Konstanten KLEINPAKET_*.
 import html
 import re
 
-VERSION = "2026-10-05a"
+VERSION = "2026-10-05b"
 
 # --- Gewichtsgrenzen in kg (Klasse gilt bei Gewicht STRIKT UNTER der Grenze) -----
 G_BRIEF = 0.05
@@ -303,6 +303,18 @@ def analysiere_adresse(zeilen):
 
     out["plz"] = m.group("plz")
     out["ort"] = m.group("ort").strip()
+    # Amicron schreibt bei manchen Auslandsadressen die PLZ ein ZWEITES Mal in den
+    # Ort und haengt den Laendernamen an ("AT 3380 3380 Ornding - Austria", real
+    # 1707439): fuehrende Wiederholung der PLZ und " - <Land>" am Ende entfernen
+    # (nur wenn der Rest wirklich ein bekannter Laendername ist - Orte mit
+    # Bindestrich wie "Castrop-Rauxel" bleiben unberuehrt).
+    ort_land = ""
+    if out["plz"]:
+        out["ort"] = re.sub(r"^" + re.escape(out["plz"]) + r"\s+(?=\S)", "", out["ort"])
+    ml = re.match(r"^(?P<ort>.*?\S)\s+[-–,/]\s+(?P<land>[A-Za-zÄÖÜäöüß .]+)$", out["ort"])
+    if ml and _LAND_NAME.get(_norm_land(ml.group("land"))):
+        ort_land = _LAND_NAME[_norm_land(ml.group("land"))]
+        out["ort"] = ml.group("ort").strip()
     # Langer Ortsname im Rechnungsfeld UMBROCHEN: die Folgezeile(n) gehoeren zum
     # Ort (real 1706203 "Brandenburg An Der" / "Havel", 1706261 "Bad" /
     # "Frankenhausen/Kyffhaeuser OT" / "Esperste"). Nur kurze Zeilen ohne Ziffern,
@@ -323,6 +335,14 @@ def analysiere_adresse(zeilen):
         out["hinweise"].append("PLZ/Ort stehen in der Strassenzeile - bitte prüfen")
     else:
         strasse_roh, zusatz = _finde_strasse(zl[1:idx])
+    # Kunde hat "PLZ Ort" ZUSAETZLICH hinter die Strasse getippt ("Breitenfelderstr
+    # 4, 3380 Ornding", real 1707439): steht dort dieselbe PLZ + derselbe Ort wie
+    # in der PLZ-Zeile, ist das nur ein Echo und wird entfernt (bei abweichendem
+    # Ort bleibt die Zeile unveraendert -> "Keine Hausnummer"-Hinweis wie bisher).
+    me = re.match(r"^(?P<s>.*?\S)\s*[,;]\s*(?:[A-Za-z]{1,2}[- ]?)?" + re.escape(out["plz"])
+                  + r"\s+(?P<o>\S.*)$", strasse_roh) if out["plz"] and not kombiniert else None
+    if me and re.sub(r"\W", "", me.group("o")).lower() == re.sub(r"\W", "", out["ort"]).lower():
+        strasse_roh = me.group("s")
     # Ortsteil IMMER ins eigene Feld (-> DHL/DPD Name 3), nie im Ort lassen:
     # hinter der Hausnummer, hinter dem Ort ("Kletzin OT Quitzerow") oder als
     # eigene Zusatzzeile ("OT Quitzerow").
@@ -357,6 +377,8 @@ def analysiere_adresse(zeilen):
         land = _PRAEFIX_SONDER.get(p, p if p in LAENDER else "")
         if not land:
             out["fehler"].append("Länderkürzel '%s' vor der PLZ unbekannt" % pre)
+    if not land and ort_land:
+        land = ort_land                     # "... Ornding - Austria" ohne Praefix
     rest = zl[idx + 1 + len(fortsetzung):]
     if not land and rest:
         cand = _LAND_NAME.get(_norm_land(rest[-1]))
@@ -902,6 +924,22 @@ def selftest():
     check("adr real 1707369 ('Junckerstr.26 EKZ REIZ' + Zusatzzeile)",
           (a["strasse"], a["hausnr"], a["zusatz"], a["hinweise"], a["fehler"]),
           ("Junckerstr.", "26", ["GRILLHÜTTE Aussenbereich", "EKZ REIZ"], [], []))
+    # Auslandsadresse mit doppelter PLZ + Laendername im Ort und Echo hinter der Strasse (real 1707439)
+    a = analysiere_adresse(["Walter Wimmer", "Breitenfelderstr 4, 3380 Ornding",
+                            "AT 3380 3380 Ornding - Austria"])
+    check("adr real 1707439 (PLZ-Echo in Strasse, 'PLZ Ort - Austria')",
+          (a["strasse"], a["hausnr"], a["plz"], a["ort"], a["land"], a["hinweise"], a["fehler"]),
+          ("Breitenfelderstr", "4", "3380", "Ornding", "AT", [], []))
+    a = analysiere_adresse(["A B", "Hauptstr 4, 9999 Anderort", "AT 3380 Ornding"])
+    check("adr: abweichender Ort hinter der Strasse wird NICHT entfernt",
+          (a["strasse"], any("Keine Hausnummer" in h for h in a["hinweise"])),
+          ("Hauptstr 4, 9999 Anderort", True))
+    a = analysiere_adresse(["A B", "Hauptstr. 4", "45138 Castrop-Rauxel"])
+    check("adr: Ort mit Bindestrich bleibt unveraendert", a["ort"], "Castrop-Rauxel")
+    a = analysiere_adresse(["A B", "Hauptstr. 4", "4595 Waldneukirchen - Austria"])
+    check("adr: Landname im Ort ohne Praefix -> Land AT, Ort bereinigt, kein Land-Hinweis",
+          (a["ort"], a["land"], any("Länderkürzel" in h for h in a["hinweise"])),
+          ("Waldneukirchen", "AT", False))
     a = analysiere_adresse(["A B", "Hauptstr. 12 B", "12345 Ort"])
     check("adr: 'Hauptstr. 12 B' bleibt Hausnr 12 B (Fallback greift nicht)",
           (a["strasse"], a["hausnr"], a["zusatz"]), ("Hauptstr.", "12 B", []))

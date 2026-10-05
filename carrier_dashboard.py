@@ -99,7 +99,10 @@ from tkinter import messagebox, simpledialog, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-10-05a"
+VERSION = "2026-10-05b"
+# 2026-10-05b: Referenz-Absicherung: jede Rechnungsnummer hoechstens EINMAL in den Carrier-
+#   CSVs (auch ueber Laeufe hinweg: laut Carrier-Statistik schon exportiert -> keine neue
+#   Zeile, Meldung im Dialog; carrier_statistik.exportierbare/bereits_exportiert).
 # 2026-10-05a: Doppelte Rechnungsnummer im Pool -> jede KOPIE (alle ausser der Datei mit dem
 #   alphabetisch ersten Namen) ist jetzt ein FEHLER und wird in Schritt 2 wie eine nicht lesbare
 #   PDF behandelt: nicht gepackt (nicht auf der Pickliste), nicht exportiert, nicht archiviert,
@@ -479,7 +482,8 @@ def kopiere_wc_bestellnummern(quelle, ziel_ordner):
         return False
 
 
-def exportiere_alles(rechnungen, ergebnisse, ausgabe_pfad, archiv_ordner, carrier_ordner):
+def exportiere_alles(rechnungen, ergebnisse, ausgabe_pfad, archiv_ordner, carrier_ordner,
+                     gesperrt=()):
     """Schritt 2: rechnungen (gueltige parse_pdf()-Dicts, "quelle" gesetzt) UND
     ergebnisse (dazu bewertete Carrier-Ergebnisse, GLEICHE Reihenfolge/Laenge)
     -> Pickliste-PDF + fuenf Bruecken-CSVs (wie packliste.main(), Layout/Logik
@@ -524,14 +528,20 @@ def exportiere_alles(rechnungen, ergebnisse, ausgabe_pfad, archiv_ordner, carrie
     wc_neu = packliste.schreibe_wc_bestellnummern_csv(rechnungen, wc_pfad)
     wc_kopie = kopiere_wc_bestellnummern(wc_pfad, WC_SYNC_ORDNER)
 
-    carrier_dateien = carrier_export.exportiere(ergebnisse, carrier_ordner)
+    # gesperrt = Rechnungsnummern, die laut Carrier-Statistik schon in einem frueheren
+    # Lauf exportiert wurden: gepackt/archiviert wird (nach Bestaetigung), aber KEINE
+    # zweite Label-Zeile (eine Referenz darf nie doppelt bei DHL/DPD/Post landen).
+    carrier_gesperrt = sorted({b["rnr"] for b in ergebnisse
+                               if b.get("rnr") and b["rnr"] in set(gesperrt)
+                               and b["status"] == "ok" and b["carrier"]})
+    carrier_dateien = carrier_export.exportiere(ergebnisse, carrier_ordner, gesperrt=gesperrt)
     # Kg-/Artikel-Statistik im Hintergrund mitschreiben (Nice-to-have, blockiert
     # bei Schreibfehlern - z.B. Netzlaufwerk kurz weg - NIE den eigentlichen
     # Export, siehe carrier_statistik.log_lauf()/log_artikel()). Kg nur fuer die
     # carrier-zugeordneten Rechnungen (dieselbe Basis wie die Carrier-CSVs),
     # Artikelanzahl fuer ALLE verarbeiteten Rechnungen (ein Adressfehler
     # aendert nichts an der bestellten Menge).
-    kg_geloggt = carrier_statistik.log_lauf(ergebnisse)
+    kg_geloggt = carrier_statistik.log_lauf(ergebnisse, gesperrt=gesperrt)
     artikel_geloggt = carrier_statistik.log_artikel(rechnungen)
 
     verschoben, archiv_fehler, archiv_ziel = 0, [], None
@@ -542,6 +552,7 @@ def exportiere_alles(rechnungen, ergebnisse, ausgabe_pfad, archiv_ordner, carrie
         "pickliste": ausgabe_pfad, "anzahl": len(rechnungen), "gruppen": gruppen,
         "wc_neu": wc_neu, "wc_kopie": wc_kopie,
         "carrier_dateien": carrier_dateien, "kg_geloggt": kg_geloggt,
+        "carrier_gesperrt": carrier_gesperrt,
         "artikel_geloggt": artikel_geloggt,
         "archiviert": verschoben, "archiv_fehler": archiv_fehler, "archiv_ziel": archiv_ziel,
     }
@@ -1345,10 +1356,11 @@ def gui():
         root.after(100, abfrage)
 
     # --- Schritt 2 im Hintergrund ---------------------------------------------
-    def arbeite_export(rechnungen, ergebnisse_gueltig, ausgabe_pfad, archiv_ordner, carrier_ordner):
+    def arbeite_export(rechnungen, ergebnisse_gueltig, ausgabe_pfad, archiv_ordner, carrier_ordner,
+                       gesperrt=()):
         try:
             bericht = exportiere_alles(rechnungen, ergebnisse_gueltig, ausgabe_pfad,
-                                       archiv_ordner, carrier_ordner)
+                                       archiv_ordner, carrier_ordner, gesperrt)
             q.put(("export_fertig", bericht))
         except Exception as e:
             q.put(("export_abbruch", "%s: %s" % (type(e).__name__, e)))
@@ -1409,8 +1421,10 @@ def gui():
         # wird gepackt/exportiert/archiviert).
         rnr_liste = [r.get("rnr") or "" for r, _ in paare]
         doppelt_intern = carrier_statistik.doppelte_im_lauf(rnr_liste)
-        ok_hist, doppelt_historie = im_hintergrund(
-            lambda: carrier_statistik.bereits_verarbeitet(rnr_liste))
+        ok_hist, hist = im_hintergrund(
+            lambda: (carrier_statistik.bereits_verarbeitet(rnr_liste),
+                     carrier_statistik.bereits_exportiert(rnr_liste)))
+        doppelt_historie, schon_exportiert = hist if ok_hist else ({}, {})
         if not ok_hist:
             if not messagebox.askyesno(
                     "Carrier-Dashboard - Statistik nicht erreichbar",
@@ -1421,7 +1435,7 @@ def gui():
                     default=messagebox.NO):
                 return
             doppelt_historie = {}
-        if doppelt_intern or doppelt_historie:
+        if doppelt_intern or doppelt_historie or schon_exportiert:
             warnung = ["MÖGLICHE DOPPEL-VERARBEITUNG ERKANNT:", ""]
             if doppelt_intern:
                 warnung.append("Rechnungsnummer(n) mehrfach im aktuellen Pool:")
@@ -1431,6 +1445,13 @@ def gui():
                 warnung.append("Rechnungsnummer(n) laut Statistik bereits früher verarbeitet:")
                 warnung += ["  %s (zuletzt %s)" % (rnr, max(daten))
                             for rnr, daten in sorted(doppelt_historie.items())]
+                warnung.append("")
+            if schon_exportiert:
+                warnung.append("Für diese Rechnungsnummer(n) wurde laut Carrier-Statistik schon "
+                               "früher eine Label-Zeile erzeugt - sie wird NICHT erneut in eine "
+                               "Carrier-CSV geschrieben (sonst doppeltes Label):")
+                warnung += ["  %s (%s)" % (rnr, ", ".join("%s %s" % (d, c) for d, c in sorted(v)))
+                            for rnr, v in sorted(schon_exportiert.items())]
                 warnung.append("")
             warnung.append("Trotzdem mit Schritt 2 fortfahren?")
             if not messagebox.askyesno("Carrier-Dashboard - Doppel-Verarbeitung?",
@@ -1493,7 +1514,7 @@ def gui():
         ergebnisse_g = [b for _, b in paare]
         threading.Thread(target=arbeite_export,
                          args=(rechnungen_g, ergebnisse_g, ausgabe_pfad, archiv_ordner,
-                               carrier_ordner),
+                               carrier_ordner, set(schon_exportiert)),
                          daemon=True).start()
         root.after(100, abfrage_export)
 
@@ -1564,6 +1585,11 @@ def gui():
                         zeilen.append("")
                         zeilen.append("Keine Carrier-CSV geschrieben (keine exportierbare "
                                       "Rechnung dabei).")
+                    if bericht.get("carrier_gesperrt"):
+                        zeilen.append("")
+                        zeilen.append("NICHT erneut in eine Carrier-CSV geschrieben (laut Statistik "
+                                      "schon früher exportiert): %s"
+                                      % ", ".join(bericht["carrier_gesperrt"]))
                     messagebox.showinfo("Carrier-Dashboard - Fertig", "\n".join(zeilen))
                     return
                 elif m[0] == "export_abbruch":

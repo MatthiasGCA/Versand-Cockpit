@@ -46,8 +46,12 @@ import os
 from datetime import datetime
 
 import carrier_regeln as regeln
+import carrier_statistik
 
-VERSION = "2026-09-25b"
+VERSION = "2026-10-05a"
+# 2026-10-05a: exportiere(gesperrt=...) - jede Rechnungsnummer hoechstens EINMAL ueber alle
+#   Carrier-Dateien (Auswahl aus carrier_statistik.exportierbare()); schon frueher
+#   exportierte Rechnungsnummern (gesperrt) werden nicht noch einmal geschrieben.
 
 # ---------------------------------------------------------------------------
 # Absenderdaten (fest - aus den Musterdateien uebernommen; DHL/DPD nutzen
@@ -221,7 +225,7 @@ def _schreibe_csv(pfad, header, zeilen):
             w.writerow(z)
 
 
-def exportiere(ergebnisse, ziel_ordner, jetzt=None):
+def exportiere(ergebnisse, ziel_ordner, jetzt=None, gesperrt=()):
     """Schreibt alle Carrier-CSVs fuer die exportierbaren Ergebnisse (status
     == 'ok' UND Carrier zugeordnet) nach ziel_ordner (wird ggf. angelegt).
     status == 'ok' schliesst sowohl 'fehler' (blockiert) als auch offene,
@@ -232,7 +236,7 @@ def exportiere(ergebnisse, ziel_ordner, jetzt=None):
     {dateipfad: anzahl_rechnungen}, nur tatsaechlich geschriebene Dateien
     (leere Gruppen erzeugen keine Datei)."""
     os.makedirs(ziel_ordner, exist_ok=True)
-    exportierbar = [b for b in ergebnisse if b["status"] == "ok" and b["carrier"]]
+    exportierbar = carrier_statistik.exportierbare(ergebnisse, gesperrt)
     geschrieben = {}
 
     dhl = [b for b in exportierbar if b["carrier"] == regeln.DHL]
@@ -440,6 +444,19 @@ def selftest():
         geschrieben_quittiert = exportiere([b_dpd_quittiert], tmp, datetime(2026, 9, 22, 16, 11))
         check("exportiere(): nach 'Quittieren' (status=ok) doch exportiert",
               len(geschrieben_quittiert), 1)
+
+        # Referenz-Absicherung (Rg 1707360): dieselbe Rechnungsnummer 2x (DHL + Grossbrief)
+        # -> hoechstens EINE Zeile ueber ALLE Carrier-Dateien; gesperrte rnr (schon frueher
+        # exportiert) wird gar nicht geschrieben.
+        b_doppel_dhl = _bsp("1707360", "pax1", 1.0, ["A B", "Hauptstr. 1", "86156 Augsburg"])
+        b_doppel_post = _bsp("1707360", "pox1", 0.25, ["A B", "Hauptstr. 1", "86156 Augsburg"])
+        g_doppel = exportiere([b_doppel_dhl, b_doppel_post], tmp, datetime(2026, 9, 22, 16, 20))
+        check("exportiere(): doppelte rnr -> nur 1 Datei/1 Rechnung (kein 2. Label)",
+              sorted(g_doppel.values()), [1])
+        g_gesperrt = exportiere([b_doppel_dhl], tmp, datetime(2026, 9, 22, 16, 21),
+                                gesperrt={"1707360"})
+        check("exportiere(gesperrt): schon exportierte rnr wird nicht erneut geschrieben",
+              g_gesperrt, {})
 
         # exportiere() mit einer in DREI Pakete aufgeteilten Sendung: DHL-Datei
         # bekommt DREI Datenzeilen fuer die eine Rechnung, "anzahl_rechnungen"

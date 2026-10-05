@@ -30,7 +30,11 @@ import os
 from collections import Counter, defaultdict
 from datetime import datetime
 
-VERSION = "2026-09-24a"
+VERSION = "2026-10-05a"
+# 2026-10-05a: exportierbare() = EINE gemeinsame Auswahl fuer carrier_export.exportiere() und
+#   log_lauf() - jede Rechnungsnummer hoechstens EINMAL (Referenz darf nie in zwei Carrier-
+#   Dateien oder doppelt in derselben Datei landen, Anlass Rg 1707360) und optional ohne
+#   "gesperrt" (schon frueher exportiert, siehe bereits_exportiert()).
 
 STATISTIK_DATEI = r"\\DESKTOP-N2H75H\Netzwerk\Paketscheine\carrier_statistik.csv"
 ARTIKEL_STATISTIK_DATEI = r"\\DESKTOP-N2H75H\Netzwerk\Paketscheine\artikel_statistik.csv"
@@ -45,7 +49,29 @@ def _de(x):
     return ("%.1f" % x).replace(".", ",")
 
 
-def log_lauf(ergebnisse, pfad=STATISTIK_DATEI, jetzt=None):
+def exportierbare(ergebnisse, gesperrt=()):
+    """Die Ergebnisse, die tatsaechlich in eine Carrier-CSV geschrieben UND geloggt
+    werden: status == 'ok' UND Carrier zugeordnet, JEDE Rechnungsnummer hoechstens
+    einmal (das erste Vorkommen zaehlt - ein aufgeteiltes Paket ist EIN Ergebnis mit
+    mehreren Zeilen, kein Duplikat) und keine Rechnungsnummer aus gesperrt (schon
+    frueher exportiert). EINZIGE Quelle fuer carrier_export.exportiere() und
+    log_lauf() - beide muessen dieselbe Menge verarbeiten."""
+    gesperrt = set(gesperrt or ())
+    gesehen = set()
+    aus = []
+    for b in ergebnisse:
+        if b["status"] != "ok" or not b["carrier"]:
+            continue
+        rnr = b.get("rnr") or ""
+        if rnr and (rnr in gesperrt or rnr in gesehen):
+            continue
+        if rnr:
+            gesehen.add(rnr)
+        aus.append(b)
+    return aus
+
+
+def log_lauf(ergebnisse, pfad=STATISTIK_DATEI, jetzt=None, gesperrt=()):
     """Haengt fuer jede TATSAECHLICH exportierte Rechnung (status == 'ok' UND
     Carrier zugeordnet - dieselbe Bedingung wie carrier_export.exportiere())
     eine Zeile an pfad an. Eine aufgeteilte DHL-Sendung (b["pakete"] - manuell
@@ -56,7 +82,7 @@ def log_lauf(ergebnisse, pfad=STATISTIK_DATEI, jetzt=None):
     Mengenrabatt-Gespraeche genauer. Legt Datei+Kopfzeile bei Bedarf an.
     Rueckgabe: Anzahl geloggter Zeilen (0 bei leerer Liste ODER Schreibfehler
     - Fehler werden bewusst verschluckt, siehe Modul-Kopf)."""
-    kandidaten = [b for b in ergebnisse if b["status"] == "ok" and b["carrier"]]
+    kandidaten = exportierbare(ergebnisse, gesperrt)
     if not kandidaten:
         return 0
     jetzt = jetzt or datetime.now()
@@ -133,6 +159,21 @@ def doppelte_im_lauf(rnr_liste):
     typischerweise die rnr aller Rechnungen EINES Schritt-2-Laufs."""
     z = Counter(r for r in rnr_liste if r)
     return {rnr: n for rnr, n in z.items() if n > 1}
+
+
+def bereits_exportiert(rnr_liste, pfad=STATISTIK_DATEI):
+    """{rnr: [(Datum, Carrier), ...]} fuer jede Rechnungsnummer aus rnr_liste, die laut
+    Carrier-Statistik schon in einem FRUEHEREN Lauf in eine Carrier-CSV geschrieben
+    wurde (Label-Daten erzeugt) - anders als bereits_verarbeitet(), das jede
+    gepackte Rechnung zaehlt. Nur Laeufe des Dashboards (nicht der alten .bat)."""
+    gesucht = {r for r in rnr_liste if r}
+    if not gesucht:
+        return {}
+    treffer = defaultdict(list)
+    for t in _lies(pfad):
+        if t[5] in gesucht:
+            treffer[t[5]].append((t[0], t[1]))
+    return dict(treffer)
 
 
 def bereits_verarbeitet(rnr_liste, pfad=ARTIKEL_STATISTIK_DATEI):
@@ -326,6 +367,26 @@ def selftest():
         n = log_lauf(lauf1, pfad, datetime(2026, 3, 15))
         check("log_lauf(): nur exportierbare Zeilen geloggt", n, 4)
         check("log_lauf(): legt Zielordner an", os.path.isdir(os.path.dirname(pfad)), True)
+
+        # Referenz-Absicherung: jede Rechnungsnummer hoechstens EINMAL / nicht gesperrte
+        dopp = [_b("DHL", 1.0, "1707360"), _b("Post Großbrief", 0.25, "1707360"),
+                _b("DPD", 0.4, "1707361"), _b("DHL", 2.0, "1707362", status="fehler")]
+        check("exportierbare(): doppelte rnr nur einmal (erstes Vorkommen), Fehler raus",
+              [(b["rnr"], b["carrier"]) for b in exportierbare(dopp)],
+              [("1707360", "DHL"), ("1707361", "DPD")])
+        check("exportierbare(gesperrt): gesperrte rnr fehlt",
+              [b["rnr"] for b in exportierbare(dopp, {"1707360"})], ["1707361"])
+        # ein aufgeteiltes Paket ist EIN Ergebnis (mehrere Zeilen), kein Duplikat
+        check("exportierbare(): aufgeteiltes Paket bleibt erhalten",
+              len(exportierbare([_b("DHL", 40.0, "1707363", pakete=[20.0, 20.0])])), 1)
+        pfad_ref = os.path.join(tmp, "ref_statistik.csv")
+        check("log_lauf(): doppelte rnr nur einmal geloggt", log_lauf(dopp, pfad_ref, datetime(2026, 10, 5)), 2)
+        check("log_lauf(gesperrt): gesperrte rnr nicht erneut geloggt",
+              log_lauf(dopp, pfad_ref, datetime(2026, 10, 6), gesperrt={"1707360"}), 1)
+        check("bereits_exportiert(): Datum+Carrier je rnr",
+              bereits_exportiert(["1707360", "1707361", "9999999"], pfad_ref),
+              {"1707360": [("2026-10-05", "DHL")],
+               "1707361": [("2026-10-05", "DPD"), ("2026-10-06", "DPD")]})
 
         lauf2 = [_b("DHL", 4.2, "1705400"), _b("Post Großbrief", 0.5, "1705401", ausland=True)]
         log_lauf(lauf2, pfad, datetime(2026, 8, 2))

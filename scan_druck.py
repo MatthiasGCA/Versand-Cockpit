@@ -50,9 +50,23 @@ try:
 except Exception:
     _HAS_REPORTLAB = False
 # ============================ KONFIGURATION ============================
-VERSION = "2026-09-28a"          # im Fenstertitel sichtbar -> Deployment pruefbar
+VERSION = "2026-10-05a"          # im Fenstertitel sichtbar -> Deployment pruefbar
 # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je Aenderung am selben Tag (erste
 # Aenderung des Tages = a, dann b, c ...; ein neuer Tag beginnt wieder bei a).
+# 2026-10-05a: Anzeige-Feinschliff im Cockpit (nur Darstellung, keine Logik):
+#   1) Wochentag im Kopf immer deutsch (WOCHENTAGE statt strftime("%A"), das
+#      unter Windows je nach Locale englisch lieferte).
+#   2) Tagesmenge: "Σ " vorne und die Carrier-Aufschluesselung in Klammern
+#      entfernt - nur noch "Heute gesamt: N" (die Aufteilung steht schon in den
+#      Kacheln).
+#   3) Meldezeilen unter dem Scanfeld: Scan-Zeile, Meldung, Fehler-/Warnzeile
+#      und Mengenliste/EAN-Liste sitzen jetzt fest am unteren Fensterrand
+#      (side="bottom", vor der Kachel-Zone gepackt) und die Warnzeile steht
+#      ueber der Mengenlisten-Zeile. Bisher lag die Warnzeile ganz unten und
+#      wurde bei zu niedrigem Fenster abgeschnitten, sodass Fehlermeldungen
+#      nicht lesbar waren. Ausserdem passt sich die Startgroesse jetzt der
+#      Bildschirmhoehe an (vorher fest 1240x780, auf kleinen Laptops/hoher
+#      Skalierung hing der untere Rand ausserhalb des Bildschirms).
 # 2026-09-24a: Briefmarke "OHNE Zuordnung", obwohl schon gedruckt (real: Re
 #   1705754, Briefmarken.23Stk 09:02, gedruckt 09:21). Wurde eine Datei frisch
 #   eingelesen (Neustart / Datei kurz aus dem Netzwerk-Listing weg), nachdem
@@ -1907,6 +1921,8 @@ def starte_cockpit():
     ROT = "#E53935"
     GRUEN = "#00E676"     # Kreis + Prozent, sobald alle Labels eines Versenders fertig
     GOLD = "#FFD54F"      # Tagesrekord-Anzeige in der Kopfzeile
+    WOCHENTAGE = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag",
+                  "Samstag", "Sonntag"]          # datetime.weekday(): Montag = 0
     z = Zustand()
     z.gedruckt = lade_gedruckt(DRUCK_LOG)
     z.gedruckt_heute_pv = lade_gedruckt_heute(STATISTIK_DATEI)
@@ -1917,7 +1933,11 @@ def starte_cockpit():
     lade_mengen_zuordnung(MENGEN_ZUORDNUNG_CSV)
     root = tk.Tk()
     root.title(f"Versand-Cockpit  -  Gasecenter Augsburg  -  v{VERSION}")
-    root.geometry("1240x780")
+    # Startgroesse an den Bildschirm anpassen: fest 1240x780 ragte auf kleinen
+    # Laptops / bei hoher Skalierung unten aus dem Bild (Meldezeilen weg).
+    fenster_b = min(1240, root.winfo_screenwidth() - 20)
+    fenster_h = min(780, root.winfo_screenheight() - 90)   # Taskleiste + Titelzeile
+    root.geometry(f"{fenster_b}x{fenster_h}")
     root.configure(bg=BG)
     f_uhr = tkfont.Font(family="Consolas", size=40, weight="bold")
     f_datum = tkfont.Font(family="Segoe UI", size=13)
@@ -1997,8 +2017,7 @@ def starte_cockpit():
         kacheln[v] = {"count": count_lbl, "canvas": cv, "prozent": prozent_lbl,
                       "liste": liste, "warn": warn_lbl, "akzent": akz}
     # ----- Scan-Zeile + Meldung + Buttons -----
-    unten = tk.Frame(root, bg=BG)
-    unten.pack(fill="x", padx=16, pady=(4, 12))
+    unten = tk.Frame(root, bg=BG)         # gepackt wird unten (siehe "Meldezeilen")
     tk.Label(unten, text="Scan:", font=f_scan, fg=FG, bg=BG).pack(side="left")
     scan_var = tk.StringVar()
     scan_entry = tk.Entry(unten, textvariable=scan_var, font=f_scan, width=18,
@@ -2008,18 +2027,25 @@ def starte_cockpit():
     btns.pack(side="right")
     meld_lbl = tk.Label(root, text="Bereit. Barcode scannen ...", font=f_meld,
                         fg=FG, bg=BG, anchor="w")
-    meld_lbl.pack(fill="x", padx=16, pady=(0, 4))
     # Status der Mengenliste (Mehrartikel-Sicherung) - dauerhaft sichtbar
     menge_status_lbl = tk.Label(root, text="", font=tkfont.Font(family="Segoe UI",
                                 size=11, weight="bold"), fg=MUTED, bg=BG, anchor="w")
-    menge_status_lbl.pack(fill="x", padx=16, pady=(0, 8))
     # Warnzeile: Inhalts-Duplikate und Rechnungsnummern, die erneut auftauchen,
     # obwohl sie laut Log schon gedruckt wurden (z.B. Nachsendung mit wieder-
     # verwendeter Rechnungsnummer). Dauerhaft sichtbar, sobald etwas ansteht.
     warnungen_lbl = tk.Label(root, text="", font=tkfont.Font(family="Segoe UI",
                              size=11, weight="bold"), fg=ROT, bg=BG,
                              justify="left", anchor="w", wraplength=1180)
-    warnungen_lbl.pack(fill="x", padx=16, pady=(0, 8))
+    # Meldezeilen fest am UNTEREN Fensterrand: side="bottom" und VOR der
+    # Kachel-Zone ("mitte") gepackt - bei zu niedrigem Fenster wird dann die
+    # Kachel-Zone gestaucht statt dass die Fehler-/Warnzeile abgeschnitten wird
+    # (Tk vergibt den Platz in Packreihenfolge, spaeter gepackte Widgets gehen
+    # zuerst leer aus). Reihenfolge von unten nach oben: Mengenliste, Warnzeile
+    # (Fehler), Meldung, Scan-Zeile - Fehler stehen also ueber der Statuszeile.
+    menge_status_lbl.pack(side="bottom", before=mitte, fill="x", padx=16, pady=(0, 8))
+    warnungen_lbl.pack(side="bottom", before=mitte, fill="x", padx=16, pady=(0, 4))
+    meld_lbl.pack(side="bottom", before=mitte, fill="x", padx=16, pady=(0, 4))
+    unten.pack(side="bottom", before=mitte, fill="x", padx=16, pady=(4, 4))
     # ----- Grosses Warn-Overlay "MEHRERE ARTIKEL" (Gefahr-Dreieck) -----------
     # Schwebt als Overlay ueber den Kacheln (place), nicht im Layoutfluss; nimmt
     # keinen Tastaturfokus -> der Scanner schreibt weiter ins Scan-Feld.
@@ -2348,11 +2374,7 @@ def starte_cockpit():
                     w["warn"].configure(text="")
         # ---- Tagesmenge (Summe ueber alle Versender) + Tagesrekord ----
         heute_summe = sum(gedruckt_pv.values())
-        aufschluesselung = " · ".join(
-            f"{v} {n}" for v, n in sorted(gedruckt_pv.items()) if n > 0)
-        tagesmenge_lbl.configure(
-            text=f"Σ Heute gesamt: {heute_summe}"
-                 + (f"   ({aufschluesselung})" if aufschluesselung else ""))
+        tagesmenge_lbl.configure(text=f"Heute gesamt: {heute_summe}")
         # Tagesrekord nur neu berechnen, wenn heute etwas dazukam
         if heute_summe != z.highscore_sig:
             z.highscore_sig = heute_summe
@@ -2383,7 +2405,10 @@ def starte_cockpit():
     def takt():
         jetzt = datetime.now()
         uhr_lbl.configure(text=jetzt.strftime("%H:%M:%S"))
-        datum_lbl.configure(text=jetzt.strftime("%A, %d.%m.%Y"))
+        # Wochentag selbst uebersetzen: strftime("%A") liefert unter Windows
+        # je nach Systemsprache/Locale englische Namen.
+        datum_lbl.configure(
+            text=f"{WOCHENTAGE[jetzt.weekday()]}, {jetzt.strftime('%d.%m.%Y')}")
         heute = jetzt.strftime("%Y-%m-%d")
         if heute != z.heute_datum:          # Tageswechsel -> Tageszaehler neu laden
             with z.lock:

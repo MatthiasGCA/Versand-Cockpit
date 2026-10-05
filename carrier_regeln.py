@@ -55,7 +55,7 @@ Siehe ist_auslands_kleinpaket() und die Konstanten KLEINPAKET_*.
 import html
 import re
 
-VERSION = "2026-10-05c"
+VERSION = "2026-10-05e"
 
 # --- Gewichtsgrenzen in kg (Klasse gilt bei Gewicht STRIKT UNTER der Grenze) -----
 G_BRIEF = 0.05
@@ -419,6 +419,19 @@ def analysiere_adresse(zeilen):
     if not strasse_roh:
         out["fehler"].append("Keine Straße gefunden")
     else:
+        # "Strasse Nr, Notiz" - hinter einem Komma steht eine Notiz des Kunden
+        # ("Ziegeleiberg 2, Tor an der B86,", real 1707377: die "86" der Notiz
+        # wurde sonst als Hausnummer gelesen und die Strasse zerrissen). Nur wenn
+        # der Teil VOR dem Komma schon fuer sich "Strasse + Hausnummer" ist und die
+        # Notiz Text enthaelt; eine Zusatzzeile, die nur den Strassennamen wiederholt,
+        # faellt dabei weg.
+        mk = re.match(r"^(?P<s>[^,]*?\S)\s*,\s*(?P<rest>[A-Za-zÄÖÜäöüß].*)$", strasse_roh)
+        if (mk and _STRASSE_HNR.match(mk.group("s"))
+                and re.search(r"[A-Za-zÄÖÜäöüß]{2}", mk.group("rest"))):
+            strasse_roh = mk.group("s")
+            notiz = mk.group("rest").strip(" ,;")
+            name_ohne_nr = _n(_STRASSE_HNR.match(strasse_roh).group("str"))
+            out["zusatz"] = [z for z in out["zusatz"] if _n(z) != name_ohne_nr] + [notiz]
         ms = _STRASSE_HNR.match(strasse_roh)
         mt = None if ms else _HNR_MIT_TEXT.match(strasse_roh)
         if mt:
@@ -432,6 +445,12 @@ def analysiere_adresse(zeilen):
         else:
             out["strasse"] = strasse_roh
             out["hinweise"].append("Keine Hausnummer erkannt (%s)" % strasse_roh)
+        if out["hausnr"] and re.search(r"\d", out["strasse"]):
+            # Ziffer im STRASSENNAMEN neben erkannter Hausnummer ("Feldmark 2 Haus" / 40,
+            # real 1707459 - gemeint wohl Nr. "2 Haus 40"): selten (2 von 1715 echten
+            # Adressen), aber hier liegt die Hausnummer-Erkennung leicht falsch.
+            out["hinweise"].append("Straße enthält eine Ziffer (%s) - Hausnummer bitte "
+                                   "prüfen" % out["strasse"])
         if re.search(r"packstation|postfach|postnummer", strasse_roh, re.I):
             out["packstation"] = True
             out["hinweise"].append("Packstation/Postfach - bitte manuell prüfen")
@@ -492,7 +511,7 @@ def klasse_nach_gewicht(gewicht):
     return DHL
 
 
-def bestimme_carrier(kennungen, gewicht, land, packstation=False):
+def bestimme_carrier(kennungen, gewicht, land, packstation=False, dhl_zustellung=False):
     """(carrier|None, grund, fehler, hinweise). carrier ist einer aus KLASSEN."""
     kenn = sorted({k.lower() for k in (kennungen or []) if k and k.lower() in KENNUNG_KLASSE})
     fehler, hinweise = [], []
@@ -522,6 +541,13 @@ def bestimme_carrier(kennungen, gewicht, land, packstation=False):
         # (Rechnung 1705540, Wapo -> waere DPD, Packstation -> auf DHL um).
         klasse = DHL
         grund += ", Packstation/Postfach - DPD nicht möglich → DHL"
+    if klasse in (BRIEF, GROSSBRIEF) and dhl_zustellung:
+        # Briefe/Grossbriefe koennen NICHT an eine Packstation/Postfiliale (Postnummer)
+        # zugestellt werden - nur DHL-Paket/Kleinpaket (real 1707360: Pox1, 0,25 kg,
+        # "Packstation 133" -> Matthias hat von Hand DHL genommen). Ein reines
+        # Postfach bleibt davon unberuehrt (Post liefert Briefe ins Postfach).
+        klasse = DHL
+        grund += ", Packstation/Postfiliale - Brief nicht möglich → DHL"
     if klasse == DPD and land != "DE":
         klasse = DHL
         grund += ", DPD nur Deutschland → DHL"
@@ -759,7 +785,10 @@ def bewerte_rechnung(r):
     hinweise += adr["hinweise"]
     kenn = kennungen_der_rechnung(r)
     gewicht = r.get("sendungsgewicht")
-    carrier, grund, f2, h2 = bestimme_carrier(kenn, gewicht, adr["land"], adr["packstation"])
+    dhl_zustellung = bool(re.search(r"packstation|postfiliale|postnummer|postnr",
+                                    " ".join([adr["strasse"]] + list(adr["zusatz"])), re.I))
+    carrier, grund, f2, h2 = bestimme_carrier(kenn, gewicht, adr["land"], adr["packstation"],
+                                              dhl_zustellung)
     fehler += f2
     hinweise += h2
     # Versicherungsgrenze: ab DHL_MIN_WARENWERT immer DHL (siehe Konstante).
@@ -949,6 +978,33 @@ def selftest():
     a = analysiere_adresse(["A B", "Hauptstr. 12.", "12345 Ort"])
     check("adr: 'Hauptstr. 12.' (Schlusspunkt) unveraendert Hausnr 12",
           (a["strasse"], a["hausnr"]), ("Hauptstr.", "12"))
+    # Notiz hinter Komma darf die Hausnummer nicht verfaelschen (real 1707377)
+    a = analysiere_adresse(["Raßmann Silke", "Ziegeleiberg 2, Tor an der B86,", "gegenüber Friedhof",
+                            "Ziegeleiberg", "DE 99634 Straußfurt"])
+    check("adr real 1707377 (Notiz hinter Komma, doppelter Strassenname)",
+          (a["strasse"], a["hausnr"], a["zusatz"], a["fehler"]),
+          ("Ziegeleiberg", "2", ["gegenüber Friedhof", "Tor an der B86"], []))
+    a = analysiere_adresse(["A B", "Hauptstr. 5, 2. OG", "12345 Ort"])
+    check("adr: 'Hauptstr. 5, 2. OG' -> Notiz beginnt mit Ziffer, bleibt wie bisher unveraendert",
+          a["hausnr"] == "5" and a["strasse"] == "Hauptstr." or "Keine Hausnummer" in " ".join(a["hinweise"]), True)
+    # Brief/Grossbrief + Packstation -> DHL (real 1707360)
+    check("Pox1 0,25 kg + Packstation -> DHL + Kleinpaket-Hinweis",
+          bestimme_carrier(["pox1"], 0.2532, "DE", True, True)[0::3],
+          (DHL, ["Achtung bei DHL auf Kleinpaket abändern"]))
+    check("Pox1 0,25 kg + nur Postfach -> bleibt Grossbrief",
+          bestimme_carrier(["pox1"], 0.2532, "DE", True, False)[0], GROSSBRIEF)
+    r_ps = {"rnr": "1707360", "datei": "x.pdf", "sendungsgewicht": 0.2532,
+            "adresse_zeilen": ["Peter Kraplow", "Packstation 133", "1017254707",
+                               "DE-67065 Ludwigshafen am Rhein"],
+            "positionen": [{"kennungen": ["pox1"], "lagerorte": ["F5"]}]}
+    b_ps = bewerte_rechnung(r_ps)
+    check("Rechnung Pox1 an Packstation -> DHL", b_ps["carrier"], DHL)
+    a = analysiere_adresse(["Wermeling Dirk", "Feldmark 2 Haus 40", "DE 48336 Sassenberg"])
+    check("adr real 1707459 (Ziffer im Strassennamen -> Pruefhinweis)",
+          any("enthält eine Ziffer" in h for h in a["hinweise"]), True)
+    a = analysiere_adresse(["A B", "Hauptstr. 12", "12345 Ort"])
+    check("adr: normale Strasse -> kein Ziffern-Hinweis",
+          any("enthält eine Ziffer" in h for h in a["hinweise"]), False)
     a = analysiere_adresse(["A B", "Hauptstr. 12 B", "12345 Ort"])
     check("adr: 'Hauptstr. 12 B' bleibt Hausnr 12 B (Fallback greift nicht)",
           (a["strasse"], a["hausnr"], a["zusatz"]), ("Hauptstr.", "12 B", []))

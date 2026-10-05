@@ -37,7 +37,7 @@ import hashlib
 import tempfile
 import threading
 import subprocess
-from datetime import datetime
+from datetime import datetime, timedelta
 from collections import defaultdict, Counter
 import pdfplumber
 from pypdf import PdfReader, PdfWriter
@@ -50,9 +50,18 @@ try:
 except Exception:
     _HAS_REPORTLAB = False
 # ============================ KONFIGURATION ============================
-VERSION = "2026-10-05a"          # im Fenstertitel sichtbar -> Deployment pruefbar
+VERSION = "2026-10-05b"          # im Fenstertitel sichtbar -> Deployment pruefbar
 # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je Aenderung am selben Tag (erste
 # Aenderung des Tages = a, dann b, c ...; ein neuer Tag beginnt wieder bei a).
+# 2026-10-05b: Knopf "Log zuruecksetzen" ausgebaut (er schaltete den Doppeldruck-
+#   Schutz komplett ab: nach dem Leeren druckte ein erneut gescanntes Label ohne
+#   jede Warnung ein zweites Mal; fuer den Normalbetrieb unnoetig, da ein
+#   bewusster Nachdruck ueber die Rueckfrage "erneut drucken?" geht). Dafuer
+#   automatische Bereinigung: beim Programmstart entfernt bereinige_druck_log()
+#   Eintraege aelter als DRUCK_LOG_AUFBEWAHRUNG_TAGE (90) aus gedruckt.log -
+#   vorsichtig (unlesbare Zeitstempel bleiben, nur Umschreiben wenn etwas zu
+#   entfernen ist, Temp-Datei + os.replace, Abbruch bei gleichzeitiger
+#   Aenderung). Statistik/Tagesrekord unberuehrt.
 # 2026-10-05a: Anzeige-Feinschliff im Cockpit (nur Darstellung, keine Logik):
 #   1) Wochentag im Kopf immer deutsch (WOCHENTAGE statt strftime("%A"), das
 #      unter Windows je nach Locale englisch lieferte).
@@ -403,6 +412,13 @@ PACKPLATZ_PROFILE = {
 # Drucker allein nach Versender (Profilfeld "drucker") = Verpackungsraum-Drucker.
 PACKPLATZ_STANDARD = None
 DRUCK_LOG = r"\\DESKTOP-N2H75H\Netzwerk\Paketscheine\gedruckt.log"
+# Druck-Log: Eintraege, die aelter sind, werden beim Programmstart automatisch
+# entfernt (bereinige_druck_log). Das Log ist das Gedaechtnis fuer den Doppel-
+# druck-Schutz ("schon gedruckt") - die Frist muss daher deutlich laenger sein
+# als die Zeitspanne, in der eine Rechnungsnummer realistisch wieder auftaucht
+# (Nachsendung/Wiederverwendung: Stunden bis wenige Wochen). Statistik
+# (statistik.csv) und Tagesrekord sind davon NICHT betroffen.
+DRUCK_LOG_AUFBEWAHRUNG_TAGE = 90
 STATISTIK_DATEI = r"\\DESKTOP-N2H75H\Netzwerk\Paketscheine\statistik.csv"
 # Firmenlogo fuer die Cockpit-Kopfzeile. PNG oder GIF laufen ohne Zusatzpaket
 # (Tkinter kann beides); mit installiertem Pillow zusaetzlich JPG und glattere
@@ -1195,6 +1211,49 @@ def lade_gedruckt_heute(pfad):
 def merke_gedruckt(pfad, nr):
     with open(pfad, "a", encoding="utf-8") as f:
         f.write(f"{nr}\t{datetime.now():%Y-%m-%d %H:%M:%S}\n")
+def bereinige_druck_log(pfad, tage=DRUCK_LOG_AUFBEWAHRUNG_TAGE):
+    """Entfernt Eintraege aelter als `tage` Tage aus dem Druck-Log. Rueckgabe:
+    Anzahl entfernter Zeilen (0 = nichts zu tun oder Fehler - das Log bleibt dann
+    unveraendert). Bewusst vorsichtig:
+    - Zeilen mit fehlendem/unlesbarem Zeitstempel bleiben IMMER erhalten.
+    - Es wird nur umgeschrieben, wenn wirklich etwas zu entfernen ist (also
+      hoechstens ~einmal pro Tag, nicht bei jedem Start).
+    - Geschrieben wird in eine Temp-Datei im selben Ordner und per os.replace
+      ausgetauscht (nie eine halbfertige Datei). Hat sich das Log zwischen Lesen
+      und Austausch geaendert (z.B. druckt ein zweites Cockpit gerade), wird
+      abgebrochen und das Log bleibt unangetastet - naechster Start versucht es
+      erneut."""
+    try:
+        if not os.path.exists(pfad):
+            return 0
+        sig_vorher = (os.path.getmtime(pfad), os.path.getsize(pfad))
+        grenze = datetime.now() - timedelta(days=tage)
+        behalten, entfernt = [], 0
+        with open(pfad, encoding="utf-8", newline="") as f:
+            for zeile in f:
+                teile = zeile.strip().split("\t")
+                alt = False
+                if len(teile) > 1:
+                    try:
+                        alt = datetime.strptime(teile[1], "%Y-%m-%d %H:%M:%S") < grenze
+                    except ValueError:
+                        alt = False
+                if alt:
+                    entfernt += 1
+                else:
+                    behalten.append(zeile)
+        if entfernt == 0:
+            return 0
+        tmp = pfad + ".tmp"
+        with open(tmp, "w", encoding="utf-8", newline="") as f:
+            f.writelines(behalten)
+        if (os.path.getmtime(pfad), os.path.getsize(pfad)) != sig_vorher:
+            os.remove(tmp)                  # Log wurde zwischendurch beschrieben
+            return 0
+        os.replace(tmp, pfad)
+        return entfernt
+    except OSError:
+        return 0
 def log_statistik(pfad, versender, nr, pakete):
     neu = not os.path.exists(pfad)
     with open(pfad, "a", encoding="utf-8") as f:
@@ -1924,6 +1983,9 @@ def starte_cockpit():
     WOCHENTAGE = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag",
                   "Samstag", "Sonntag"]          # datetime.weekday(): Montag = 0
     z = Zustand()
+    # Altlast im Druck-Log still entfernen, BEVOR es geladen wird (siehe
+    # DRUCK_LOG_AUFBEWAHRUNG_TAGE); Fehler/Netzwerk weg -> Log bleibt wie es ist.
+    bereinige_druck_log(DRUCK_LOG)
     z.gedruckt = lade_gedruckt(DRUCK_LOG)
     z.gedruckt_heute_pv = lade_gedruckt_heute(STATISTIK_DATEI)
     z.heute_datum = datetime.now().strftime("%Y-%m-%d")
@@ -2259,34 +2321,11 @@ def starte_cockpit():
         aktualisiere_anzeige()
         meld_lbl.configure(text="Ordner neu eingelesen.", fg=FG)
         scan_entry.focus_set()
-    def log_zuruecksetzen():
-        if not os.path.exists(DRUCK_LOG):
-            messagebox.showinfo("Log", "Kein Druck-Log vorhanden.")
-            return
-        if messagebox.askyesno("Log zuruecksetzen",
-                               "Druck-Log wirklich leeren? (Statistik bleibt)"):
-            try:
-                os.remove(DRUCK_LOG)
-            except OSError:
-                pass
-            with z.lock:
-                z.gedruckt = {}
-                z.gedruckt_heute_pv = Counter()
-                z.scan_fortschritt = {}
-                z.letzter_scan_ts = {}
-                z.aktive_verifikation = {}
-                z.verdaechtig = defaultdict(list)
-                z.duplikate = {}
-                _recompute(z)
-            aktualisiere_anzeige()
-            meld_lbl.configure(text="Druck-Log geleert.", fg=FG)
-        scan_entry.focus_set()
     def beenden():
         stop.set()
         root.destroy()
     for txt, cmd in [("Statistik", zeige_statistik),
                      ("Ordner aktualisieren", ordner_aktualisieren),
-                     ("Log zuruecksetzen", log_zuruecksetzen),
                      ("Beenden", beenden)]:
         tk.Button(btns, text=txt, command=cmd, font=f_klein, bd=0,
                   bg="#3A3A44", fg=FG, activebackground="#4A4A55",

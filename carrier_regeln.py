@@ -55,7 +55,7 @@ Siehe ist_auslands_kleinpaket() und die Konstanten KLEINPAKET_*.
 import html
 import re
 
-VERSION = "2026-10-06b"
+VERSION = "2026-10-06c"
 
 # --- Gewichtsgrenzen in kg (Klasse gilt bei Gewicht STRIKT UNTER der Grenze) -----
 G_BRIEF = 0.05
@@ -450,6 +450,11 @@ def analysiere_adresse(zeilen):
             ohne_nr = re.sub(r"[\s,]+(?:nr|no|nummer)\.?$", "", out["strasse"], flags=re.I)
             if ohne_nr:
                 out["strasse"] = ohne_nr
+            # Komma/Semikolon/Doppelpunkt zwischen Strasse und Hausnummer ("Suederstrasse, 27",
+            # real 1706159/1706419/1707611) bleibt sonst am Strassennamen haengen.
+            ohne_satz = out["strasse"].rstrip(" ,;:")
+            if ohne_satz:
+                out["strasse"] = ohne_satz
         else:
             out["strasse"] = strasse_roh
             out["hinweise"].append("Keine Hausnummer erkannt (%s)" % strasse_roh)
@@ -1021,6 +1026,12 @@ def selftest():
           (a["strasse"], a["hausnr"], a["hinweise"], a["fehler"]), ("Poststraße", "6 + 8", [], []))
     a = analysiere_adresse(["A B", "Hauptstr. 5 & 7", "12345 Ort"])
     check("adr: 'Hauptstr. 5 & 7'", (a["strasse"], a["hausnr"]), ("Hauptstr.", "5 & 7"))
+    a = analysiere_adresse(["German Seredin", "Süderstraße, 27", "DE-25709 Marne"])
+    check("adr real 1706159 ('Suederstrasse, 27' -> Komma weg)",
+          (a["strasse"], a["hausnr"], a["hinweise"]), ("Süderstraße", "27", []))
+    a = analysiere_adresse(["A B", "Hauptstr.: 5", "12345 Ort"])
+    check("adr: 'Hauptstr.: 5' -> Doppelpunkt weg, Punkt der Abkuerzung bleibt",
+          (a["strasse"], a["hausnr"]), ("Hauptstr.", "5"))
     a = analysiere_adresse(["A B", "Hauptstr. Nr. 5", "12345 Ort"])
     check("adr: 'Hauptstr. Nr. 5' -> Strasse ohne 'Nr.'", (a["strasse"], a["hausnr"]), ("Hauptstr.", "5"))
     a = analysiere_adresse(["A B", "Hauptstr. 12", "12345 Ort"])

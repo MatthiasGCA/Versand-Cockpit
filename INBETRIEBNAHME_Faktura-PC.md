@@ -69,6 +69,7 @@ wiederholen, sondern die vier Dateien `post_/sammel_/mengen_/ean_zuordnung.csv` 
 
 ## 5. Schutzfunktionen im Dauerbetrieb
 
+- Pickliste wird nach Schritt 2 automatisch geöffnet und gedruckt (Konfiguration `pickliste_oeffnen` / `pickliste_drucken`, Windows-Standarddrucker; schlägt das Drucken fehl, steht im Fertig-Dialog eine Warnung).
 - Gutschriften (111…) und Auftragsbestätigungen (444…) werden abgelehnt (`RNR_GESPERRT` in `packliste.py`).
 - Kopien einer doppelten Rechnungsnummer im Pool sind Fehler und werden nicht verarbeitet.
 - Eine Rechnungsnummer wird höchstens einmal in Carrier-CSVs geschrieben (auch über Läufe hinweg).

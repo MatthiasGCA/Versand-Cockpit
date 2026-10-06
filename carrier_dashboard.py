@@ -99,7 +99,9 @@ from tkinter import messagebox, simpledialog, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-10-06a"
+VERSION = "2026-10-06b"
+# 2026-10-06b: Pickliste nach Schritt 2 automatisch oeffnen und/oder drucken (Konfiguration
+#   pickliste_oeffnen / pickliste_drucken, Standard aus - siehe zeige_pickliste()).
 # 2026-10-06a: Inbetriebnahme Faktura-PC: (1) optionale Konfigurationsdatei
 #   carrier_dashboard_config.json neben dem Programm ueberschreibt die Ordner (Pool/Ausgabe/
 #   Archiv/Carrier-Export/WC-Sync) - ohne Datei unveraendertes Verhalten (Laptop-Test);
@@ -294,6 +296,11 @@ WC_SYNC_ORDNER = r"C:\Scripts\Sendungsnummern_WC"
 # nichts kopieren (Laptop-Test). Auf dem Faktura-PC per Konfigurationsdatei setzen, siehe
 # _lade_config() - NICHT hier im Quelltext, damit dieselbe .py auf beiden PCs laufen kann.
 BRUECKEN_ZIEL = ""
+# Pickliste nach Schritt 2 automatisch im Standard-PDF-Programm oeffnen / auf dem Windows-
+# Standarddrucker drucken. Standard aus (Laptop-Test) - auf dem Faktura-PC per Konfiguration
+# ("pickliste_oeffnen": true, "pickliste_drucken": true).
+PICKLISTE_OEFFNEN = False
+PICKLISTE_DRUCKEN = False
 BRUECKEN_DATEIEN = ("post_zuordnung.csv", "sammel_zuordnung.csv", "mengen_zuordnung.csv",
                     "ean_zuordnung.csv")
 CONFIG_PFAD = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -309,7 +316,7 @@ def _lade_config(pfad=None):
     Standardwerte bleiben, der Fehlertext steht in CONFIG_FEHLER (wird beim Start gezeigt).
     Rueckgabe: Liste der ueberschriebenen Schluessel."""
     global POOL_ORDNER, AUSGABE_ORDNER, ARCHIV_ORDNER, CARRIER_EXPORT_ORDNER
-    global WC_SYNC_ORDNER, BRUECKEN_ZIEL, CONFIG_FEHLER
+    global WC_SYNC_ORDNER, BRUECKEN_ZIEL, CONFIG_FEHLER, PICKLISTE_OEFFNEN, PICKLISTE_DRUCKEN
     import json
     pfad = pfad or CONFIG_PFAD
     if not os.path.exists(pfad):
@@ -330,6 +337,11 @@ def _lade_config(pfad=None):
         wert = cfg.get(schluessel)
         if isinstance(wert, str) and wert.strip():
             globals()[name] = wert.strip()
+            gesetzt.append(schluessel)
+    for schluessel, name in (("pickliste_oeffnen", "PICKLISTE_OEFFNEN"),
+                             ("pickliste_drucken", "PICKLISTE_DRUCKEN")):
+        if isinstance(cfg.get(schluessel), bool):
+            globals()[name] = cfg[schluessel]
             gesetzt.append(schluessel)
     return gesetzt
 
@@ -517,6 +529,35 @@ def _markiere_pool_duplikate(ergebnisse):
             b["status"] = "warn"
         else:
             b["status"] = "ok"
+
+
+def zeige_pickliste(pfad, oeffnen=None, drucken=None):
+    """Oeffnet die Pickliste-PDF im Windows-Standardprogramm und/oder druckt sie auf dem
+    Windows-Standarddrucker (os.startfile mit Verb "print" - das Standard-PDF-Programm
+    druckt dabei still). Best effort: ein Fehler (kein Programm mit Druckverb, kein Drucker)
+    bricht NIE ab, sondern steht in "fehler". oeffnen/drucken None = PICKLISTE_*-Konfiguration.
+    Rueckgabe {"geoeffnet": bool, "gedruckt": bool, "fehler": [texte]}."""
+    oeffnen = PICKLISTE_OEFFNEN if oeffnen is None else oeffnen
+    drucken = PICKLISTE_DRUCKEN if drucken is None else drucken
+    erg = {"geoeffnet": False, "gedruckt": False, "fehler": []}
+    if not (oeffnen or drucken):
+        return erg
+    if not hasattr(os, "startfile"):
+        erg["fehler"].append("nur unter Windows moeglich")
+        return erg
+    if oeffnen:
+        try:
+            os.startfile(pfad)
+            erg["geoeffnet"] = True
+        except OSError as e:
+            erg["fehler"].append("Öffnen: %s" % e)
+    if drucken:
+        try:
+            os.startfile(pfad, "print")
+            erg["gedruckt"] = True
+        except OSError as e:
+            erg["fehler"].append("Drucken: %s" % e)
+    return erg
 
 
 def kopiere_bruecken(quell_ordner, ziel_ordner):
@@ -1648,6 +1689,15 @@ def gui():
                              "Rechnungen:       %d" % bericht["anzahl"],
                              "Archiviert:       %d -> %s" % (
                                  bericht["archiviert"], bericht["archiv_ziel"] or "-")]
+                    pl = zeige_pickliste(bericht["pickliste"])
+                    if pl["geoeffnet"] or pl["gedruckt"]:
+                        zeilen.append("Pickliste:        %s" % " und ".join(
+                            t for t, ok in (("geöffnet", pl["geoeffnet"]),
+                                            ("an den Standarddrucker gesendet", pl["gedruckt"]))
+                            if ok))
+                    if pl["fehler"]:
+                        zeilen.append("WARNUNG Pickliste: %s - bitte von Hand öffnen/drucken."
+                                      % "; ".join(pl["fehler"]))
                     if bericht["archiv_fehler"]:
                         zeilen.append("NICHT archiviert (%d): %s" %
                                       (len(bericht["archiv_fehler"]),

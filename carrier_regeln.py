@@ -55,7 +55,7 @@ Siehe ist_auslands_kleinpaket() und die Konstanten KLEINPAKET_*.
 import html
 import re
 
-VERSION = "2026-10-05e"
+VERSION = "2026-10-06a"
 
 # --- Gewichtsgrenzen in kg (Klasse gilt bei Gewicht STRIKT UNTER der Grenze) -----
 G_BRIEF = 0.05
@@ -442,10 +442,18 @@ def analysiere_adresse(zeilen):
             out["strasse"] = ms.group("str").strip()
             out["hausnr"] = re.sub(r"\s+", " ", ms.group("nr")).strip()
             out["hausnr"] = re.sub(r"^(\d+)\.([A-Za-z])$", r"\1\2", out["hausnr"])   # "2.a" -> "2a"
+            # Fuellwort "Nr."/"No." vor der Hausnummer gehoert nicht zur Strasse ("An der B5
+            # nr. 2", real 1707665 - sonst steht "An der B5 nr." auf dem Label).
+            ohne_nr = re.sub(r"[\s,]+(?:nr|no|nummer)\.?$", "", out["strasse"], flags=re.I)
+            if ohne_nr:
+                out["strasse"] = ohne_nr
         else:
             out["strasse"] = strasse_roh
             out["hinweise"].append("Keine Hausnummer erkannt (%s)" % strasse_roh)
-        if out["hausnr"] and re.search(r"\d", out["strasse"]):
+        # Bundes-/Landesstrassen-Bezeichnungen (B5, A7, L123, K12) zaehlen nicht als "Ziffer im
+        # Strassennamen" ("An der B5", "Zur A7").
+        strasse_ohne_bez = re.sub(r"\b[ABLK]\s?\d{1,3}\b", "", out["strasse"], flags=re.I)
+        if out["hausnr"] and re.search(r"\d", strasse_ohne_bez):
             # Ziffer im STRASSENNAMEN neben erkannter Hausnummer ("Feldmark 2 Haus" / 40,
             # real 1707459 - gemeint wohl Nr. "2 Haus 40"): selten (2 von 1715 echten
             # Adressen), aber hier liegt die Hausnummer-Erkennung leicht falsch.
@@ -1002,6 +1010,11 @@ def selftest():
     a = analysiere_adresse(["Wermeling Dirk", "Feldmark 2 Haus 40", "DE 48336 Sassenberg"])
     check("adr real 1707459 (Ziffer im Strassennamen -> Pruefhinweis)",
           any("enthält eine Ziffer" in h for h in a["hinweise"]), True)
+    a = analysiere_adresse(["Irenaeus Messie", "An der B5 nr. 2", "DE 19339 Plattenburg"])
+    check("adr real 1707665 ('Nr.' raus, B5 kein Ziffern-Hinweis)",
+          (a["strasse"], a["hausnr"], a["hinweise"], a["fehler"]), ("An der B5", "2", [], []))
+    a = analysiere_adresse(["A B", "Hauptstr. Nr. 5", "12345 Ort"])
+    check("adr: 'Hauptstr. Nr. 5' -> Strasse ohne 'Nr.'", (a["strasse"], a["hausnr"]), ("Hauptstr.", "5"))
     a = analysiere_adresse(["A B", "Hauptstr. 12", "12345 Ort"])
     check("adr: normale Strasse -> kein Ziffern-Hinweis",
           any("enthält eine Ziffer" in h for h in a["hinweise"]), False)

@@ -99,7 +99,13 @@ from tkinter import messagebox, simpledialog, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-10-05b"
+VERSION = "2026-10-06a"
+# 2026-10-06a: Inbetriebnahme Faktura-PC: (1) optionale Konfigurationsdatei
+#   carrier_dashboard_config.json neben dem Programm ueberschreibt die Ordner (Pool/Ausgabe/
+#   Archiv/Carrier-Export/WC-Sync) - ohne Datei unveraendertes Verhalten (Laptop-Test);
+#   (2) "bruecken_ziel": nach jedem Schritt 2 werden die vier Bruecken-CSVs (post_/sammel_/
+#   mengen_/ean_zuordnung.csv) wie bisher die Pickliste_erstellen.bat in den Netzordner
+#   kopiert, den scan_druck.py ueberwacht (atomar, mit Fehlermeldung im Fertig-Dialog).
 # 2026-10-05b: Referenz-Absicherung: jede Rechnungsnummer hoechstens EINMAL in den Carrier-
 #   CSVs (auch ueber Laeufe hinweg: laut Carrier-Statistik schon exportiert -> keine neue
 #   Zeile, Meldung im Dialog; carrier_statistik.exportierbare/bereits_exportiert).
@@ -284,6 +290,52 @@ CARRIER_EXPORT_ORDNER = r"C:\Carrier_Export"
 # (real 2026-09-28: Bestellung 25662/Rg 1706406 blieb ohne Sendungsnummer).
 WC_SYNC_ORDNER = r"C:\Scripts\Sendungsnummern_WC"
 
+# Netzordner, den scan_druck.py ueberwacht (post_/sammel_/mengen_/ean_zuordnung.csv). Leer =
+# nichts kopieren (Laptop-Test). Auf dem Faktura-PC per Konfigurationsdatei setzen, siehe
+# _lade_config() - NICHT hier im Quelltext, damit dieselbe .py auf beiden PCs laufen kann.
+BRUECKEN_ZIEL = ""
+BRUECKEN_DATEIEN = ("post_zuordnung.csv", "sammel_zuordnung.csv", "mengen_zuordnung.csv",
+                    "ean_zuordnung.csv")
+CONFIG_PFAD = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "carrier_dashboard_config.json")
+CONFIG_FEHLER = ""
+
+
+def _lade_config(pfad=None):
+    """Liest die optionale carrier_dashboard_config.json (UTF-8-JSON, neben dem Programm) und
+    ueberschreibt damit die Ordner-Konstanten oben. Schluessel (alle optional):
+    pool_ordner, ausgabe_ordner, archiv_ordner, carrier_export_ordner, wc_sync_ordner,
+    bruecken_ziel. Fehlende Datei = Standardwerte. Eine kaputte Datei bricht NICHT ab: die
+    Standardwerte bleiben, der Fehlertext steht in CONFIG_FEHLER (wird beim Start gezeigt).
+    Rueckgabe: Liste der ueberschriebenen Schluessel."""
+    global POOL_ORDNER, AUSGABE_ORDNER, ARCHIV_ORDNER, CARRIER_EXPORT_ORDNER
+    global WC_SYNC_ORDNER, BRUECKEN_ZIEL, CONFIG_FEHLER
+    import json
+    pfad = pfad or CONFIG_PFAD
+    if not os.path.exists(pfad):
+        return []
+    try:
+        with open(pfad, encoding="utf-8-sig") as f:
+            cfg = json.load(f)
+        if not isinstance(cfg, dict):
+            raise ValueError("Wurzel muss ein JSON-Objekt sein")
+    except (OSError, ValueError) as e:
+        CONFIG_FEHLER = "%s: %s" % (os.path.basename(pfad), e)
+        return []
+    ziele = {"pool_ordner": "POOL_ORDNER", "ausgabe_ordner": "AUSGABE_ORDNER",
+             "archiv_ordner": "ARCHIV_ORDNER", "carrier_export_ordner": "CARRIER_EXPORT_ORDNER",
+             "wc_sync_ordner": "WC_SYNC_ORDNER", "bruecken_ziel": "BRUECKEN_ZIEL"}
+    gesetzt = []
+    for schluessel, name in ziele.items():
+        wert = cfg.get(schluessel)
+        if isinstance(wert, str) and wert.strip():
+            globals()[name] = wert.strip()
+            gesetzt.append(schluessel)
+    return gesetzt
+
+
+_lade_config()
+
 REFRESH_MS = 5000
 # Automatisches Einlesen neuer Rechnungen (siehe auto_scan() in gui()): Pool
 # alle AUTO_MS pruefen, erst AUTO_RUHE_S nach der letzten neuen/geaenderten
@@ -467,6 +519,37 @@ def _markiere_pool_duplikate(ergebnisse):
             b["status"] = "ok"
 
 
+def kopiere_bruecken(quell_ordner, ziel_ordner):
+    """Kopiert die vier Bruecken-CSVs (BRUECKEN_DATEIEN) aus quell_ordner in ziel_ordner (den
+    Netzordner, den scan_druck.py ueberwacht) - wie bisher Pickliste_erstellen.bat. Jede Datei
+    wird erst als ".tmp" geschrieben und dann ATOMAR ersetzt (scan_druck.py liest die Dateien
+    im Dauerbetrieb und soll nie eine halbe Datei sehen). Best effort: ein Fehler bricht den
+    Export NIE ab. Rueckgabe None = nicht konfiguriert, sonst
+    {"ziel": ordner, "kopiert": [namen], "fehler": [texte]}."""
+    import shutil
+    if not ziel_ordner:
+        return None
+    erg = {"ziel": ziel_ordner, "kopiert": [], "fehler": []}
+    if not os.path.isdir(ziel_ordner):
+        erg["fehler"].append("Zielordner nicht erreichbar: %s" % ziel_ordner)
+        return erg
+    for name in BRUECKEN_DATEIEN:
+        quelle = os.path.join(quell_ordner, name)
+        ziel = os.path.join(ziel_ordner, name)
+        tmp = ziel + ".tmp"
+        try:
+            shutil.copyfile(quelle, tmp)
+            os.replace(tmp, ziel)
+            erg["kopiert"].append(name)
+        except OSError as e:
+            erg["fehler"].append("%s: %s" % (name, e))
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+    return erg
+
+
 def kopiere_wc_bestellnummern(quelle, ziel_ordner):
     """Kopiert wc_bestellnummern.csv (kumulativ) als wc_bestellnummern_dashboard.csv
     in den Eingangsordner des WooCommerce-Sendungsnummer-Syncs. Best effort: ein
@@ -527,6 +610,7 @@ def exportiere_alles(rechnungen, ergebnisse, ausgabe_pfad, archiv_ordner, carrie
     wc_pfad = os.path.join(out_dir, "wc_bestellnummern.csv")
     wc_neu = packliste.schreibe_wc_bestellnummern_csv(rechnungen, wc_pfad)
     wc_kopie = kopiere_wc_bestellnummern(wc_pfad, WC_SYNC_ORDNER)
+    bruecken = kopiere_bruecken(out_dir, BRUECKEN_ZIEL)
 
     # gesperrt = Rechnungsnummern, die laut Carrier-Statistik schon in einem frueheren
     # Lauf exportiert wurden: gepackt/archiviert wird (nach Bestaetigung), aber KEINE
@@ -552,7 +636,7 @@ def exportiere_alles(rechnungen, ergebnisse, ausgabe_pfad, archiv_ordner, carrie
         "pickliste": ausgabe_pfad, "anzahl": len(rechnungen), "gruppen": gruppen,
         "wc_neu": wc_neu, "wc_kopie": wc_kopie,
         "carrier_dateien": carrier_dateien, "kg_geloggt": kg_geloggt,
-        "carrier_gesperrt": carrier_gesperrt,
+        "carrier_gesperrt": carrier_gesperrt, "bruecken": bruecken,
         "artikel_geloggt": artikel_geloggt,
         "archiviert": verschoben, "archiv_fehler": archiv_fehler, "archiv_ziel": archiv_ziel,
     }
@@ -727,6 +811,11 @@ def gui():
             root.iconbitmap(ICON_PFAD)
         except Exception:
             pass                      # z.B. falsches Format - Fenster laeuft trotzdem
+    if CONFIG_FEHLER:
+        root.after(300, lambda: messagebox.showwarning(
+            "Carrier-Dashboard - Konfiguration",
+            "Die Konfigurationsdatei konnte nicht gelesen werden - es gelten die "
+            "STANDARD-Ordner (nicht die der Konfiguration)!\n\n%s" % CONFIG_FEHLER))
 
     pool_anz = tk.StringVar(value="")
     status_var = tk.StringVar(value="Noch nicht zugeordnet.")
@@ -770,6 +859,9 @@ def gui():
     kopf.pack(fill="x")
     ttk.Label(kopf, text="Pool-Ordner: %s" % POOL_ORDNER,
               foreground=MUTED).pack(anchor="w")
+    if BRUECKEN_ZIEL:
+        ttk.Label(kopf, text="Brücken-CSVs für scan_druck → %s" % BRUECKEN_ZIEL,
+                  foreground=MUTED).pack(anchor="w")
 
     zaehler = tk.Label(kopf, textvariable=pool_anz, font=("Segoe UI", 18, "bold"),
                        anchor="w", bg=BG, fg=FG)
@@ -1585,6 +1677,19 @@ def gui():
                         zeilen.append("")
                         zeilen.append("Keine Carrier-CSV geschrieben (keine exportierbare "
                                       "Rechnung dabei).")
+                    br = bericht.get("bruecken")
+                    if br is not None:
+                        zeilen.append("")
+                        if br["fehler"]:
+                            zeilen.append("WARNUNG: Brücken-CSVs für scan_druck NICHT vollständig "
+                                          "nach %s kopiert - scan_druck arbeitet mit ALTEN Daten "
+                                          "weiter! Netzfreigabe prüfen und Schritt 2 NICHT "
+                                          "wiederholen, sondern Dateien von Hand aus %s kopieren:"
+                                          % (br["ziel"], os.path.dirname(bericht["pickliste"])))
+                            zeilen += ["  - " + f for f in br["fehler"]]
+                        else:
+                            zeilen.append("Brücken-CSVs nach %s kopiert (%d Dateien)."
+                                          % (br["ziel"], len(br["kopiert"])))
                     if bericht.get("carrier_gesperrt"):
                         zeilen.append("")
                         zeilen.append("NICHT erneut in eine Carrier-CSV geschrieben (laut Statistik "

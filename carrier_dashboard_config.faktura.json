@@ -1,0 +1,8 @@
+{
+  "pool_ordner": "C:\\Packlisten",
+  "ausgabe_ordner": "C:\\Packlisten\\Pickliste",
+  "archiv_ordner": "C:\\Packlisten\\Archiv",
+  "carrier_export_ordner": "C:\\Carrier_Export",
+  "wc_sync_ordner": "C:\\Scripts\\Sendungsnummern_WC",
+  "bruecken_ziel": "\\\\DESKTOP-N2H75H\\Netzwerk\\Paketscheine"
+}

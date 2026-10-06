@@ -6,5 +6,6 @@
   "wc_sync_ordner": "C:\\Scripts\\Sendungsnummern_WC",
   "bruecken_ziel": "\\\\DESKTOP-N2H75H\\Netzwerk\\Paketscheine",
   "pickliste_oeffnen": true,
-  "pickliste_drucken": true
+  "pickliste_drucken": true,
+  "pickliste_drucker": "Brother HL-L2310D series"
 }

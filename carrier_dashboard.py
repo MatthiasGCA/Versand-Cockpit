@@ -99,7 +99,10 @@ from tkinter import messagebox, simpledialog, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-10-06b"
+VERSION = "2026-10-06c"
+# 2026-10-06c: fester Druckername fuer die Pickliste (Konfiguration pickliste_drucker): Der
+#   "print"-Befehl des Acrobat Reader druckte auf den zuletzt benutzten statt den Standard-
+#   drucker; jetzt os.startfile(..., "printto", Druckername) - faellt bei Fehler auf "print" zurueck.
 # 2026-10-06b: Pickliste nach Schritt 2 automatisch oeffnen und/oder drucken (Konfiguration
 #   pickliste_oeffnen / pickliste_drucken, Standard aus - siehe zeige_pickliste()).
 # 2026-10-06a: Inbetriebnahme Faktura-PC: (1) optionale Konfigurationsdatei
@@ -301,6 +304,10 @@ BRUECKEN_ZIEL = ""
 # ("pickliste_oeffnen": true, "pickliste_drucken": true).
 PICKLISTE_OEFFNEN = False
 PICKLISTE_DRUCKEN = False
+# Fester Druckername (wie in Windows "Drucker & Scanner") - leer = Windows-Standarddrucker.
+# Hintergrund: der "print"-Befehl des Acrobat Reader nimmt oft den ZULETZT BENUTZTEN statt den
+# Standarddrucker; "printto" mit Druckername ist eindeutig.
+PICKLISTE_DRUCKER = ""
 BRUECKEN_DATEIEN = ("post_zuordnung.csv", "sammel_zuordnung.csv", "mengen_zuordnung.csv",
                     "ean_zuordnung.csv")
 CONFIG_PFAD = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -317,6 +324,7 @@ def _lade_config(pfad=None):
     Rueckgabe: Liste der ueberschriebenen Schluessel."""
     global POOL_ORDNER, AUSGABE_ORDNER, ARCHIV_ORDNER, CARRIER_EXPORT_ORDNER
     global WC_SYNC_ORDNER, BRUECKEN_ZIEL, CONFIG_FEHLER, PICKLISTE_OEFFNEN, PICKLISTE_DRUCKEN
+    global PICKLISTE_DRUCKER
     import json
     pfad = pfad or CONFIG_PFAD
     if not os.path.exists(pfad):
@@ -331,7 +339,8 @@ def _lade_config(pfad=None):
         return []
     ziele = {"pool_ordner": "POOL_ORDNER", "ausgabe_ordner": "AUSGABE_ORDNER",
              "archiv_ordner": "ARCHIV_ORDNER", "carrier_export_ordner": "CARRIER_EXPORT_ORDNER",
-             "wc_sync_ordner": "WC_SYNC_ORDNER", "bruecken_ziel": "BRUECKEN_ZIEL"}
+             "wc_sync_ordner": "WC_SYNC_ORDNER", "bruecken_ziel": "BRUECKEN_ZIEL",
+             "pickliste_drucker": "PICKLISTE_DRUCKER"}
     gesetzt = []
     for schluessel, name in ziele.items():
         wert = cfg.get(schluessel)
@@ -552,6 +561,15 @@ def zeige_pickliste(pfad, oeffnen=None, drucken=None):
         except OSError as e:
             erg["fehler"].append("Öffnen: %s" % e)
     if drucken:
+        if PICKLISTE_DRUCKER:
+            try:
+                os.startfile(pfad, "printto", '"%s"' % PICKLISTE_DRUCKER)
+                erg["gedruckt"] = True
+                erg["drucker"] = PICKLISTE_DRUCKER
+                return erg
+            except OSError as e:
+                erg["fehler"].append("Drucken auf '%s' nicht moeglich (%s) - Standarddrucker "
+                                     "wird versucht" % (PICKLISTE_DRUCKER, e))
         try:
             os.startfile(pfad, "print")
             erg["gedruckt"] = True
@@ -1693,7 +1711,8 @@ def gui():
                     if pl["geoeffnet"] or pl["gedruckt"]:
                         zeilen.append("Pickliste:        %s" % " und ".join(
                             t for t, ok in (("geöffnet", pl["geoeffnet"]),
-                                            ("an den Standarddrucker gesendet", pl["gedruckt"]))
+                                            (("an '%s' gesendet" % pl["drucker"]) if pl.get("drucker")
+                                             else "an den Standarddrucker gesendet", pl["gedruckt"]))
                             if ok))
                     if pl["fehler"]:
                         zeilen.append("WARNUNG Pickliste: %s - bitte von Hand öffnen/drucken."

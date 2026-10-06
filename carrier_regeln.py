@@ -55,7 +55,7 @@ Siehe ist_auslands_kleinpaket() und die Konstanten KLEINPAKET_*.
 import html
 import re
 
-VERSION = "2026-10-06a"
+VERSION = "2026-10-06b"
 
 # --- Gewichtsgrenzen in kg (Klasse gilt bei Gewicht STRIKT UNTER der Grenze) -----
 G_BRIEF = 0.05
@@ -191,8 +191,11 @@ _PLZ_IN_ZEILE = re.compile(r"^(?P<vor>.*\S)\s+(?P<plz>\d{5})\s+(?P<ort>\S.*)$")
 # siehe "36/6" oder "9-15 /3/12"). Auch ein PUNKT vor dem Buchstaben kommt vor
 # ("unterm bodenberg 2.a", Rechnung 1707529) - wird unten zu "2a" normalisiert.
 _NR_EINHEIT = r"\d+(?:\s*[/.]?\s*[A-Za-z])?"
+# Auch "+"/"&" verbindet zwei Hausnummern ("Poststrasse 6 + 8", real 1707722 - sonst wurde
+# "Poststrasse 6 +" zur Strasse und nur "8" zur Hausnummer); die Nummer bleibt wie
+# geschrieben ("6 + 8").
 _STRASSE_HNR = re.compile(
-    r"^(?P<str>.*?\S)[\s:]*(?P<nr>" + _NR_EINHEIT + r"(?:\s*[-/ ]\s*" + _NR_EINHEIT
+    r"^(?P<str>.*?\S)[\s:]*(?P<nr>" + _NR_EINHEIT + r"(?:\s*[-/+& ]\s*" + _NR_EINHEIT
     + r")*)[\s,.;]*$")
 # Hausnummer MITTEN in der Zeile, dahinter reiner Text ohne (weitere) Ziffern
 # ("In Der Loh 1 Campingplatz", Rechnung 1706290; "Rotterdamer Str. 49 / Im
@@ -1013,6 +1016,11 @@ def selftest():
     a = analysiere_adresse(["Irenaeus Messie", "An der B5 nr. 2", "DE 19339 Plattenburg"])
     check("adr real 1707665 ('Nr.' raus, B5 kein Ziffern-Hinweis)",
           (a["strasse"], a["hausnr"], a["hinweise"], a["fehler"]), ("An der B5", "2", [], []))
+    a = analysiere_adresse(["Kenfack Marie Paule Takou", "Poststraße 6 + 8", "DE-71093 Weil Im Schönbuch"])
+    check("adr real 1707722 ('6 + 8' = eine Hausnummer-Angabe)",
+          (a["strasse"], a["hausnr"], a["hinweise"], a["fehler"]), ("Poststraße", "6 + 8", [], []))
+    a = analysiere_adresse(["A B", "Hauptstr. 5 & 7", "12345 Ort"])
+    check("adr: 'Hauptstr. 5 & 7'", (a["strasse"], a["hausnr"]), ("Hauptstr.", "5 & 7"))
     a = analysiere_adresse(["A B", "Hauptstr. Nr. 5", "12345 Ort"])
     check("adr: 'Hauptstr. Nr. 5' -> Strasse ohne 'Nr.'", (a["strasse"], a["hausnr"]), ("Hauptstr.", "5"))
     a = analysiere_adresse(["A B", "Hauptstr. 12", "12345 Ort"])

@@ -30,7 +30,12 @@ import os
 from collections import Counter, defaultdict
 from datetime import datetime
 
-VERSION = "2026-10-05a"
+VERSION = "2026-10-08a"
+# 2026-10-08a: Artikel-Verkaeufe (artikel_verkaeufe.csv): log_verkaeufe() schreibt bei jedem
+#   Schritt 2 JEDE echte Rechnungsposition (Artikelnr, Bezeichnung, Menge, Preise) mit
+#   Rechnungsdatum - Grundlage fuer die Bestseller-Auswertung (top_artikel(), Dashboard-Fenster
+#   "Top-Artikel") und die Rueckwaerts-Auswertung artikel_auswertung_archiv.py.
+# 2026-10-05a: exportierbare() = EINE gemeinsame Auswahl fuer carrier_export.exportiere() und
 # 2026-10-05a: exportierbare() = EINE gemeinsame Auswahl fuer carrier_export.exportiere() und
 #   log_lauf() - jede Rechnungsnummer hoechstens EINMAL (Referenz darf nie in zwei Carrier-
 #   Dateien oder doppelt in derselben Datei landen, Anlass Rg 1707360) und optional ohne
@@ -38,6 +43,9 @@ VERSION = "2026-10-05a"
 
 STATISTIK_DATEI = r"\\DESKTOP-N2H75H\Netzwerk\Paketscheine\carrier_statistik.csv"
 ARTIKEL_STATISTIK_DATEI = r"\\DESKTOP-N2H75H\Netzwerk\Paketscheine\artikel_statistik.csv"
+ARTIKEL_VERKAEUFE_DATEI = r"\\DESKTOP-N2H75H\Netzwerk\Paketscheine\artikel_verkaeufe.csv"
+_VERKAEUFE_HEADER = ("Datum;Rechnungsnummer;Artikelnummer;Bezeichnung;Menge;Einheit;"
+                     "Einzelpreis;Gesamtpreis\n")
 
 _HEADER = "Datum;Carrier;Gewicht_kg;Land;Ausland;Rechnungsnummer\n"
 _ARTIKEL_HEADER = "Datum;Rechnungsnummer;Artikelanzahl\n"
@@ -150,6 +158,159 @@ def log_artikel(rechnungen, pfad=ARTIKEL_STATISTIK_DATEI, jetzt=None):
     except OSError:
         return 0
     return len(rechnungen)
+
+
+def _iso_datum(text):
+    """'TT.MM.JJJJ' -> 'JJJJ-MM-TT' (None bei unlesbarem Datum)."""
+    try:
+        return datetime.strptime((text or "").strip(), "%d.%m.%Y").strftime("%Y-%m-%d")
+    except ValueError:
+        return None
+
+
+def _csv_text(t):
+    """Feldtext fuer die Semikolon-CSV: Semikolon/Zeilenumbruch/Tab raus."""
+    return " ".join(str(t or "").replace(";", ",").split())
+
+
+def _zahl_txt(x):
+    """Menge: ganze Zahl ohne Nachkommastellen, sonst 2 Stellen mit Komma."""
+    if x is None:
+        return ""
+    return str(int(x)) if x == int(x) else ("%.2f" % x).replace(".", ",")
+
+
+def _preis_txt(x):
+    return "" if x is None else ("%.2f" % x).replace(".", ",")
+
+
+def _lies_verkaeufe(pfad):
+    """Zeilen der Artikel-Verkaeufe-CSV als Tupel (datum, rnr, art, bez, menge, einheit, ep, gp);
+    menge/ep/gp als float bzw. None. Leere Liste, wenn die Datei fehlt/nicht lesbar ist."""
+    zeilen = []
+    if not os.path.exists(pfad):
+        return zeilen
+
+    def f(x):
+        try:
+            return float(x.replace(",", "."))
+        except ValueError:
+            return None
+    try:
+        with open(pfad, encoding="utf-8") as fh:
+            next(fh, None)                      # Kopfzeile
+            for z in fh:
+                t = z.rstrip("\n").split(";")
+                if len(t) >= 8 and t[0]:
+                    zeilen.append((t[0], t[1], t[2], t[3], f(t[4]), t[5], f(t[6]), f(t[7])))
+    except OSError:
+        pass
+    return zeilen
+
+
+def verkaeufe_zeilen(r, jetzt=None):
+    """Die zu loggenden Positionszeilen einer Rechnung: (datum, rnr, art, bez, menge, einheit,
+    ep, gp) fuer jede ECHTE Position (kein Versand, Artikelnummer vorhanden). Datum = Rechnungs-
+    datum, ersatzweise das Verarbeitungsdatum."""
+    import packliste
+    jetzt = jetzt or datetime.now()
+    datum = _iso_datum(r.get("datum")) or jetzt.strftime("%Y-%m-%d")
+    aus = []
+    for p in r.get("positionen") or []:
+        art = (p.get("art") or "").strip()
+        if not art or packliste.ist_versand(p.get("art"), p.get("bez")):
+            continue
+        menge = p.get("menge")
+        aus.append((datum, r.get("rnr") or "", art, p.get("bez") or "",
+                    menge if menge is not None else 1.0, p.get("einh") or "",
+                    p.get("ep"), p.get("gp")))
+    return aus
+
+
+def log_verkaeufe(rechnungen, pfad=ARTIKEL_VERKAEUFE_DATEI, jetzt=None):
+    """Haengt je ECHTER Rechnungsposition eine Zeile an die Artikel-Verkaeufe-CSV an
+    (Datum;Rechnungsnummer;Artikelnummer;Bezeichnung;Menge;Einheit;Einzelpreis;Gesamtpreis).
+    IDEMPOTENT: Rechnungsnummern, die schon in der Datei stehen, werden uebersprungen (ein
+    wiederholter Lauf/Nachtrag aus dem Archiv erzeugt keine Doppelzaehlung). Legt Datei+
+    Kopfzeile bei Bedarf an. Rueckgabe: Anzahl geschriebener Zeilen (0 bei leerer Liste ODER
+    Schreibfehler - Fehler werden bewusst verschluckt, siehe log_lauf())."""
+    if not rechnungen:
+        return 0
+    try:
+        bekannt = {t[1] for t in _lies_verkaeufe(pfad)}
+        neu_zeilen = []
+        for r in rechnungen:
+            rnr = r.get("rnr") or ""
+            if rnr in bekannt:
+                continue
+            neu_zeilen += verkaeufe_zeilen(r, jetzt)
+        if not neu_zeilen:
+            return 0
+        ordner = os.path.dirname(pfad)
+        if ordner:
+            os.makedirs(ordner, exist_ok=True)
+        neu = not os.path.exists(pfad)
+        with open(pfad, "a", encoding="utf-8", newline="") as f:
+            if neu:
+                f.write(_VERKAEUFE_HEADER)
+            for datum, rnr, art, bez, menge, einh, ep, gp in neu_zeilen:
+                f.write("%s;%s;%s;%s;%s;%s;%s;%s\n" % (
+                    datum, rnr, _csv_text(art), _csv_text(bez), _zahl_txt(menge),
+                    _csv_text(einh), _preis_txt(ep), _preis_txt(gp)))
+    except OSError:
+        return 0
+    return len(neu_zeilen)
+
+
+SORTIERUNG = {"bestellungen": "Bestellungen", "menge": "Stückzahl", "umsatz": "Umsatz"}
+
+
+def top_artikel(pfad=ARTIKEL_VERKAEUFE_DATEI, von=None, bis=None, sortierung="bestellungen",
+                n=20, zeilen=None):
+    """Bestseller-Liste aus der Artikel-Verkaeufe-CSV: [(artikelnummer, bezeichnung,
+    bestellungen, menge, umsatz), ...] absteigend nach sortierung ('bestellungen' = Zahl der
+    Rechnungen mit dem Artikel, 'menge' = Summe der Rechnungsmenge, 'umsatz' = Summe der
+    Positions-Gesamtpreise). von/bis = 'JJJJ-MM-TT' (einschliesslich) oder None. Mengen wie auf
+    der Rechnung (ein Karton 'GermanFire 24 Stueck' zaehlt als 1). n=None = alle. zeilen = schon
+    gelesene Zeilen (_lies_verkaeufe) - spart bei mehrfacher Auswertung das erneute Lesen."""
+    agg = {}
+    for datum, rnr, art, bez, menge, einh, ep, gp in (zeilen if zeilen is not None
+                                                     else _lies_verkaeufe(pfad)):
+        if (von and datum < von) or (bis and datum > bis):
+            continue
+        k = art.strip().lower()
+        a = agg.setdefault(k, {"art": art, "bez": bez, "rnr": set(), "menge": 0.0,
+                               "umsatz": 0.0, "letzt": ""})
+        a["rnr"].add(rnr)
+        a["menge"] += menge or 0.0
+        a["umsatz"] += gp or 0.0
+        if datum >= a["letzt"]:                  # aktuellste Bezeichnung gewinnt
+            a["letzt"], a["bez"] = datum, bez
+    liste = [(a["art"], a["bez"], len(a["rnr"]), a["menge"], a["umsatz"]) for a in agg.values()]
+    idx = {"bestellungen": 2, "menge": 3, "umsatz": 4}[sortierung]
+    liste.sort(key=lambda t: (-t[idx], -t[2], t[0].lower()))
+    return liste if n is None else liste[:n]
+
+
+def top_text(liste, titel):
+    """Mehrzeiliger Text fuer die Anzeige (Rang, Artikel, Bezeichnung, Bestellungen, Menge, Umsatz)."""
+    if not liste:
+        return "%s\n\n  Noch keine Daten vorhanden." % titel
+    z = [titel, "", "%3s  %-16s %-40s %6s %8s %11s" % ("Nr.", "Artikel", "Bezeichnung", "Best.", "Menge", "Umsatz")]
+    for i, (art, bez, best, menge, umsatz) in enumerate(liste, 1):
+        z.append("%3d  %-16s %-40s %6d %8s %11s" % (
+            i, art[:16], bez[:40], best, _zahl_txt(menge),
+            ("%.2f" % umsatz).replace(".", ",")))
+    return "\n".join(z)
+
+
+def schreibe_ranking_csv(pfad, liste):
+    """Excel-lesbare CSV (UTF-8 mit BOM, Semikolon) der Bestseller-Liste."""
+    with open(pfad, "w", encoding="utf-8-sig", newline="") as f:
+        f.write("Rang;Artikelnummer;Bezeichnung;Bestellungen;Menge;Umsatz\r\n")
+        for i, (art, bez, best, menge, umsatz) in enumerate(liste, 1):
+            f.write("%d;%s;%s;%d;%s;%s\r\n" % (i, _csv_text(art), _csv_text(bez), best,
+                                              _zahl_txt(menge), ("%.2f" % umsatz).replace(".", ",")))
 
 
 def doppelte_im_lauf(rnr_liste):
@@ -480,6 +641,51 @@ def selftest():
               bereits_verarbeitet(["9999999"], artikel_pfad), {})
         check("bereits_verarbeitet(): leere Liste -> leeres dict, kein Datei-Zugriff noetig",
               bereits_verarbeitet([], artikel_pfad), {})
+
+        # --- Artikel-Verkaeufe / Bestseller-Auswertung ---------------------------------------
+        vpfad = os.path.join(tmp, "v", "artikel_verkaeufe.csv")
+
+        def _rg(rnr, datum, positionen):
+            return {"rnr": rnr, "datum": datum, "positionen": positionen}
+
+        def _pos(art, bez, menge, ep, gp, einh="Stck."):
+            return {"art": art, "bez": bez, "menge": menge, "ep": ep, "gp": gp, "einh": einh}
+
+        rg1 = _rg("1707001", "05.10.2026", [
+            _pos("A1", "Artikel; Eins", 2.0, 5.0, 10.0), _pos("B2", "Zwei", 1.0, 30.0, 30.0),
+            _pos("660", "Versandkosten", 1.0, 2.6, 2.6), _pos("", "ohne Artikelnr", 1.0, 1.0, 1.0)])
+        rg2 = _rg("1707002", "06.10.2026", [_pos("a1", "Artikel Eins neu", 3.0, 5.0, 15.0)])
+        rg3 = _rg("1707003", "07.10.2026", [_pos("C3", "Drei", 1.5, 2.0, None)])
+        check("verkaeufe_zeilen(): nur echte Positionen (kein Versand, keine leere Artikelnr)",
+              [z[2] for z in verkaeufe_zeilen(rg1)], ["A1", "B2"])
+        check("log_verkaeufe(): leere Liste -> 0", log_verkaeufe([], vpfad), 0)
+        check("log_verkaeufe(): schreibt 2+1+1 Positionszeilen",
+              log_verkaeufe([rg1, rg2, rg3], vpfad), 4)
+        check("log_verkaeufe(): idempotent (gleiche Rechnungen nicht doppelt)",
+              log_verkaeufe([rg1, rg2, rg3], vpfad), 0)
+        with open(vpfad, encoding="utf-8") as f:
+            vzeilen = f.read().split("\n")
+        check("Verkaeufe-CSV: Kopfzeile", vzeilen[0], _VERKAEUFE_HEADER.strip())
+        check("Verkaeufe-CSV: Semikolon im Text entfernt, Rechnungsdatum ISO, Preise mit Komma",
+              vzeilen[1], "2026-10-05;1707001;A1;Artikel, Eins;2;Stck.;5,00;10,00")
+        check("Verkaeufe-CSV: Menge mit Nachkomma, Preis leer",
+              vzeilen[4], "2026-10-07;1707003;C3;Drei;1,50;Stck.;2,00;")
+        check("top_artikel(): nach Stueckzahl, Artikelnr gross/klein zusammengefasst",
+              [(t[0], t[2], t[3], round(t[4], 2)) for t in top_artikel(vpfad, sortierung="menge")],
+              [("A1", 2, 5.0, 25.0), ("C3", 1, 1.5, 0.0), ("B2", 1, 1.0, 30.0)])
+        check("top_artikel(): nach Umsatz", [t[0] for t in top_artikel(vpfad, sortierung="umsatz")],
+              ["B2", "A1", "C3"])
+        check("top_artikel(): aktuellste Bezeichnung gewinnt",
+              top_artikel(vpfad, sortierung="bestellungen")[0][1], "Artikel Eins neu")
+        check("top_artikel(): Zeitraum von/bis",
+              [t[0] for t in top_artikel(vpfad, von="2026-10-06", bis="2026-10-06")], ["a1"])
+        check("top_artikel(): n begrenzt", len(top_artikel(vpfad, n=1)), 1)
+        check("top_artikel(): fehlende Datei -> leer", top_artikel(os.path.join(tmp, "nix.csv")), [])
+        rpfad = os.path.join(tmp, "ranking.csv")
+        schreibe_ranking_csv(rpfad, top_artikel(vpfad, sortierung="umsatz"))
+        with open(rpfad, encoding="utf-8-sig", newline="") as f:
+            check("schreibe_ranking_csv(): Excel-CSV mit Kopfzeile + 3 Zeilen",
+                  len(f.read().strip().split("\r\n")), 4)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

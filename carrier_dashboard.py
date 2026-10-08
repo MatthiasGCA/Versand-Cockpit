@@ -99,7 +99,10 @@ from tkinter import messagebox, simpledialog, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-10-06c"
+VERSION = "2026-10-08a"
+# 2026-10-08a: Bestseller-Auswertung: Schritt 2 schreibt jede Rechnungsposition in
+#   artikel_verkaeufe.csv (carrier_statistik.log_verkaeufe), neuer Button "Top-Artikel"
+#   (Zeitraum/Sortierung waehlbar, CSV-Export). Rueckwaerts-Auswertung: artikel_auswertung_archiv.py.
 # 2026-10-06c: fester Druckername fuer die Pickliste (Konfiguration pickliste_drucker): Der
 #   "print"-Befehl des Acrobat Reader druckte auf den zuletzt benutzten statt den Standard-
 #   drucker; jetzt os.startfile(..., "printto", Druckername) - faellt bei Fehler auf "print" zurueck.
@@ -686,6 +689,7 @@ def exportiere_alles(rechnungen, ergebnisse, ausgabe_pfad, archiv_ordner, carrie
     # aendert nichts an der bestellten Menge).
     kg_geloggt = carrier_statistik.log_lauf(ergebnisse, gesperrt=gesperrt)
     artikel_geloggt = carrier_statistik.log_artikel(rechnungen)
+    verkaeufe_geloggt = carrier_statistik.log_verkaeufe(rechnungen)
 
     verschoben, archiv_fehler, archiv_ziel = 0, [], None
     if archiv_ordner:
@@ -696,7 +700,7 @@ def exportiere_alles(rechnungen, ergebnisse, ausgabe_pfad, archiv_ordner, carrie
         "wc_neu": wc_neu, "wc_kopie": wc_kopie,
         "carrier_dateien": carrier_dateien, "kg_geloggt": kg_geloggt,
         "carrier_gesperrt": carrier_gesperrt, "bruecken": bruecken,
-        "artikel_geloggt": artikel_geloggt,
+        "artikel_geloggt": artikel_geloggt, "verkaeufe_geloggt": verkaeufe_geloggt,
         "archiviert": verschoben, "archiv_fehler": archiv_fehler, "archiv_ziel": archiv_ziel,
     }
 
@@ -800,6 +804,78 @@ def _frage_gewicht(root, titel, prompt, minvalue, maxvalue, initialvalue=None):
 # ==========================================================================
 # GUI
 # ==========================================================================
+
+def _top_artikel_dialog(root, zeilen):
+    """Fenster 'Top-Artikel': Bestseller-Liste aus den Artikel-Verkaeufen (zeilen = Ergebnis von
+    carrier_statistik._lies_verkaeufe) - Zeitraum und Sortierung waehlbar, Export als CSV."""
+    import carrier_statistik as cs
+    from datetime import date, timedelta
+    from tkinter import filedialog
+    dlg = tk.Toplevel(root)
+    dlg.title("Top-Artikel")
+    dlg.configure(bg=BG)
+    dlg.geometry("900x620")
+    dlg.transient(root)
+    _dunkle_titelleiste(dlg)
+    heute = date.today()
+    zeitraeume = {
+        "Laufender Monat": (heute.replace(day=1).isoformat(), None),
+        "Letzte 30 Tage": ((heute - timedelta(days=30)).isoformat(), None),
+        "Laufendes Jahr": (heute.replace(month=1, day=1).isoformat(), None),
+        "Alles": (None, None),
+    }
+    zr_var = tk.StringVar(value="Laufender Monat")
+    so_var = tk.StringVar(value="bestellungen")
+    kopf = ttk.Frame(dlg)
+    kopf.pack(fill="x", padx=10, pady=(10, 4))
+    ttk.Label(kopf, text="Zeitraum:").pack(side="left")
+    box = ttk.Combobox(kopf, textvariable=zr_var, values=list(zeitraeume), state="readonly", width=18)
+    box.pack(side="left", padx=(6, 16))
+    ttk.Label(kopf, text="Sortieren nach:").pack(side="left")
+    for wert, text in (("bestellungen", "Bestellungen"), ("menge", "Stückzahl"), ("umsatz", "Umsatz")):
+        ttk.Radiobutton(kopf, text=text, value=wert, variable=so_var).pack(side="left", padx=(8, 0))
+    text = tk.Text(dlg, font=("Consolas", 10), wrap="none", bg=CARD, fg=FG, relief="flat",
+                   insertbackground=FG, selectbackground=ORANGE, selectforeground=BG)
+    sb = ttk.Scrollbar(dlg, orient="vertical", command=text.yview)
+    text.configure(yscrollcommand=sb.set)
+    unten = ttk.Frame(dlg)
+    unten.pack(side="bottom", fill="x", padx=10, pady=8)
+    sb.pack(side="right", fill="y")
+    text.pack(fill="both", expand=True, padx=(10, 0), pady=4)
+
+    def auswahl(n):
+        von, bis = zeitraeume[zr_var.get()]
+        return cs.top_artikel(von=von, bis=bis, sortierung=so_var.get(), n=n, zeilen=zeilen)
+
+    def aktualisiere(*_a):
+        titel = "Meistverkaufte Artikel - %s, nach %s (Menge wie auf der Rechnung)" % (
+            zr_var.get(), cs.SORTIERUNG[so_var.get()])
+        text.configure(state="normal")
+        text.delete("1.0", "end")
+        text.insert("1.0", cs.top_text(auswahl(50), titel))
+        text.configure(state="disabled")
+
+    def speichern():
+        name = "Artikel-Ranking_%s_%s.csv" % (zr_var.get().replace(" ", "-"), heute.isoformat())
+        pfad = filedialog.asksaveasfilename(parent=dlg, defaultextension=".csv", initialfile=name,
+                                            filetypes=[("CSV (Excel)", "*.csv")])
+        if not pfad:
+            return
+        try:
+            cs.schreibe_ranking_csv(pfad, auswahl(None))
+        except OSError as e:
+            messagebox.showerror("Top-Artikel", "Konnte nicht speichern: %s" % e, parent=dlg)
+            return
+        messagebox.showinfo("Top-Artikel", "Gespeichert: %s" % pfad, parent=dlg)
+
+    box.bind("<<ComboboxSelected>>", aktualisiere)
+    so_var.trace_add("write", aktualisiere)
+    RundButton(unten, text="Als CSV speichern", command=speichern).pack(side="left")
+    RundButton(unten, text="Schließen", command=dlg.destroy).pack(side="right")
+    ttk.Label(unten, text="%d Positionszeilen in der Datenbasis" % len(zeilen),
+              foreground=MUTED).pack(side="left", padx=14)
+    aktualisiere()
+
 
 def _adress_dialog(root, a, rnr):
     """Modaler Dialog 'Adresse bearbeiten' - Felder mit den aktuell ausgewerteten
@@ -1013,6 +1089,21 @@ def gui():
         messagebox.showinfo("Carrier-Dashboard - Kg-Statistik", text)
 
     RundButton(knoepfe, text="Statistik", command=zeige_statistik).pack(side="left", padx=(0, 8))
+
+    def zeige_top_artikel():
+        import carrier_statistik
+        if wartet["an"]:
+            return
+        ok, zeilen = im_hintergrund(
+            lambda: carrier_statistik._lies_verkaeufe(carrier_statistik.ARTIKEL_VERKAEUFE_DATEI))
+        if not ok:
+            messagebox.showwarning("Carrier-Dashboard - Top-Artikel",
+                                   "Die Artikel-Verkäufe sind gerade nicht erreichbar "
+                                   "(Netzlaufwerk?). Bitte später erneut versuchen.")
+            return
+        _top_artikel_dialog(root, zeilen)
+
+    RundButton(knoepfe, text="Top-Artikel", command=zeige_top_artikel).pack(side="left", padx=(0, 8))
 
     def filter_zuruecksetzen():
         wende_filter(None)
@@ -1733,6 +1824,9 @@ def gui():
                     if bericht["artikel_geloggt"]:
                         zeilen.append("Artikel-Statistik: %d Rechnung(en) erfasst" %
                                       bericht["artikel_geloggt"])
+                    if bericht.get("verkaeufe_geloggt"):
+                        zeilen.append("Artikel-Verkäufe: %d Positionen erfasst" %
+                                      bericht["verkaeufe_geloggt"])
                     if bericht["wc_kopie"] is False:
                         zeilen.append("ACHTUNG: wc_bestellnummern.csv konnte NICHT nach %s "
                                       "kopiert werden - WooCommerce-Sendungsnummer-Sync "

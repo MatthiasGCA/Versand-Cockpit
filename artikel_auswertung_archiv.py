@@ -19,6 +19,10 @@ Aufruf (Eingabeaufforderung, im Dashboard-Ordner):
     py artikel_auswertung_archiv.py --trocken       (nur auswerten und zeigen, nichts schreiben)
     py artikel_auswertung_archiv.py --archiv "D:\\Archiv" --ziel "C:\\Temp\\verkaeufe.csv"
     py artikel_auswertung_archiv.py --von 2026-08-01   (nur Rechnungen ab diesem Datum)
+    py artikel_auswertung_archiv.py --uebersicht    (nur zeigen, was im Archiv liegt: PDFs je Monat)
+
+Datums-Unterordner (JJJJ-MM-TT) ausserhalb von --von/--bis werden OHNE die PDFs zu lesen uebersprungen
+- das spart bei einem grossen Archiv (ca. 5 PDFs/Sekunde) viel Zeit.
 """
 
 import argparse
@@ -26,15 +30,33 @@ import os
 import sys
 import time
 
-VERSION = "2026-10-08a"
+VERSION = "2026-10-08b"
 BLOCK = 100          # nach so vielen neuen Rechnungen wird in die CSV geschrieben (Fortschritt sichern)
 
 
-def sammle_pdfs(archiv):
-    pdfs = []
+def ordner_datum(pfad, archiv):
+    """'JJJJ-MM-TT' des ersten Datums-Unterordners unter archiv, sonst None."""
+    rel = os.path.relpath(pfad, archiv)
+    for teil in rel.split(os.sep):
+        if len(teil) == 10 and teil[4] == "-" and teil[7] == "-" and teil.replace("-", "").isdigit():
+            return teil
+    return None
+
+
+def sammle_pdfs(archiv, von=None, bis=None):
+    """Alle PDFs unter archiv; Dateien in Datums-Ordnern ausserhalb von..bis werden weggelassen.
+    Rueckgabe (pdfs, uebersicht {monat: anzahl_aller_pdfs}, ausgelassen)."""
+    pdfs, uebersicht, ausgelassen = [], {}, 0
     for dp, dn, fn in os.walk(archiv):
+        d = ordner_datum(dp, archiv)
+        anzahl = sum(1 for f in fn if f.lower().endswith(".pdf"))
+        monat = d[:7] if d else "ohne Datum"
+        uebersicht[monat] = uebersicht.get(monat, 0) + anzahl
+        if d and ((von and d < von) or (bis and d > bis)):
+            ausgelassen += anzahl
+            continue
         pdfs += [os.path.join(dp, f) for f in fn if f.lower().endswith(".pdf")]
-    return sorted(pdfs)
+    return sorted(pdfs), dict(sorted(uebersicht.items())), ausgelassen
 
 
 def main(argv=None):
@@ -46,13 +68,21 @@ def main(argv=None):
     ap.add_argument("--archiv", default=dash.ARCHIV_ORDNER)
     ap.add_argument("--ziel", default=cs.ARTIKEL_VERKAEUFE_DATEI)
     ap.add_argument("--von", default=None, help="nur Rechnungen ab JJJJ-MM-TT")
+    ap.add_argument("--bis", default=None, help="nur Rechnungen bis JJJJ-MM-TT")
+    ap.add_argument("--uebersicht", action="store_true", help="nur PDFs je Monat zeigen")
     ap.add_argument("--trocken", action="store_true", help="nichts schreiben")
     arg = ap.parse_args(argv)
 
     if not os.path.isdir(arg.archiv):
         print("Archivordner nicht gefunden: %s" % arg.archiv)
         return 1
-    pdfs = sammle_pdfs(arg.archiv)
+    pdfs, uebersicht, ausgelassen = sammle_pdfs(arg.archiv, arg.von, arg.bis)
+    print("PDFs im Archiv je Monat (Ordnername): " + ", ".join("%s: %d" % kv for kv in uebersicht.items()))
+    if arg.uebersicht:
+        return 0
+    if ausgelassen:
+        print("%d PDFs aus Datums-Ordnern ausserhalb von %s..%s werden uebersprungen."
+              % (ausgelassen, arg.von or "Anfang", arg.bis or "heute"))
     bekannt = {t[1] for t in cs._lies_verkaeufe(arg.ziel)}
     print("Archiv:  %s  (%d PDFs)" % (arg.archiv, len(pdfs)))
     print("Ziel:    %s  (%d Rechnungen schon vorhanden)%s" % (
@@ -82,6 +112,9 @@ def main(argv=None):
             vorhanden += 1
             continue
         if arg.von and (cs._iso_datum(r.get("datum")) or "9999") < arg.von:
+            zu_alt += 1
+            continue
+        if arg.bis and (cs._iso_datum(r.get("datum")) or "0000") > arg.bis:
             zu_alt += 1
             continue
         neu_rg += 1

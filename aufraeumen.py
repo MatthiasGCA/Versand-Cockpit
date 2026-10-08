@@ -33,7 +33,7 @@ import shutil
 import sys
 from datetime import date, datetime, timedelta
 
-VERSION = "2026-10-08a"
+VERSION = "2026-10-08b"
 
 STANDARD_TAGE = {"rechnungs_archiv": 45, "pickliste_pdf": 30, "carrier_csv": 60,
                  "label_archiv": 90, "sync_archiv": 90}
@@ -47,7 +47,10 @@ GESCHUETZT = {"carrier_statistik.csv", "artikel_statistik.csv", "artikel_verkaeu
               "wc_bestellnummern_dashboard.csv"}
 _RE_PICKLISTE = re.compile(r"^Pickliste_.*\.pdf$", re.I)
 _RE_CARRIER_CSV = re.compile(r"^(DHL|DPD|Post_Brief|Post_Grossbrief)_.*\.csv$", re.I)
-_RE_RNR = re.compile(r"(?:Nr\.?\s*)(\d{7})", re.I)
+# Rechnungsnummer im Dateinamen: JEDE freistehende 7-stellige Zahl ("Packliste Nr 1707360.pdf",
+# "Packliste_Nr_1694285.pdf", "Rechnung 1694285 (1).pdf") - eine Datei zaehlt als erfasst, wenn
+# irgendeine davon in artikel_verkaeufe.csv steht. Zeitstempel wie 082631143 (9 Ziffern) passen nicht.
+_RE_RNR = re.compile(r"(?<!\d)(\d{7})(?!\d)")
 
 
 def _datumsordner(name):
@@ -117,21 +120,23 @@ def regel_rechnungs_archiv(bericht, root, tage, jetzt, bekannte_rnr, trocken):
         if d is None or d >= grenze or not os.path.isdir(pfad) or os.path.islink(pfad):
             continue
         offen = 0
+        beispiel = ""
         for datei in os.listdir(pfad):
             fp = os.path.join(pfad, datei)
             if not os.path.isfile(fp):
                 offen += 1
                 continue
-            m = _RE_RNR.search(datei)
-            if (datei.lower().endswith(".pdf") and m and m.group(1) in bekannte_rnr
+            erfasst = any(k in bekannte_rnr for k in _RE_RNR.findall(datei))
+            if (datei.lower().endswith(".pdf") and erfasst
                     and rg["geloescht"] < MAX_LOESCHUNGEN_JE_REGEL):
                 _loesche_datei(fp, root, trocken, rg)
             else:
                 offen += 1
                 rg["behalten"] += 1
+                beispiel = beispiel or datei
         if offen:
             rg["notiz"].append("%s: %d Datei(en) noch nicht in artikel_verkaeufe.csv bzw. unbekannter "
-                               "Name - bleiben liegen" % (name, offen))
+                               "Name (z.B. '%s') - bleiben liegen" % (name, offen, beispiel))
         elif not trocken:
             try:
                 os.rmdir(pfad)
@@ -307,6 +312,9 @@ def selftest():
             os.makedirs(os.path.join(arch, tag))
             for r in rnrs:
                 open(os.path.join(arch, tag, "Packliste Nr %s.pdf" % r), "w").write("x")
+        os.makedirs(os.path.join(arch, "2026-07-03"))
+        for n in ("Packliste_Nr_1700001.pdf", "Rechnung 1700002 (1).pdf", "download_31_08_2026_082631143.pdf"):
+            open(os.path.join(arch, "2026-07-03", n), "w").write("x")
         os.makedirs(os.path.join(arch, "kein-datum"))
         open(os.path.join(arch, "kein-datum", "Packliste Nr 1700009.pdf"), "w").write("x")
         verk = os.path.join(tmp, "artikel_verkaeufe.csv")
@@ -343,7 +351,7 @@ def selftest():
 
         b = aufraeumen(pf, trocken=True, jetzt=jetzt)
         check("Trockenlauf loescht nichts", os.path.exists(os.path.join(arch, "2026-07-01", "Packliste Nr 1700001.pdf")), True)
-        check("Trockenlauf: Rechnungs-Archiv 3 PDFs (1700001/2/3 bekannt+alt)", b.regeln["rechnungs_archiv"]["geloescht"], 3)
+        check("Trockenlauf: Rechnungs-Archiv 5 PDFs (bekannt+alt)", b.regeln["rechnungs_archiv"]["geloescht"], 5)
 
         b = aufraeumen(pf, trocken=False, jetzt=jetzt)
         r = b.regeln
@@ -351,6 +359,8 @@ def selftest():
               [os.path.exists(os.path.join(arch, d, n)) for d, n in (
                   ("2026-07-01", "Packliste Nr 1700001.pdf"), ("2026-08-20", "Packliste Nr 1700003.pdf"))], [False, False])
         check("alter Ordner ohne Rest entfernt", os.path.exists(os.path.join(arch, "2026-07-01")), False)
+        check("andere Namensschemata (Unterstrich, 'Rechnung 17..') werden erkannt, Zeitstempel-Datei bleibt",
+              sorted(os.listdir(os.path.join(arch, "2026-07-03"))), ["download_31_08_2026_082631143.pdf"])
         check("alte PDF ohne Eintrag in artikel_verkaeufe bleibt (1700005)",
               os.path.exists(os.path.join(arch, "2026-07-02", "Packliste Nr 1700005.pdf")), True)
         check("junge PDF bleibt (1700004)", os.path.exists(os.path.join(arch, "2026-09-20", "Packliste Nr 1700004.pdf")), True)

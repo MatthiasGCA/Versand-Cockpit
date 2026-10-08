@@ -1,0 +1,23 @@
+!BeginVBScript
+'##############################################
+'# Exportdefinition: Artikelverkaeufe          #
+'# (eine Zeile je Rechnungsposition)           #
+'# Zweck: Bestseller-Statistik / Vorjahres-    #
+'# vergleich, Import mit                       #
+'# artikel_import_amicron.py                   #
+'# Format: Rechnungsnummer;Rechnungsdatum;     #
+'#   Artikelnummer;Titel;Menge;Einzelpreis     #
+'# Version 08.10.2026                          #
+'##############################################
+!EndVBScript
+!FormatDateTime yyyymmdd
+!DecimalSeparator ,
+!Trim
+!BeginVBScript
+Ergebnis = "Rechnungsnummer;Rechnungsdatum;Artikelnummer;Titel;Menge;Einzelpreis" & vbCrLf
+!EndVBScript
+!BeginAuftrag
+!BeginAtrpos
+#AUFTRAG.AUFTRAGNR;#AUFTRAG.DATUM;#ATRPOS.ARTIKELNR;#ATRPOS.BEZEICHNUNG;#ATRPOS.MENGE;#ATRPOS.EPREIS
+!EndAtrpos
+!EndAuftrag

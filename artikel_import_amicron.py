@@ -11,8 +11,11 @@ werden am Namen erkannt:
   Bezeichnung     "Titel" | "Bezeichnung" | "Artikelbezeichnung"
   Menge           "Menge" | "Anzahl"
   Betrag          "Betrag" | "Gesamtpreis" | "G-Preis" | "Gesamt" | "Summe"          (optional)
+  Einzelpreis     "Einzelpreis" | "E-Preis" - ohne Betrag-Spalte gilt Umsatz = Menge x Einzelpreis
   Rechnungsnr.    "Rechnungsnummer" | "Rechnung Nr." | "Beleg Nr." | "Belegnummer"   (optional)
-  Datum           "Rechnungsdatum" | "Belegdatum" | "Datum"                          (optional)
+  Datum           "Rechnungsdatum" | "Belegdatum" | "Datum" (TT.MM.JJJJ, JJJJ-MM-TT, JJJJMMTT) (optional)
+Passende Amicron-Exportdefinition: amicron/Exportdefinition_Artikelverkaeufe.XML (eine Zeile je Position).
+Ein Semikolon im Titel verschiebt die Spalten - die Zusatzspalten werden dem Titel zugeschlagen.
 Versandkosten-Positionen werden wie im Dashboard weggelassen (ist_versand).
 
 Zuordnung zum Monat:
@@ -41,7 +44,7 @@ import sys
 from collections import Counter, defaultdict
 from datetime import datetime
 
-VERSION = "2026-10-08a"
+VERSION = "2026-10-08b"
 STANDARD_ZIEL = r"\\DESKTOP-N2H75H\Netzwerk\Paketscheine\artikel_historie.csv"
 HEADER = "Monat;Artikelnummer;Bezeichnung;Bestellungen;Menge;Umsatz\n"
 
@@ -50,6 +53,7 @@ SPALTEN = {
     "titel": ["titel", "bezeichnung", "artikelbezeichnung"],
     "menge": ["menge", "anzahl"],
     "betrag": ["betrag", "gesamtpreis", "g-preis", "gesamt", "summe"],
+    "ep": ["einzelpreis", "e-preis", "epreis"],
     "rnr": ["rechnungsnummer", "rechnung nr.", "rechnungs-nr.", "beleg nr.", "belegnummer", "rechnung"],
     "datum": ["rechnungsdatum", "belegdatum", "datum"],
 }
@@ -90,6 +94,8 @@ def zahl(s):
 
 def monat_aus_datum(s):
     s = (s or "").strip()[:10]
+    if re.fullmatch(r"\d{8}", s):
+        s = s[:4] + "-" + s[4:6] + "-" + s[6:]
     for fmt in ("%d.%m.%Y", "%Y-%m-%d", "%d.%m.%y"):
         try:
             return datetime.strptime(s, fmt).strftime("%Y-%m")
@@ -108,7 +114,7 @@ def ist_versand(art, bez):
 
 def lies_export(text, monat=None):
     """-> (zeilen {(monat, art): {...}}, info dict). Wirft ValueError bei fehlenden Pflichtspalten."""
-    zeilen = list(csv.reader(io.StringIO(text), delimiter=";"))
+    zeilen = list(csv.reader(io.StringIO(text), delimiter=";", quoting=csv.QUOTE_NONE))
     if not zeilen:
         raise ValueError("leere Datei")
     cols = finde_spalten(zeilen[0])
@@ -121,6 +127,10 @@ def lies_export(text, monat=None):
     agg = {}
     info = {"zeilen": 0, "versand": 0, "ohne_monat": 0, "anderer_monat": 0, "spalten": cols}
     for z in zeilen[1:]:
+        extra = len(z) - len(zeilen[0])
+        if extra > 0 and "titel" in cols:                  # Semikolon im Titel: Zusatzspalten dem Titel zuschlagen
+            t = cols["titel"]
+            z = z[:t] + [";".join(z[t:t + extra + 1])] + z[t + extra + 1:]
         if len(z) <= max(cols.values()):
             continue
         info["zeilen"] += 1
@@ -141,6 +151,8 @@ def lies_export(text, monat=None):
         a["menge"] += zahl(z[cols["menge"]])
         if "betrag" in cols:
             a["umsatz"] += zahl(z[cols["betrag"]])
+        elif "ep" in cols:
+            a["umsatz"] += zahl(z[cols["menge"]]) * zahl(z[cols["ep"]])
         if "rnr" in cols and z[cols["rnr"]].strip():
             a["rnr"].add(z[cols["rnr"]].strip())
     return agg, info
@@ -213,6 +225,16 @@ def selftest():
     check("Versandzeile gezaehlt", info["versand"], 1)
     agg2, _ = lies_export(amicron, monat="2025-03")
     check("--monat begrenzt", sorted({k[0] for k in agg2}), ["2025-03"])
+    neu = ("Rechnungsnummer;Rechnungsdatum;Artikelnummer;Titel;Menge;Einzelpreis\n"
+           "2001;20250310;X1;Teil 1/4\" x 8mm; lang;3;2,50\n2001;20250310;660;Versandkosten;1;4,90\n"
+           "2002;20250311;X1;Teil;1;2,50\n")
+    agg4, i4 = lies_export(neu)
+    x1 = agg4[("2025-03", "x1")]
+    check("Exportdefinition-Format: JJJJMMTT, Menge x Einzelpreis, Semikolon im Titel",
+          (x1["menge"], round(x1["umsatz"], 2), len(x1["rnr"])), (4.0, 10.0, 2))
+    agg5, _ = lies_export("Rechnungsnummer;Rechnungsdatum;Artikelnummer;Titel;Menge;Einzelpreis\n"
+                          "3001;20250312;Q1;\"Quote am Anfang;1;1,00\n3002;20250312;Q2;Normal;2;1,00\n")
+    check("Anfuehrungszeichen am Titelanfang verschluckt keine Folgezeilen", sorted(k[1] for k in agg5), ["q1", "q2"])
     zub = "Artikelnummer;Titel;Menge;Betrag\nA1;Artikel Eins;4;0,00\n"
     try:
         lies_export(zub)
@@ -265,7 +287,7 @@ def main(argv=None):
     for pfad in arg.dateien:
         text, enc = lies_text(pfad)
         if arg.zeige_spalten:
-            rows = list(csv.reader(io.StringIO(text), delimiter=";"))
+            rows = list(csv.reader(io.StringIO(text), delimiter=";", quoting=csv.QUOTE_NONE))
             print("%s (%s, %d Zeilen)" % (pfad, enc, len(rows)))
             for z in rows[:4]:
                 print("   ", " | ".join(z)[:200])

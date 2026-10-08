@@ -17,3 +17,7 @@ wc_auftragsimport_state.json
 # Erzeugtes Paket fuer den Faktura-PC (aus den Quelldateien neu baubar) und echte Config.
 Faktura-PC-Paket/
 carrier_dashboard_config.json
+
+# Laufzeitdateien der automatischen Aufraeumung (aufraeumen.py)
+aufraeumen.log
+aufraeumen_letzter_lauf.txt

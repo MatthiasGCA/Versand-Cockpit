@@ -7,5 +7,6 @@
   "bruecken_ziel": "\\\\DESKTOP-N2H75H\\Netzwerk\\Paketscheine",
   "pickliste_oeffnen": true,
   "pickliste_drucken": true,
-  "pickliste_drucker": "Brother HL-L2310D series"
+  "pickliste_drucker": "Brother HL-L2310D series",
+  "aufraeumen": true
 }

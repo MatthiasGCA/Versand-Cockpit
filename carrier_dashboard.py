@@ -99,7 +99,9 @@ from tkinter import messagebox, simpledialog, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-10-08a"
+VERSION = "2026-10-08b"
+# 2026-10-08b: automatische Aufraeumung (aufraeumen.py) - einmal taeglich beim Dashboard-Start,
+#   nur wenn in der Konfiguration "aufraeumen": true steht (Standard aus).
 # 2026-10-08a: Bestseller-Auswertung: Schritt 2 schreibt jede Rechnungsposition in
 #   artikel_verkaeufe.csv (carrier_statistik.log_verkaeufe), neuer Button "Top-Artikel"
 #   (Zeitraum/Sortierung waehlbar, CSV-Export). Rueckwaerts-Auswertung: artikel_auswertung_archiv.py.
@@ -311,6 +313,11 @@ PICKLISTE_DRUCKEN = False
 # Hintergrund: der "print"-Befehl des Acrobat Reader nimmt oft den ZULETZT BENUTZTEN statt den
 # Standarddrucker; "printto" mit Druckername ist eindeutig.
 PICKLISTE_DRUCKER = ""
+# Automatisches Aufraeumen alter Archive/Logs (aufraeumen.py), hoechstens einmal je 20 Stunden,
+# im Hintergrund beim Start. Standard aus (Laptop-Test) - Faktura-PC: "aufraeumen": true.
+# "aufraeumen_tage" ueberschreibt Aufbewahrungsfristen, z.B. {"rechnungs_archiv": 60}.
+AUFRAEUMEN = False
+AUFRAEUMEN_TAGE = {}
 BRUECKEN_DATEIEN = ("post_zuordnung.csv", "sammel_zuordnung.csv", "mengen_zuordnung.csv",
                     "ean_zuordnung.csv")
 CONFIG_PFAD = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -327,7 +334,7 @@ def _lade_config(pfad=None):
     Rueckgabe: Liste der ueberschriebenen Schluessel."""
     global POOL_ORDNER, AUSGABE_ORDNER, ARCHIV_ORDNER, CARRIER_EXPORT_ORDNER
     global WC_SYNC_ORDNER, BRUECKEN_ZIEL, CONFIG_FEHLER, PICKLISTE_OEFFNEN, PICKLISTE_DRUCKEN
-    global PICKLISTE_DRUCKER
+    global PICKLISTE_DRUCKER, AUFRAEUMEN, AUFRAEUMEN_TAGE
     import json
     pfad = pfad or CONFIG_PFAD
     if not os.path.exists(pfad):
@@ -355,6 +362,12 @@ def _lade_config(pfad=None):
         if isinstance(cfg.get(schluessel), bool):
             globals()[name] = cfg[schluessel]
             gesetzt.append(schluessel)
+    if isinstance(cfg.get("aufraeumen"), bool):
+        AUFRAEUMEN = cfg["aufraeumen"]
+        gesetzt.append("aufraeumen")
+    if isinstance(cfg.get("aufraeumen_tage"), dict):
+        AUFRAEUMEN_TAGE = {k: v for k, v in cfg["aufraeumen_tage"].items()
+                           if isinstance(v, int) and not isinstance(v, bool) and v >= 7}
     return gesetzt
 
 
@@ -1876,6 +1889,49 @@ def gui():
     aktualisiere_zaehler()
     root.after(REFRESH_MS, tick)
     root.after(AUTO_MS, auto_scan)
+
+    # --- Automatische Aufraeumung (aufraeumen.py) ---------------------------------------------
+    aufr = {"text": None}
+
+    def starte_aufraeumen():
+        base = os.path.dirname(os.path.abspath(__file__))
+
+        def arbeit():
+            try:
+                import aufraeumen
+                import carrier_statistik
+                pfade = {
+                    "archiv": ARCHIV_ORDNER, "ausgabe": AUSGABE_ORDNER,
+                    "carrier_export": CARRIER_EXPORT_ORDNER,
+                    "label_archiv": os.path.join(BRUECKEN_ZIEL, "Archiv") if BRUECKEN_ZIEL else None,
+                    "sync_archiv": os.path.join(WC_SYNC_ORDNER, "Archiv") if WC_SYNC_ORDNER else None,
+                    "verkaeufe_csv": carrier_statistik.ARTIKEL_VERKAEUFE_DATEI,
+                    "dashboard_log": os.path.join(base, "Carrier-Dashboard.log"),
+                }
+                b = aufraeumen.lauf_wenn_faellig(
+                    pfade, AUFRAEUMEN_TAGE, marker=os.path.join(base, "aufraeumen_letzter_lauf.txt"),
+                    log_pfad=os.path.join(base, "aufraeumen.log"))
+                if b is not None:
+                    n, byt = b.summe()
+                    aufr["text"] = "Aufräumen: %d Datei(en) gelöscht (%.0f MB), Protokoll: aufraeumen.log" % (
+                        n, byt / 1048576.0)
+            except Exception as e:                      # Aufraeumen darf NIE stoeren
+                aufr["text"] = "Aufräumen fehlgeschlagen: %s: %s" % (type(e).__name__, e)
+
+        threading.Thread(target=arbeit, daemon=True).start()
+        root.after(2000, zeige_aufraeumen)
+
+    def zeige_aufraeumen(n=0):
+        if aufr["text"] is None:
+            if n < 600:                                   # hoechstens 20 Minuten lang nachsehen
+                root.after(2000, lambda: zeige_aufraeumen(n + 1))
+            return
+        if not laeuft["an"]:
+            status_var.set(aufr["text"])
+        aufr["text"] = None
+
+    if AUFRAEUMEN:
+        root.after(30000, starte_aufraeumen)
     root.mainloop()
 
 

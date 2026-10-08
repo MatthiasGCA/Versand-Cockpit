@@ -90,3 +90,17 @@ wiederholen, sondern die vier Dateien `post_/sammel_/mengen_/ean_zuordnung.csv` 
   `cd /d C:\Carrier-Dashboard` und `py artikel_auswertung_archiv.py` (liest `C:\Packlisten\Archiv`).
   Vorab ohne Schreiben testen: `py artikel_auswertung_archiv.py --trocken`. Beliebig oft wiederholbar
   (schon vorhandene Rechnungen werden übersprungen).
+
+## 8. Automatische Aufräumung (aufraeumen.py)
+
+Löscht regelmäßig nur Veraltetes (Standard-Aufbewahrung): Rechnungs-PDFs im Archiv 45 Tage (nur wenn die
+Rechnung schon in `artikel_verkaeufe.csv` steht), Picklisten-PDFs 30 Tage, Carrier-CSVs 60 Tage,
+Label-/Briefmarken-PDFs in `Paketscheine\Archiv` 90 Tage, Sync-Archiv 90 Tage, `Carrier-Dashboard.log` wird
+gekürzt. **Nie** angefasst: alle Statistik-CSVs, `artikel_verkaeufe.csv`, `gedruckt.log`, die Brücken-CSVs, Programme.
+
+1. Dateien `carrier_dashboard.py` und `aufraeumen.py` nach `C:\Carrier-Dashboard\` kopieren.
+2. **Trockenlauf** (löscht nichts, zeigt nur): `cd /d C:\Carrier-Dashboard` und `py aufraeumen.py`
+3. Passt die Liste: `carrier_dashboard_config_MIT_AUFRAEUMEN.json` in `carrier_dashboard_config.json` umbenennen
+   (ersetzt die alte; enthält zusätzlich `"aufraeumen": true`). Ab dem nächsten Dashboard-Start räumt es
+   einmal täglich im Hintergrund auf (Protokoll `aufraeumen.log`, Status in der Fußzeile).
+4. Fristen ändern: in der Konfiguration z. B. `"aufraeumen_tage": {"rechnungs_archiv": 60}` (mindestens 7).

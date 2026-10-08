@@ -30,7 +30,12 @@ import os
 from collections import Counter, defaultdict
 from datetime import datetime
 
-VERSION = "2026-10-08a"
+VERSION = "2026-10-09a"
+# 2026-10-09a: Stueckfaktor-Tabelle (artikel_stueckfaktor.csv): Verkaufseinheiten (VE) -> Stueck, z.B.
+#   BP-GF-24 (24er Packung) = 24 Stueck. Wird bei jedem Schritt 2 aus den Rechnungen (Feld "fach", explizite
+#   "N-Fach-Artikel"-Marker) fortgeschrieben - Grundlage fuer "Stueck" in der Online-Auswertung, auch fuer
+#   die Amicron-Historie. Handarbeit (Excel) in der Tabelle hat IMMER Vorrang, vorhandene Zeilen werden nie
+#   ueberschrieben.
 # 2026-10-08a: Artikel-Verkaeufe (artikel_verkaeufe.csv): log_verkaeufe() schreibt bei jedem
 #   Schritt 2 JEDE echte Rechnungsposition (Artikelnr, Bezeichnung, Menge, Preise) mit
 #   Rechnungsdatum - Grundlage fuer die Bestseller-Auswertung (top_artikel(), Dashboard-Fenster
@@ -44,6 +49,8 @@ VERSION = "2026-10-08a"
 STATISTIK_DATEI = r"\\DESKTOP-N2H75H\Netzwerk\Paketscheine\carrier_statistik.csv"
 ARTIKEL_STATISTIK_DATEI = r"\\DESKTOP-N2H75H\Netzwerk\Paketscheine\artikel_statistik.csv"
 ARTIKEL_VERKAEUFE_DATEI = r"\\DESKTOP-N2H75H\Netzwerk\Paketscheine\artikel_verkaeufe.csv"
+ARTIKEL_STUECKFAKTOR_DATEI = r"\\DESKTOP-N2H75H\Netzwerk\Paketscheine\artikel_stueckfaktor.csv"
+_FAKTOR_HEADER = "Artikelnummer;Bezeichnung;Faktor;Gruppe;Quelle\n"
 _VERKAEUFE_HEADER = ("Datum;Rechnungsnummer;Artikelnummer;Bezeichnung;Menge;Einheit;"
                      "Einzelpreis;Gesamtpreis\n")
 
@@ -225,6 +232,78 @@ def verkaeufe_zeilen(r, jetzt=None):
                     menge if menge is not None else 1.0, p.get("einh") or "",
                     p.get("ep"), p.get("gp")))
     return aus
+
+
+def lies_stueckfaktoren(pfad=ARTIKEL_STUECKFAKTOR_DATEI):
+    """{artikelnummer_klein: {"art", "bez", "faktor", "gruppe", "quelle"}} aus der Stueckfaktor-Tabelle
+    (leer, wenn die Datei fehlt). Faktor mit Komma oder Punkt; ungueltige Zeilen werden ignoriert."""
+    out = {}
+    if not os.path.exists(pfad):
+        return out
+    try:
+        with open(pfad, encoding="utf-8-sig") as f:
+            next(f, None)
+            for z in f:
+                t = z.rstrip("\r\n").split(";")
+                if len(t) < 3 or not t[0].strip():
+                    continue
+                try:
+                    fk = float(t[2].strip().replace(",", "."))
+                except ValueError:
+                    continue
+                if fk > 0:
+                    out[t[0].strip().lower()] = {"art": t[0].strip(), "bez": t[1].strip(), "faktor": fk,
+                                                 "gruppe": t[3].strip() if len(t) > 3 else "",
+                                                 "quelle": t[4].strip() if len(t) > 4 else ""}
+    except OSError:
+        pass
+    return out
+
+
+def gruppe_vorschlag(art, faktor):
+    """Vorschlag fuer die Produktgruppe: Artikelnummer ohne den Packungs-Suffix, wenn der Suffix dem Faktor
+    entspricht (BP-GF-24 -> BP-GF, 0751201TD08/4 -> 0751201TD08); sonst leer."""
+    import re
+    m = re.match(r"^(.*?)[-/](\d+)$", art)
+    if m and m.group(1) and float(m.group(2)) == float(faktor):
+        return m.group(1)
+    return ""
+
+
+def _faktor_txt(x):
+    return str(int(x)) if x == int(x) else ("%.4f" % x).rstrip("0").replace(".", ",")
+
+
+def merke_stueckfaktoren(rechnungen, pfad=ARTIKEL_STUECKFAKTOR_DATEI):
+    """Traegt unbekannte Artikel mit explizitem Packungsfaktor (Position "fach" > 1, aus dem Marker
+    "<N>-Fach-Artikel") in die Stueckfaktor-Tabelle ein. Vorhandene Zeilen bleiben UNVERAENDERT (Handpflege
+    hat Vorrang). Rueckgabe: Anzahl neuer Zeilen (0 bei Fehler)."""
+    import packliste
+    bekannt = lies_stueckfaktoren(pfad)
+    neu = {}
+    for r in rechnungen or []:
+        for p in r.get("positionen") or []:
+            art = (p.get("art") or "").strip()
+            fach = p.get("fach")
+            if (not art or art.lower() in bekannt or art.lower() in neu or fach is None or fach <= 1
+                    or packliste.ist_versand(p.get("art"), p.get("bez"))):
+                continue
+            neu[art.lower()] = (art, " ".join((p.get("bez") or "").replace(";", ",").split()), fach)
+    if not neu:
+        return 0
+    try:
+        ordner = os.path.dirname(pfad)
+        if ordner:
+            os.makedirs(ordner, exist_ok=True)
+        anlegen = not os.path.exists(pfad)
+        with open(pfad, "a", encoding="utf-8-sig" if anlegen else "utf-8", newline="") as f:
+            if anlegen:
+                f.write(_FAKTOR_HEADER)
+            for art, bez, fach in sorted(neu.values()):
+                f.write("%s;%s;%s;%s;auto\n" % (art, bez, _faktor_txt(fach), gruppe_vorschlag(art, fach)))
+    except OSError:
+        return 0
+    return len(neu)
 
 
 def log_verkaeufe(rechnungen, pfad=ARTIKEL_VERKAEUFE_DATEI, jetzt=None):
@@ -681,6 +760,31 @@ def selftest():
               [t[0] for t in top_artikel(vpfad, von="2026-10-06", bis="2026-10-06")], ["a1"])
         check("top_artikel(): n begrenzt", len(top_artikel(vpfad, n=1)), 1)
         check("top_artikel(): fehlende Datei -> leer", top_artikel(os.path.join(tmp, "nix.csv")), [])
+        # --- Stueckfaktor-Tabelle ------------------------------------------------------------
+        fpfad = os.path.join(tmp, "f", "artikel_stueckfaktor.csv")
+        check("gruppe_vorschlag: Suffix = Faktor", (gruppe_vorschlag("BP-GF-24", 24), gruppe_vorschlag("0751201TD08/4", 4),
+              gruppe_vorschlag("MB15-SD08-10", 10)), ("BP-GF", "0751201TD08", "MB15-SD08"))
+        check("gruppe_vorschlag: Suffix passt nicht zum Faktor -> leer", gruppe_vorschlag("KB-12", 108), "")
+        rgf = {"rnr": "1", "datum": "05.10.2026", "positionen": [
+            {"art": "BP-GF-24", "bez": "GermanFire; 24 Stück", "menge": 2.0, "fach": 24},
+            {"art": "BP-GF", "bez": "GermanFire", "menge": 5.0, "fach": None},
+            {"art": "660", "bez": "Versandkosten", "menge": 1.0, "fach": 12},
+            {"art": "X-5", "bez": "Fuenfer", "menge": 1.0, "fach": 5}]}
+        check("merke_stueckfaktoren: 2 neue Packungsartikel (kein Einzelartikel, kein Versand)",
+              merke_stueckfaktoren([rgf], fpfad), 2)
+        t = lies_stueckfaktoren(fpfad)
+        check("Tabelle: Faktor/Gruppe/Quelle", (t["bp-gf-24"]["faktor"], t["bp-gf-24"]["gruppe"], t["bp-gf-24"]["quelle"],
+              t["x-5"]["gruppe"]), (24.0, "BP-GF", "auto", "X"))
+        # Handpflege hat Vorrang: vorhandene Zeile bleibt, auch wenn die Rechnung etwas anderes sagt
+        with open(fpfad, "a", encoding="utf-8", newline="") as f:
+            f.write("Z-9;Hand;3,5;Meine Gruppe;hand\n")
+        rgf2 = {"rnr": "2", "positionen": [{"art": "Z-9", "bez": "x", "menge": 1.0, "fach": 9},
+                                          {"art": "X-5", "bez": "x", "menge": 1.0, "fach": 99}]}
+        check("merke_stueckfaktoren: vorhandene Zeilen unveraendert", merke_stueckfaktoren([rgf2], fpfad), 0)
+        t = lies_stueckfaktoren(fpfad)
+        check("Handpflege: Dezimalkomma gelesen, Faktor bleibt", (t["z-9"]["faktor"], t["z-9"]["gruppe"], t["x-5"]["faktor"]),
+              (3.5, "Meine Gruppe", 5.0))
+        check("lies_stueckfaktoren: fehlende Datei -> leer", lies_stueckfaktoren(os.path.join(tmp, "nix.csv")), {})
         rpfad = os.path.join(tmp, "ranking.csv")
         schreibe_ranking_csv(rpfad, top_artikel(vpfad, sortierung="umsatz"))
         with open(rpfad, encoding="utf-8-sig", newline="") as f:

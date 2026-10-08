@@ -45,6 +45,7 @@
   .ctl label{display:flex;flex-direction:column;font-size:12px;color:var(--muted);gap:3px}
   .ctl input,.ctl select{font:inherit;font-size:14px;padding:6px 8px;border:1px solid var(--line);border-radius:7px;
     background:var(--card);color:var(--ink)}
+  .tbl td.ve{color:var(--faint);font-size:12px}
   .presets{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px}
   .presets button{border:1px solid var(--line);background:var(--card);border-radius:7px;padding:5px 11px;
     font-size:13px;color:var(--muted);cursor:pointer}
@@ -94,9 +95,10 @@
         <label>Von<input type="date" id="avon"></label>
         <label>Bis<input type="date" id="abis"></label>
         <label>Rangfolge nach<select id="asort">
-          <option value="best">Bestellungen</option><option value="menge">Stückzahl</option><option value="umsatz">Umsatz</option>
+          <option value="best">Bestellungen</option><option value="stueck">Stückzahl</option><option value="umsatz">Umsatz</option>
         </select></label>
         <label>Anzahl<select id="an"><option>20</option><option>50</option><option>100</option></select></label>
+        <label style="flex-direction:row;align-items:center;gap:6px;padding-bottom:7px"><input type="checkbox" id="agrp">Packungsgrößen zusammenfassen</label>
       </div>
       <div class="presets" id="apresets"></div>
       <div class="kpis" id="akpis"></div>
@@ -122,7 +124,7 @@
   var MON = ['Jan','Feb','Mär','Apr','Mai','Jun','Jul','Aug','Sep','Okt','Nov','Dez'];
   var GRID = '#ebeae5', TICK = '#8a8984';
   var DATA = null, tab = 'tag', chart = null;
-  var ART = null, ARTERR = null, tchart = null, selIdx = null;
+  var ART = null, ARTERR = null, tchart = null, selKey = null;
 
   function ddmm(iso){ var p = iso.split('-'); return p[2]+'.'+p[1]; }
   function nf(n){ return (n||0).toLocaleString('de-DE'); }
@@ -171,14 +173,21 @@
   function esc(t){ return String(t==null?'':t).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
   function eur(n){ return (n||0).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2}); }
   function dmy(s){ var p=s.split('-'); return p[2]+'.'+p[1]+'.'+p[0]; }
+  function fakt(i){ var f=ART.artikel[i][2]; return (f>0)?f:1; }          /* Stueck je Verkaufseinheit */
+  function grp(i){ return ART.artikel[i][3]||''; }
+  function keyOf(i,byGroup){ var g=byGroup?grp(i).toLowerCase():''; return g?('g:'+g):('i:'+i); }
 
-  /* Summiert je Artikel (idx) die Werte im Zeitraum von..bis (JJJJ-MM-TT). Tageswerte zaehlen tagesgenau,
-     fruehere Monate (Amicron-Historie) nur, wenn der Monat KOMPLETT im Zeitraum liegt. */
-  function aggregate(von, bis){
-    var out={}, skipped=[], tot={menge:0,umsatz:0}, hasMonth=false, bestOk=true;
+  /* Summiert je Artikel (oder Produktgruppe) die Werte im Zeitraum von..bis (JJJJ-MM-TT). Tageswerte zaehlen
+     tagesgenau, fruehere Monate (Amicron-Historie) nur, wenn der Monat KOMPLETT im Zeitraum liegt.
+     Stueck = Verkaufseinheiten x Stueckfaktor. */
+  function aggregate(von, bis, byGroup){
+    var out={}, skipped=[], tot={ve:0,stueck:0,umsatz:0}, hasMonth=false, bestOk=true;
     function add(i,b,m,u){
-      var a=out[i]||(out[i]={best:0,menge:0,umsatz:0}); if(b==null){ bestOk=false; } else { a.best+=b; }
-      a.menge+=m; a.umsatz+=u; tot.menge+=m; tot.umsatz+=u;
+      var k=keyOf(i,byGroup), a=out[k]||(out[k]={key:k,idxs:{},per:{},best:0,ve:0,stueck:0,umsatz:0});
+      var st=m*fakt(i);
+      if(b==null){ bestOk=false; } else { a.best+=b; }
+      a.ve+=m; a.stueck+=st; a.umsatz+=u; a.idxs[i]=1; a.per[i]=(a.per[i]||0)+st;
+      tot.ve+=m; tot.stueck+=st; tot.umsatz+=u;
     }
     Object.keys(ART.tage).forEach(function(d){
       if(d<von||d>bis) return;
@@ -189,7 +198,20 @@
       if(first>=von && last<=bis){ hasMonth=true; ART.monate[mo].forEach(function(r){ add(r[0],r[1],r[2],r[3]); }); }
       else if(last>=von && first<=bis){ skipped.push(mo); }
     });
+    Object.keys(out).forEach(function(k){                      /* Wortfuehrer: Artikel mit den meisten Stueck */
+      var a=out[k], best=-1; Object.keys(a.per).forEach(function(i){ if(a.per[i]>best){ best=a.per[i]; a.top=+i; } });
+      a.n=Object.keys(a.idxs).length;
+    });
     return {rows:out, tot:tot, skipped:skipped, hasMonth:hasMonth, bestOk:bestOk};
+  }
+
+  function labelOf(a, byGroup){
+    if(byGroup && a.key.charAt(0)==='g'){
+      var g=grp(a.top), base=null;
+      ART.artikel.forEach(function(x,i){ if(base==null && (x[3]||'').toLowerCase()===g.toLowerCase() && fakt(i)===1) base=i; });
+      return {nr:g, bez:(base!=null?ART.artikel[base][1]:ART.artikel[a.top][1])+(a.n>1?'  ('+a.n+' Packungsgrößen)':'')};
+    }
+    return {nr:ART.artikel[a.top][0], bez:ART.artikel[a.top][1]};
   }
 
   function dataRange(){
@@ -210,37 +232,34 @@
     document.getElementById('avon').value=von; document.getElementById('abis').value=bis;
   }
 
-  function monthSeries(idx){
-    var s={};                                   // 'JJJJ-MM' -> menge
+  function monthSeries(idxs){
+    var s={};                                   /* 'JJJJ-MM' -> Stueck */
     Object.keys(ART.monate||{}).forEach(function(mo){
-      ART.monate[mo].forEach(function(r){ if(r[0]===idx) s[mo]=(s[mo]||0)+r[2]; });
+      ART.monate[mo].forEach(function(r){ if(idxs[r[0]]) s[mo]=(s[mo]||0)+r[2]*fakt(r[0]); });
     });
     Object.keys(ART.tage).forEach(function(d){
-      ART.tage[d].forEach(function(r){ if(r[0]===idx){ var mo=d.slice(0,7); s[mo]=(s[mo]||0)+r[2]; } });
+      ART.tage[d].forEach(function(r){ if(idxs[r[0]]){ var mo=d.slice(0,7); s[mo]=(s[mo]||0)+r[2]*fakt(r[0]); } });
     });
     return s;
   }
 
-  function showTrend(idx){
-    selIdx=idx;
+  function showTrend(row, byGroup){
     var box=document.getElementById('atrendbox');
     if(tchart){ tchart.destroy(); tchart=null; }
-    if(idx==null){ box.style.display='none'; return; }
-    var s=monthSeries(idx), years={};
+    if(!row){ box.style.display='none'; return; }
+    var s=monthSeries(row.idxs), years={};
     Object.keys(s).forEach(function(mo){ years[mo.slice(0,4)]=1; });
-    var ys=Object.keys(years).sort();
+    var ys=Object.keys(years).sort(), lb=labelOf(row,byGroup);
     box.style.display='block';
-    document.getElementById('atrendtitle').textContent='Verkaufte Stück je Monat · '+ART.artikel[idx][0]+' – '+ART.artikel[idx][1];
+    document.getElementById('atrendtitle').textContent='Verkaufte Stück je Monat · '+lb.nr+' – '+lb.bez;
     tchart=new Chart(document.getElementById('atrend'),{type:'line',data:{labels:MON,datasets:ys.map(function(y,i){
-      var data=MON.map(function(_,m){ var k=y+'-'+pad(m+1); return (k in s)?s[k]:null; });
-      var newest=(i===ys.length-1);
-      var ci=Math.max(0,YEARCYCLE.length-ys.length+i);
+      var data=MON.map(function(_,m){ var k=y+'-'+pad(m+1); return (k in s)?Math.round(s[k]*100)/100:null; });
+      var newest=(i===ys.length-1), ci=Math.max(0,YEARCYCLE.length-ys.length+i);
       return {label:y,data:data,borderColor:YEARCYCLE[ci],backgroundColor:YEARCYCLE[ci],
         borderWidth:newest?2:1.5,pointRadius:3,tension:.25,spanGaps:false};
     })},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:ys.length>1,labels:{boxWidth:12,font:{size:12}}},
       tooltip:{mode:'index',intersect:false}},interaction:{mode:'index',intersect:false},scales:baseScales()}});
-    var rows=document.querySelectorAll('#atable tr.row');
-    Array.prototype.forEach.call(rows,function(tr){ tr.classList.toggle('sel',+tr.dataset.idx===idx); });
+    Array.prototype.forEach.call(document.querySelectorAll('#atable tr.row'),function(tr){ tr.classList.toggle('sel',tr.dataset.key===row.key); });
   }
 
   function renderArtikel(){
@@ -251,42 +270,44 @@
     st.className=''; st.innerHTML=''; ct.style.display='block';
     var von=document.getElementById('avon').value, bis=document.getElementById('abis').value;
     if(!von||!bis||von>bis){ document.getElementById('anote').textContent='Bitte einen gültigen Zeitraum wählen (Von ≤ Bis).'; return; }
-    var key=document.getElementById('asort').value, n=+document.getElementById('an').value;
-    var cur=aggregate(von,bis), prevVon=shiftYear(von,-1), prevBis=shiftYear(bis,-1), prev=aggregate(prevVon,prevBis);
-    var prevOk = (Object.keys(prev.rows).length>0);
-    var ids=Object.keys(cur.rows).map(Number);
-    ids.sort(function(a,b){ var x=cur.rows[a], y=cur.rows[b];
-      var d=(y[key]-x[key]); return d||(y.best-x.best)||(ART.artikel[a][0]<ART.artikel[b][0]?-1:1); });
-    var top=ids.slice(0,n);
+    var key=document.getElementById('asort').value, n=+document.getElementById('an').value, byGroup=document.getElementById('agrp').checked;
+    var cur=aggregate(von,bis,byGroup), prevVon=shiftYear(von,-1), prevBis=shiftYear(bis,-1), prev=aggregate(prevVon,prevBis,byGroup);
+    var prevOk=(Object.keys(prev.rows).length>0);
+    var keys=Object.keys(cur.rows);
+    keys.sort(function(a,b){ var x=cur.rows[a], y=cur.rows[b];
+      var d=y[key]-x[key]; return d||(y.best-x.best)||(a<b?-1:1); });
+    var top=keys.slice(0,n);
 
-    var dM=null; if(prevOk&&prev.tot.menge){ dM=(cur.tot.menge-prev.tot.menge)/prev.tot.menge*100; }
+    var dS=null; if(prevOk&&prev.tot.stueck){ dS=(cur.tot.stueck-prev.tot.stueck)/prev.tot.stueck*100; }
     var dU=null; if(prevOk&&prev.tot.umsatz){ dU=(cur.tot.umsatz-prev.tot.umsatz)/prev.tot.umsatz*100; }
     function kp(l,v,d){ var dd=''; if(d!=null){ var up=d>=0; dd='<div class="dlt '+(up?'up':'down')+'">'+(up?'▲ +':'▼ ')+Math.abs(d).toFixed(1)+' % ggü. Vorjahreszeitraum</div>'; }
       return '<div class="kpi"><div class="lbl">'+l+'</div><div class="val">'+v+'</div>'+dd+'</div>'; }
-    document.getElementById('akpis').innerHTML=kp('Verkaufte Stück',nf(Math.round(cur.tot.menge)),dM)+
-      kp('Artikelumsatz',eur(cur.tot.umsatz)+' €',dU)+kp('Verschiedene Artikel',nf(ids.length),null);
+    document.getElementById('akpis').innerHTML=kp('Verkaufte Stück',nf(Math.round(cur.tot.stueck)),dS)+
+      kp('Artikelumsatz',eur(cur.tot.umsatz)+' €',dU)+kp(byGroup?'Verschiedene Produkte':'Verschiedene Artikel',nf(keys.length),null);
 
-    var h='<thead><tr><th class="rank">#</th><th class="l">Artikel</th><th class="l">Bezeichnung</th><th>Bestellungen</th><th>Stück</th><th>Umsatz</th><th>Vorjahr Stück</th><th>Δ</th></tr></thead><tbody>';
-    top.forEach(function(i,k){
-      var a=cur.rows[i], p=prev.rows[i], pm=p?p.menge:(prevOk?0:null), dl='–', cls='';
-      if(pm!=null){ if(pm>0){ var d=(a.menge-pm)/pm*100; dl=(d>=0?'+':'')+d.toFixed(0)+' %'; cls=d>=0?'up':'down'; } else { dl='neu'; cls='up'; } }
-      h+='<tr class="row'+(i===selIdx?' sel':'')+'" data-idx="'+i+'"><td class="rank">'+(k+1)+'</td><td class="l art">'+esc(ART.artikel[i][0])+
-        '</td><td class="l">'+esc(ART.artikel[i][1])+'</td><td>'+(cur.bestOk?nf(a.best):'–')+'</td><td>'+nf(Math.round(a.menge*100)/100)+
-        '</td><td>'+eur(a.umsatz)+' €</td><td>'+(pm==null?'–':nf(Math.round(pm*100)/100))+'</td><td class="'+cls+'">'+dl+'</td></tr>';
+    var h='<thead><tr><th class="rank">#</th><th class="l">'+(byGroup?'Produkt':'Artikel')+'</th><th class="l">Bezeichnung</th><th>Bestellungen</th><th>Stück</th><th>VE</th><th>Umsatz</th><th>Vorjahr Stück</th><th>Δ</th></tr></thead><tbody>';
+    top.forEach(function(k,r){
+      var a=cur.rows[k], p=prev.rows[k], pm=p?p.stueck:(prevOk?0:null), dl='–', cls='', lb=labelOf(a,byGroup);
+      if(pm!=null){ if(pm>0){ var d=(a.stueck-pm)/pm*100; dl=(d>=0?'+':'')+d.toFixed(0)+' %'; cls=d>=0?'up':'down'; } else { dl='neu'; cls='up'; } }
+      h+='<tr class="row'+(k===selKey?' sel':'')+'" data-key="'+esc(k)+'"><td class="rank">'+(r+1)+'</td><td class="l art">'+esc(lb.nr)+
+        '</td><td class="l">'+esc(lb.bez)+'</td><td>'+(cur.bestOk?nf(a.best):'–')+'</td><td>'+nf(Math.round(a.stueck*100)/100)+
+        '</td><td class="ve">'+nf(Math.round(a.ve*100)/100)+'</td><td>'+eur(a.umsatz)+' €</td><td>'+(pm==null?'–':nf(Math.round(pm*100)/100))+
+        '</td><td class="'+cls+'">'+dl+'</td></tr>';
     });
-    if(!top.length) h+='<tr><td colspan="8" class="l" style="padding:18px">Keine Verkäufe im gewählten Zeitraum.</td></tr>';
+    if(!top.length) h+='<tr><td colspan="9" class="l" style="padding:18px">Keine Verkäufe im gewählten Zeitraum.</td></tr>';
     document.getElementById('atable').innerHTML=h+'</tbody>';
     Array.prototype.forEach.call(document.querySelectorAll('#atable tr.row'),function(tr){
-      tr.addEventListener('click',function(){ showTrend(selIdx===+tr.dataset.idx?null:+tr.dataset.idx); });
+      tr.addEventListener('click',function(){ selKey=(selKey===tr.dataset.key)?null:tr.dataset.key; showTrend(selKey?cur.rows[selKey]:null,byGroup); });
     });
-    if(selIdx!=null&&cur.rows[selIdx]==null) selIdx=null;
-    showTrend(selIdx);
+    if(selKey&&!cur.rows[selKey]) selKey=null;
+    showTrend(selKey?cur.rows[selKey]:null,byGroup);
 
-    var r=dataRange(), notes=['Daten von '+dmy(r.first)+' bis '+dmy(r.last)+'. Stück = verkaufte Menge laut Rechnung (ein Karton zählt 1).'];
+    var r=dataRange(), notes=['Daten von '+dmy(r.first)+' bis '+dmy(r.last)+'. <b>Stück</b> = Verkaufseinheiten (VE laut Rechnung) × Stückfaktor, z. B. 1 × „GermanFire 24 Stück“ = 24 Stück.'];
+    if(byGroup) notes.push('Bestellungen je Gruppe = Summe der Bestellungen der einzelnen Packungsgrößen.');
     if(cur.skipped.length) notes.push('<span class="warn">Frühere Daten liegen nur monatsgenau vor: '+cur.skipped.join(', ')+' wurden nicht mitgezählt, weil der Monat nicht komplett im Zeitraum liegt.</span>');
-    if(selIdx!=null) notes.push('Der laufende Monat im Verlaufsdiagramm ist noch nicht abgeschlossen.');
     if(!prevOk) notes.push('Für den Vorjahreszeitraum ('+dmy(prevVon)+' – '+dmy(prevBis)+') liegen keine Daten vor.');
     if(cur.hasMonth&&!cur.bestOk) notes.push('Bestellungen sind für die monatsgenauen Altdaten nicht verfügbar.');
+    if(selKey) notes.push('Der laufende Monat im Verlaufsdiagramm ist noch nicht abgeschlossen.');
     document.getElementById('anote').innerHTML=notes.join(' &middot; ');
   }
 
@@ -295,7 +316,7 @@
     [['30','Letzte 30 Tage'],['90','Letzte 90 Tage'],['jahr','Dieses Jahr'],['vorjahr','Letztes Jahr'],['alles','Alles']].forEach(function(p){
       var b=document.createElement('button'); b.type='button'; b.textContent=p[1];
       b.addEventListener('click',function(){ artikelPreset(p[0]); renderArtikel(); }); pr.appendChild(b); });
-    ['avon','abis','asort','an'].forEach(function(id){ document.getElementById(id).addEventListener('change',renderArtikel); });
+    ['avon','abis','asort','an','agrp'].forEach(function(id){ document.getElementById(id).addEventListener('change',function(){ selKey=null; renderArtikel(); }); });
     artikelPreset('30');
   }
 

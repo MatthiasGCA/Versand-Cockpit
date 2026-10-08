@@ -7,6 +7,9 @@ artikel.json (Tageswerte je Artikel: Bestellungen / Menge / Umsatz) und laedt si
 vs-ingest.php (Ziel "artikel"). Die Seite versandstatistik/index.html zeigt daraus den Reiter
 "Top-Artikel" (frei waehlbarer Zeitraum, Top 20, Vorjahresvergleich, Artikelverlauf).
 
+Stueckfaktoren (artikel_stueckfaktor.csv: Verkaufseinheit -> Stueck, optional Produktgruppe) werden je
+Artikel mitgeschickt; die Seite rechnet damit "Stueck" (z.B. 1 x BP-GF-24 = 24 Stueck).
+
 Monatsdaten FRUEHERER Zeitraeume (Amicron-Export, siehe artikel_import_amicron.py) liegen in
 artikel_historie.csv und werden fuer alle Monate VOR dem ersten Tag mit Tagesdaten dazugenommen.
 
@@ -33,12 +36,13 @@ import urllib.request
 from collections import defaultdict
 from datetime import datetime
 
-VERSION = "2026-10-08a"
+VERSION = "2026-10-09a"
 BASIS = os.path.dirname(os.path.abspath(__file__))
 STANDARD = {
     "url": "https://www.gasecenter-onlineshop.de/vs-ingest.php",
     "verkaeufe_csv": r"\\DESKTOP-N2H75H\Netzwerk\Paketscheine\artikel_verkaeufe.csv",
     "historie_csv": r"\\DESKTOP-N2H75H\Netzwerk\Paketscheine\artikel_historie.csv",
+    "stueckfaktor_csv": r"\\DESKTOP-N2H75H\Netzwerk\Paketscheine\artikel_stueckfaktor.csv",
     "log": r"C:\Packlisten\artikel_upload.log",
 }
 STATE = os.path.join(BASIS, "artikel_upload_state.json")
@@ -97,7 +101,26 @@ def lies_historie(pfad):
     return zeilen
 
 
-def baue(verkaeufe, historie, jetzt=None):
+def lies_faktoren(pfad):
+    """{artikelnummer_klein: (faktor, gruppe)} aus artikel_stueckfaktor.csv (Artikelnummer;Bezeichnung;Faktor;Gruppe;Quelle)."""
+    out = {}
+    if not os.path.exists(pfad):
+        return out
+    with open(pfad, encoding="utf-8-sig") as f:
+        next(f, None)
+        for z in f:
+            t = z.rstrip("\r\n").split(";")
+            if len(t) >= 3 and t[0].strip():
+                try:
+                    fk = float(t[2].strip().replace(",", "."))
+                except ValueError:
+                    continue
+                if fk > 0:
+                    out[t[0].strip().lower()] = (fk, t[3].strip() if len(t) > 3 else "")
+    return out
+
+
+def baue(verkaeufe, historie, jetzt=None, faktoren=None):
     """Kompaktes JSON-Objekt: artikel [[nr, bez]], tage {datum: [[idx, best, menge, umsatz]]},
     monate {JJJJ-MM: [[idx, best|None, menge, umsatz]]} (nur Monate VOR dem ersten Tag mit Tagesdaten)."""
     jetzt = jetzt or datetime.now()
@@ -140,6 +163,11 @@ def baue(verkaeufe, historie, jetzt=None):
 
     def r2(x):
         return round(x, 2) if x != int(x) else int(x)
+    faktoren = faktoren or {}
+    for a in artikel:                              # [nr, bez] -> [nr, bez, faktor, gruppe]
+        fk, gr = faktoren.get(a[0].lower(), (1, ""))
+        a.append(int(fk) if fk == int(fk) else fk)
+        a.append(gr)
     return {
         "generated": jetzt.strftime("%d.%m.%Y %H:%M"),
         "erster_tag": erster_tag,
@@ -186,7 +214,7 @@ def main(argv=None):
     if not verk and not hist:
         log("keine Daten gefunden (%s)" % cfg["verkaeufe_csv"], lg)
         return 1
-    obj = baue(verk, hist)
+    obj = baue(verk, hist, faktoren=lies_faktoren(cfg["stueckfaktor_csv"]))
     roh = json.dumps(obj, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     pruef = hashlib.sha256(json.dumps({k: v for k, v in obj.items() if k != "generated"},
                                       sort_keys=True).encode("utf-8")).hexdigest()

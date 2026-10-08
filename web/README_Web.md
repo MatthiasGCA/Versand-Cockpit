@@ -33,6 +33,16 @@ lokal/im Austauschpaket – nicht weitergeben.
   Zeitraum des Vorjahres; je Artikel Vorjahres-Stückzahl und Veränderung in %
 - Klick auf einen Artikel: Verlauf der verkauften Stück je Monat, Jahre übereinander (Saisonbild)
 
+## Stückzahlen statt Verkaufseinheiten
+
+Die Auswertung zeigt **Stück** (z. B. 1 × „GermanFire 24 Stück“ = 24 Stück) und daneben die VE (Verkaufseinheiten
+laut Rechnung). Die Umrechnung steht in `artikel_stueckfaktor.csv` (Paketscheine):
+`Artikelnummer;Bezeichnung;Faktor;Gruppe;Quelle`. Das Carrier-Dashboard trägt neue Packungsartikel bei jedem
+Schritt 2 selbst ein (Marker „N-Fach-Artikel“); von Hand gepflegte Zeilen (Excel) haben Vorrang. Mit der Option
+„Packungsgrößen zusammenfassen“ werden Artikel derselben **Gruppe** (z. B. BP-GF-6/-12/-24/-48) zu einem Produkt
+zusammengezählt. `py artikel_stueckfaktor.py --pruefliste` zeigt Artikel, die wie Mehrfachpackungen aussehen, aber
+noch keinen Faktor haben.
+
 ## Datenquellen und Grenzen
 
 - Tagesgenau: alle Rechnungen, die das Carrier-Dashboard (Schritt 2) verarbeitet hat, ab 16.07.2026

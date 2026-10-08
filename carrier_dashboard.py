@@ -99,7 +99,9 @@ from tkinter import messagebox, simpledialog, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-10-08b"
+VERSION = "2026-10-09a"
+# 2026-10-09a: Schritt 2 pflegt zusaetzlich die Stueckfaktor-Tabelle (artikel_stueckfaktor.csv,
+#   carrier_statistik.merke_stueckfaktoren) fuer die Stueck-Auswertung (Packungen -> Stueck).
 # 2026-10-08b: automatische Aufraeumung (aufraeumen.py) - einmal taeglich beim Dashboard-Start,
 #   nur wenn in der Konfiguration "aufraeumen": true steht (Standard aus).
 # 2026-10-08a: Bestseller-Auswertung: Schritt 2 schreibt jede Rechnungsposition in
@@ -703,6 +705,10 @@ def exportiere_alles(rechnungen, ergebnisse, ausgabe_pfad, archiv_ordner, carrie
     kg_geloggt = carrier_statistik.log_lauf(ergebnisse, gesperrt=gesperrt)
     artikel_geloggt = carrier_statistik.log_artikel(rechnungen)
     verkaeufe_geloggt = carrier_statistik.log_verkaeufe(rechnungen)
+    try:
+        carrier_statistik.merke_stueckfaktoren(rechnungen)
+    except Exception:                                  # Nice-to-have, darf den Export NIE stoeren
+        pass
 
     verschoben, archiv_fehler, archiv_ziel = 0, [], None
     if archiv_ordner:

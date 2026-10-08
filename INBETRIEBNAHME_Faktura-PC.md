@@ -80,3 +80,13 @@ wiederholen, sondern die vier Dateien `post_/sammel_/mengen_/ean_zuordnung.csv` 
 - Automatische Archiv-Bereinigung (Aufbewahrungsdauer + Ordnerliste mit Matthias abstimmen; nie löschen:
   `carrier_statistik.csv`, `artikel_statistik.csv`, `statistik.csv`, `sammel_zuordnung.csv`).
 - Wenn das Dashboard stabil läuft: `Pickliste_erstellen.bat` weglegen (nicht löschen, Rückfallebene).
+
+## 7. Bestseller-Auswertung (Top-Artikel)
+
+- Ab Dashboard 2026-10-08a schreibt jeder Schritt 2 die Rechnungspositionen in
+  `\DESKTOP-N2H75H\Netzwerk\Paketscheine\artikel_verkaeufe.csv`; der Button **Top-Artikel** zeigt die
+  Bestseller (Zeitraum und Sortierung wählbar, „Als CSV speichern“ für Excel).
+- **Einmalig rückwirkend** aus dem Archiv füllen (Eingabeaufforderung auf dem Faktura-PC):
+  `cd /d C:\Carrier-Dashboard` und `py artikel_auswertung_archiv.py` (liest `C:\Packlisten\Archiv`).
+  Vorab ohne Schreiben testen: `py artikel_auswertung_archiv.py --trocken`. Beliebig oft wiederholbar
+  (schon vorhandene Rechnungen werden übersprungen).

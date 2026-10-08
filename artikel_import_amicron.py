@@ -16,7 +16,8 @@ werden am Namen erkannt:
   Datum           "Rechnungsdatum" | "Belegdatum" | "Datum" (TT.MM.JJJJ, JJJJ-MM-TT, JJJJMMTT) (optional)
 Passende Amicron-Exportdefinition: amicron/Exportdefinition_Artikelverkaeufe.XML (eine Zeile je Position).
 Ein Semikolon im Titel verschiebt die Spalten - die Zusatzspalten werden dem Titel zugeschlagen.
-Versandkosten-Positionen werden wie im Dashboard weggelassen (ist_versand).
+Versandkosten-Positionen werden wie im Dashboard weggelassen (ist_versand). Belege mit Gutschrift-/
+Auftragsbestaetigungs-Nummern (111..., 444..., siehe packliste.RNR_GESPERRT) werden uebersprungen.
 
 Zuordnung zum Monat:
   * hat die Datei eine Datumsspalte, wird je Zeile der Monat aus dem Datum bestimmt (ein Export fuer ein
@@ -44,7 +45,7 @@ import sys
 from collections import Counter, defaultdict
 from datetime import datetime
 
-VERSION = "2026-10-08b"
+VERSION = "2026-10-08c"
 STANDARD_ZIEL = r"\\DESKTOP-N2H75H\Netzwerk\Paketscheine\artikel_historie.csv"
 HEADER = "Monat;Artikelnummer;Bezeichnung;Bestellungen;Menge;Umsatz\n"
 
@@ -104,6 +105,16 @@ def monat_aus_datum(s):
     return None
 
 
+def beleg_gesperrt(rnr):
+    """True fuer Gutschriften/Auftragsbestaetigungen (Nummernpraefix wie packliste.RNR_GESPERRT)."""
+    try:
+        import packliste
+        praefixe = tuple(packliste.RNR_GESPERRT)
+    except Exception:
+        praefixe = ("111", "444")
+    return bool(rnr) and rnr.startswith(praefixe)
+
+
 def ist_versand(art, bez):
     try:
         import packliste
@@ -125,7 +136,7 @@ def lies_export(text, monat=None):
     if "datum" not in cols and not monat:
         raise ValueError("Der Export hat keine Datumsspalte - bitte --monat JJJJ-MM angeben")
     agg = {}
-    info = {"zeilen": 0, "versand": 0, "ohne_monat": 0, "anderer_monat": 0, "spalten": cols}
+    info = {"zeilen": 0, "versand": 0, "ohne_monat": 0, "anderer_monat": 0, "gesperrt": 0, "spalten": cols}
     for z in zeilen[1:]:
         extra = len(z) - len(zeilen[0])
         if extra > 0 and "titel" in cols:                  # Semikolon im Titel: Zusatzspalten dem Titel zuschlagen
@@ -135,6 +146,9 @@ def lies_export(text, monat=None):
             continue
         info["zeilen"] += 1
         art, titel = z[cols["art"]].strip(), z[cols["titel"]].strip()
+        if "rnr" in cols and beleg_gesperrt(z[cols["rnr"]].strip()):
+            info["gesperrt"] += 1
+            continue
         if ist_versand(art, titel):
             info["versand"] += 1
             continue
@@ -223,6 +237,10 @@ def selftest():
     check("A1 Maerz: Menge 3, Umsatz 15, 2 Rechnungen", (a1["menge"], a1["umsatz"], len(a1["rnr"])), (3.0, 15.0, 2))
     check("Tausenderpunkt/Komma: 1.234,50", agg[("2025-03", "b2")]["umsatz"], 1234.5)
     check("Versandzeile gezaehlt", info["versand"], 1)
+    g, gi = lies_export("Rechnungsnummer;Rechnungsdatum;Artikelnummer;Titel;Menge;Einzelpreis\n"
+                        "1118209;20250310;G1;Gutschrift;1;5,00\n4440035;20250310;G2;AB;1;5,00\n"
+                        "1700001;20250310;N1;Normal;1;5,00\n")
+    check("Gutschrift (111...) und AB (444...) uebersprungen", (sorted(k[1] for k in g), gi["gesperrt"]), (["n1"], 2))
     agg2, _ = lies_export(amicron, monat="2025-03")
     check("--monat begrenzt", sorted({k[0] for k in agg2}), ["2025-03"])
     neu = ("Rechnungsnummer;Rechnungsdatum;Artikelnummer;Titel;Menge;Einzelpreis\n"
@@ -298,8 +316,9 @@ def main(argv=None):
         except ValueError as e:
             print("%s: %s" % (pfad, e))
             return 1
-        print("%s (%s): %d Zeilen, %d Versandpositionen weggelassen%s%s" % (
+        print("%s (%s): %d Zeilen, %d Versandpositionen weggelassen%s%s%s" % (
             pfad, enc, info["zeilen"], info["versand"],
+            (", %d Gutschrift/AB-Zeilen uebersprungen" % info["gesperrt"]) if info["gesperrt"] else "",
             (", %d ohne lesbares Datum" % info["ohne_monat"]) if info["ohne_monat"] else "",
             (", %d aus anderem Monat" % info["anderer_monat"]) if info["anderer_monat"] else ""))
         print("    Spalten: %s" % ", ".join("%s=%d" % kv for kv in sorted(info["spalten"].items())))

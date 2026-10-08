@@ -22,6 +22,7 @@ nach den genannten Dateimustern geloescht, nie ueber Verknuepfungen hinweg.
 Aufruf:
     py aufraeumen.py                 (Trockenlauf: zeigt nur, was geloescht WUERDE)
     py aufraeumen.py --ausfuehren    (loescht wirklich)
+    py aufraeumen.py --pdf-max 20000 (Trockenlauf mit mehr Nummern-Pruefungen aus PDF-Inhalten)
     py aufraeumen.py --selftest
 Das Dashboard ruft die Aufraeumung bei Bedarf einmal taeglich selbst auf, wenn in der
 carrier_dashboard_config.json "aufraeumen": true steht (siehe carrier_dashboard.py).
@@ -33,11 +34,15 @@ import shutil
 import sys
 from datetime import date, datetime, timedelta
 
-VERSION = "2026-10-08b"
+VERSION = "2026-10-08c"
+# 2026-10-08c: aeltere Archivdateien heissen "Anlage.pdf", "Anlage1.pdf" ... (KEINE Rechnungsnummer im
+#   Namen) - dann wird die Nummer aus dem PDF-Inhalt (Seite 1) gelesen. Je Lauf hoechstens
+#   PDF_PRUEFUNGEN_MAX solche PDFs; der Rest folgt beim naechsten Lauf (CLI: --pdf-max N).
 
 STANDARD_TAGE = {"rechnungs_archiv": 45, "pickliste_pdf": 30, "carrier_csv": 60,
                  "label_archiv": 90, "sync_archiv": 90}
 MAX_LOESCHUNGEN_JE_REGEL = 20000      # Notbremse je Regel und Lauf
+PDF_PRUEFUNGEN_MAX = 3000             # so viele PDFs je Lauf zur Nummernerkennung oeffnen (ca. 0,1 s je PDF)
 LOG_MAX_BYTES = 1000000
 LOG_BEHALTEN_ZEILEN = 5000
 
@@ -105,8 +110,25 @@ def _loesche_datei(pfad, root, trocken, rg):
     return True
 
 
-def regel_rechnungs_archiv(bericht, root, tage, jetzt, bekannte_rnr, trocken):
+_RE_RNR_INHALT = re.compile(r"Rechnung\s*Nr\.?\s*:?\s*(\d{7})")
+
+
+def rnr_aus_pdf(pfad):
+    """Rechnungsnummer aus dem Inhalt (Seite 1) einer Rechnungs-PDF; None, wenn nicht lesbar."""
+    try:
+        import logging
+        logging.getLogger("pypdf").setLevel(logging.CRITICAL)      # kaputte PDFs: keine Warnflut
+        from pypdf import PdfReader
+        text = PdfReader(pfad).pages[0].extract_text() or ""
+    except Exception:
+        return None
+    m = _RE_RNR_INHALT.search(text)
+    return m.group(1) if m else None
+
+
+def regel_rechnungs_archiv(bericht, root, tage, jetzt, bekannte_rnr, trocken, pdf_max=None):
     rg = bericht.regel("rechnungs_archiv")
+    pdf_budget = [PDF_PRUEFUNGEN_MAX if pdf_max is None else pdf_max]
     if not _root_ok(root):
         rg["notiz"].append("Ordner nicht erreichbar: %s" % root)
         return
@@ -126,7 +148,17 @@ def regel_rechnungs_archiv(bericht, root, tage, jetzt, bekannte_rnr, trocken):
             if not os.path.isfile(fp):
                 offen += 1
                 continue
-            erfasst = any(k in bekannte_rnr for k in _RE_RNR.findall(datei))
+            kand = _RE_RNR.findall(datei)
+            erfasst = any(k in bekannte_rnr for k in kand)
+            if not kand and datei.lower().endswith(".pdf"):
+                # Name ohne Rechnungsnummer ("Anlage1.pdf"): Nummer aus dem PDF-Inhalt lesen
+                if pdf_budget[0] > 0:
+                    pdf_budget[0] -= 1
+                    erfasst = rnr_aus_pdf(fp) in bekannte_rnr
+                else:
+                    rg["notiz"].append("PDF-Pruefungen fuer diesen Lauf ausgeschoepft (%d) - Rest "
+                                       "folgt beim naechsten Lauf" % (PDF_PRUEFUNGEN_MAX if pdf_max is None else pdf_max))
+                    pdf_budget[0] = -1                    # Hinweis nur einmal
             if (datei.lower().endswith(".pdf") and erfasst
                     and rg["geloescht"] < MAX_LOESCHUNGEN_JE_REGEL):
                 _loesche_datei(fp, root, trocken, rg)
@@ -215,7 +247,7 @@ def lies_bekannte_rnr(verkaeufe_csv):
         return None
 
 
-def aufraeumen(pfade, tage=None, trocken=True, jetzt=None):
+def aufraeumen(pfade, tage=None, trocken=True, jetzt=None, pdf_max=None):
     """pfade: dict mit archiv, ausgabe, carrier_export, label_archiv, sync_archiv, verkaeufe_csv,
     dashboard_log (jeder Eintrag optional). tage ueberschreibt STANDARD_TAGE. Rueckgabe Bericht."""
     jetzt = jetzt or datetime.now()
@@ -224,7 +256,7 @@ def aufraeumen(pfade, tage=None, trocken=True, jetzt=None):
     b = Bericht()
     if pfade.get("archiv"):
         regel_rechnungs_archiv(b, pfade["archiv"], t["rechnungs_archiv"], jetzt,
-                               lies_bekannte_rnr(pfade.get("verkaeufe_csv")), trocken)
+                               lies_bekannte_rnr(pfade.get("verkaeufe_csv")), trocken, pdf_max)
     if pfade.get("ausgabe"):
         regel_dateien(b, "pickliste_pdf", pfade["ausgabe"], _RE_PICKLISTE, t["pickliste_pdf"], jetzt, trocken)
     if pfade.get("carrier_export"):
@@ -315,6 +347,16 @@ def selftest():
         os.makedirs(os.path.join(arch, "2026-07-03"))
         for n in ("Packliste_Nr_1700001.pdf", "Rechnung 1700002 (1).pdf", "download_31_08_2026_082631143.pdf"):
             open(os.path.join(arch, "2026-07-03", n), "w").write("x")
+        # Aeltere Dateien heissen "Anlage1.pdf" (Nummer nur im Inhalt): echte Mini-PDFs erzeugen
+        from reportlab.pdfgen import canvas
+
+        def mini_pdf(pfad, rnr):
+            c = canvas.Canvas(pfad)
+            c.drawString(72, 750, "Rechnung Nr. : %s" % rnr)
+            c.save()
+        os.makedirs(os.path.join(arch, "2026-07-04"))
+        for n, rnr in (("Anlage.pdf", "1700001"), ("Anlage1.pdf", "1700002"), ("Anlage2.pdf", "1799999")):
+            mini_pdf(os.path.join(arch, "2026-07-04", n), rnr)
         os.makedirs(os.path.join(arch, "kein-datum"))
         open(os.path.join(arch, "kein-datum", "Packliste Nr 1700009.pdf"), "w").write("x")
         verk = os.path.join(tmp, "artikel_verkaeufe.csv")
@@ -351,7 +393,7 @@ def selftest():
 
         b = aufraeumen(pf, trocken=True, jetzt=jetzt)
         check("Trockenlauf loescht nichts", os.path.exists(os.path.join(arch, "2026-07-01", "Packliste Nr 1700001.pdf")), True)
-        check("Trockenlauf: Rechnungs-Archiv 5 PDFs (bekannt+alt)", b.regeln["rechnungs_archiv"]["geloescht"], 5)
+        check("Trockenlauf: Rechnungs-Archiv 7 PDFs (bekannt+alt, inkl. Anlage-Dateien)", b.regeln["rechnungs_archiv"]["geloescht"], 7)
 
         b = aufraeumen(pf, trocken=False, jetzt=jetzt)
         r = b.regeln
@@ -359,6 +401,8 @@ def selftest():
               [os.path.exists(os.path.join(arch, d, n)) for d, n in (
                   ("2026-07-01", "Packliste Nr 1700001.pdf"), ("2026-08-20", "Packliste Nr 1700003.pdf"))], [False, False])
         check("alter Ordner ohne Rest entfernt", os.path.exists(os.path.join(arch, "2026-07-01")), False)
+        check("'Anlage'-Dateien: Nummer aus dem Inhalt - bekannte weg, unbekannte (1799999) bleibt",
+              sorted(os.listdir(os.path.join(arch, "2026-07-04"))), ["Anlage2.pdf"])
         check("andere Namensschemata (Unterstrich, 'Rechnung 17..') werden erkannt, Zeitstempel-Datei bleibt",
               sorted(os.listdir(os.path.join(arch, "2026-07-03"))), ["download_31_08_2026_082631143.pdf"])
         check("alte PDF ohne Eintrag in artikel_verkaeufe bleibt (1700005)",
@@ -386,6 +430,13 @@ def selftest():
         check("ohne verkaeufe.csv bleibt das Archiv liegen",
               (os.path.exists(os.path.join(arch, "2026-06-01", "Packliste Nr 1700001.pdf")),
                b2.regeln["rechnungs_archiv"]["geloescht"]), (True, 0))
+        # PDF-Budget: bei 0 erlaubten Pruefungen bleiben Anlage-Dateien liegen
+        os.makedirs(os.path.join(arch, "2026-06-02"))
+        mini_pdf(os.path.join(arch, "2026-06-02", "Anlage.pdf"), "1700001")
+        b3 = aufraeumen(pf, trocken=False, jetzt=jetzt, pdf_max=0)
+        check("pdf_max=0: Anlage-Datei bleibt, Hinweis im Protokoll",
+              (os.path.exists(os.path.join(arch, "2026-06-02", "Anlage.pdf")),
+               any("ausgeschoepft" in n for n in b3.regeln["rechnungs_archiv"]["notiz"])), (True, True))
         # Laufwerksstamm/Fremdordner werden abgelehnt
         check("Laufwerksstamm abgelehnt", _root_ok("C:\\"), False)
         # lauf_wenn_faellig: zweiter Aufruf innerhalb 20 h tut nichts
@@ -409,11 +460,14 @@ if __name__ == "__main__":
     if "--selftest" in sys.argv:
         sys.exit(selftest())
     ausfuehren = "--ausfuehren" in sys.argv
+    pdf_max = None
+    if "--pdf-max" in sys.argv:
+        pdf_max = int(sys.argv[sys.argv.index("--pdf-max") + 1])
     pf = pfade_aus_dashboard()
     print("Aufraeumen (%s)  Version %s" % ("AUSFUEHREN" if ausfuehren else "TROCKENLAUF - nichts wird geloescht", VERSION))
     for k, v in pf.items():
         print("  %-15s %s" % (k, v))
-    ber = aufraeumen(pf, trocken=not ausfuehren)
+    ber = aufraeumen(pf, trocken=not ausfuehren, pdf_max=pdf_max)
     print()
     print(bericht_text(ber, not ausfuehren))
     for name, r in ber.regeln.items():

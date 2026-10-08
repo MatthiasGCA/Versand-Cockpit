@@ -1,0 +1,69 @@
+<?php
+// vs-ingest.php  --  nimmt data.json (Versandstatistik) und artikel.json (Top-Artikel) vom Lager-PC entgegen.
+// Ziel waehlt der Parameter ?ziel=artikel (ohne Parameter wie bisher data.json).
+// Liegt im Web-Wurzelverzeichnis (NICHT im passwortgeschuetzten Ordner, damit
+// der PC ohne Basic-Auth posten kann). Schutz hier ueber ein geheimes Token.
+
+// Muss ZEICHENGLEICH mit UPLOAD_TOKEN in statistik_upload.py sein:
+$SECRET = 'HIER_GEHEIMES_TOKEN_EINTRAGEN';
+
+// Zielpfad relativ zu dieser Datei. Ordner muss existieren und beschreibbar sein.
+$ZIEL = __DIR__ . '/versandstatistik/data.json';
+$MAXBYTES = 2000000;                     // Sanity-Limit data.json (2 MB)
+$ziel_param = $_GET['ziel'] ?? '';
+if ($ziel_param === 'artikel') {         // Artikel-Statistik: groesser (Tageswerte je Artikel, mehrere Jahre)
+    $ZIEL = __DIR__ . '/versandstatistik/artikel.json';
+    $MAXBYTES = 12000000;                // 12 MB
+} elseif ($ziel_param !== '') {
+    http_response_code(400);
+    exit('unbekanntes ziel');
+}
+
+header('Content-Type: text/plain; charset=utf-8');
+
+if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
+    http_response_code(405);
+    exit('nur POST');
+}
+
+// Token aus Header (bevorzugt) oder Query lesen, zeitkonstant vergleichen.
+$token = $_SERVER['HTTP_X_UPLOAD_TOKEN'] ?? ($_GET['token'] ?? '');
+if (!is_string($token) || !hash_equals($SECRET, $token)) {
+    http_response_code(403);
+    exit('verboten');
+}
+
+$raw = file_get_contents('php://input');
+if ($raw === false || strlen($raw) === 0) {
+    http_response_code(400);
+    exit('leer');
+}
+if (strlen($raw) > $MAXBYTES) {          // Sanity-Limit
+    http_response_code(413);
+    exit('zu gross');
+}
+
+// Muss gueltiges JSON sein, sonst nicht schreiben (kaputte Seite vermeiden).
+$decoded = json_decode($raw, true);
+if ($decoded === null && json_last_error() !== JSON_ERROR_NONE) {
+    http_response_code(400);
+    exit('ungueltiges json');
+}
+
+// Zielordner sicherstellen.
+$dir = dirname($ZIEL);
+if (!is_dir($dir) && !@mkdir($dir, 0755, true)) {
+    http_response_code(500);
+    exit('ordner fehlt');
+}
+
+// Atomar schreiben: erst .tmp, dann umbenennen (kein halb geschriebenes File).
+$tmp = $ZIEL . '.tmp';
+if (@file_put_contents($tmp, $raw, LOCK_EX) === false || !@rename($tmp, $ZIEL)) {
+    @unlink($tmp);
+    http_response_code(500);
+    exit('schreiben fehlgeschlagen');
+}
+
+http_response_code(200);
+echo 'ok ' . strlen($raw) . ' bytes';

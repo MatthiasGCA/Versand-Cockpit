@@ -21,3 +21,9 @@ carrier_dashboard_config.json
 # Laufzeitdateien der automatischen Aufraeumung (aufraeumen.py)
 aufraeumen.log
 aufraeumen_letzter_lauf.txt
+
+# Web-Dateien mit Geheimwort bzw. Sicherungskopien (nur die Vorlage und index.html gehoeren ins Repo)
+web/vs-ingest.php
+web/index.html.original
+artikel_upload_config.json
+artikel_upload_state.json

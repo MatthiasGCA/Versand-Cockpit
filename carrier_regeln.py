@@ -55,7 +55,7 @@ Siehe ist_auslands_kleinpaket() und die Konstanten KLEINPAKET_*.
 import html
 import re
 
-VERSION = "2026-10-06c"
+VERSION = "2026-10-08a"
 
 # --- Gewichtsgrenzen in kg (Klasse gilt bei Gewicht STRIKT UNTER der Grenze) -----
 G_BRIEF = 0.05
@@ -197,6 +197,14 @@ _NR_EINHEIT = r"\d+(?:\s*[/.]?\s*[A-Za-z])?"
 _STRASSE_HNR = re.compile(
     r"^(?P<str>.*?\S)[\s:]*(?P<nr>" + _NR_EINHEIT + r"(?:\s*[-/+& ]\s*" + _NR_EINHEIT
     + r")*)[\s,.;]*$")
+# Wohnungs-/Tuer-Angabe HINTER der Hausnummer ("Schuetzenstrasse 46g /Top 80", real 1708078 AT;
+# "Feldmark 2 Haus 40", real 1707459): "Top/Tuer/Stiege/Haus/Whg ..." + Nummer gehoert in den
+# Zusatz, NICHT in die Hausnummer (sonst wurde "80" zur Hausnummer und "Schuetzenstrasse 46g
+# /Top" zur Strasse).
+_HNR_MIT_WOHNUNG = re.compile(
+    r"^(?P<str>.*?\S)\s+(?P<nr>" + _NR_EINHEIT + r"(?:\s*[-/]\s*" + _NR_EINHEIT + r")*)\s*[,/]?\s*"
+    r"(?P<rest>(?:top|tür|tuer|stiege|stg|stock|whg|wohnung|haus|apt|app)\b\.?\s*[\w/.-]+)\s*$",
+    re.I)
 # Hausnummer MITTEN in der Zeile, dahinter reiner Text ohne (weitere) Ziffern
 # ("In Der Loh 1 Campingplatz", Rechnung 1706290; "Rotterdamer Str. 49 / Im
 # Navi falsche St", Rechnung 1706718 - Kunde haengt eine eigene Notiz an):
@@ -435,9 +443,14 @@ def analysiere_adresse(zeilen):
             notiz = mk.group("rest").strip(" ,;")
             name_ohne_nr = _n(_STRASSE_HNR.match(strasse_roh).group("str"))
             out["zusatz"] = [z for z in out["zusatz"] if _n(z) != name_ohne_nr] + [notiz]
-        ms = _STRASSE_HNR.match(strasse_roh)
-        mt = None if ms else _HNR_MIT_TEXT.match(strasse_roh)
-        if mt:
+        mw = _HNR_MIT_WOHNUNG.match(strasse_roh)
+        ms = None if mw else _STRASSE_HNR.match(strasse_roh)
+        mt = None if (mw or ms) else _HNR_MIT_TEXT.match(strasse_roh)
+        if mw:
+            out["strasse"] = mw.group("str").strip()
+            out["hausnr"] = re.sub(r"\s+", " ", mw.group("nr")).strip()
+            out["zusatz"] = list(out["zusatz"]) + [mw.group("rest").strip()]
+        elif mt:
             out["strasse"] = mt.group("str").strip()
             out["hausnr"] = mt.group("nr")
             out["zusatz"] = list(out["zusatz"]) + [mt.group("rest").strip()]
@@ -1015,8 +1028,8 @@ def selftest():
             "positionen": [{"kennungen": ["pox1"], "lagerorte": ["F5"]}]}
     b_ps = bewerte_rechnung(r_ps)
     check("Rechnung Pox1 an Packstation -> DHL", b_ps["carrier"], DHL)
-    a = analysiere_adresse(["Wermeling Dirk", "Feldmark 2 Haus 40", "DE 48336 Sassenberg"])
-    check("adr real 1707459 (Ziffer im Strassennamen -> Pruefhinweis)",
+    a = analysiere_adresse(["Egzona Bllacaku", "12 tür 4", "Rechte Mürzzeile", "AT-8605 Kapfenberg"])
+    check("adr real 1708130 (Tuer vor Strasse vertauscht -> Pruefhinweis 'Ziffer in Strasse')",
           any("enthält eine Ziffer" in h for h in a["hinweise"]), True)
     a = analysiere_adresse(["Irenaeus Messie", "An der B5 nr. 2", "DE 19339 Plattenburg"])
     check("adr real 1707665 ('Nr.' raus, B5 kein Ziffern-Hinweis)",
@@ -1032,6 +1045,19 @@ def selftest():
     a = analysiere_adresse(["A B", "Hauptstr.: 5", "12345 Ort"])
     check("adr: 'Hauptstr.: 5' -> Doppelpunkt weg, Punkt der Abkuerzung bleibt",
           (a["strasse"], a["hausnr"]), ("Hauptstr.", "5"))
+    a = analysiere_adresse(["Florian Sodomka", "Schützenstraße 46g /Top 80", "AT-6020 Innsbruck"])
+    check("adr real 1708078 ('46g /Top 80' -> Hausnr 46g, Zusatz Top 80)",
+          (a["strasse"], a["hausnr"], a["zusatz"], a["hinweise"], a["land"]),
+          ("Schützenstraße", "46g", ["Top 80"], [], "AT"))
+    a = analysiere_adresse(["Wermeling Dirk", "Feldmark 2 Haus 40", "DE 48336 Sassenberg"])
+    check("adr real 1707459 ('2 Haus 40' -> Hausnr 2, Zusatz Haus 40, kein Ziffern-Hinweis)",
+          (a["strasse"], a["hausnr"], a["zusatz"], a["hinweise"]), ("Feldmark", "2", ["Haus 40"], []))
+    a = analysiere_adresse(["A B", "Hauptstr. 5, Tür 12", "12345 Ort"])
+    check("adr: 'Hauptstr. 5, Tür 12' -> Hausnr 5, Zusatz Tür 12",
+          (a["strasse"], a["hausnr"], a["zusatz"]), ("Hauptstr.", "5", ["Tür 12"]))
+    a = analysiere_adresse(["A B", "Hauptstr. 12 Haus", "12345 Ort"])
+    check("adr: 'Hauptstr. 12 Haus' (kein Wohnungsmuster ohne Nummer) bleibt Hausnr 12",
+          (a["strasse"], a["hausnr"]), ("Hauptstr.", "12"))
     a = analysiere_adresse(["A B", "Hauptstr. Nr. 5", "12345 Ort"])
     check("adr: 'Hauptstr. Nr. 5' -> Strasse ohne 'Nr.'", (a["strasse"], a["hausnr"]), ("Hauptstr.", "5"))
     a = analysiere_adresse(["A B", "Hauptstr. 12", "12345 Ort"])

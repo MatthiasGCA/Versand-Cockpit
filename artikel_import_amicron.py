@@ -45,7 +45,7 @@ import sys
 from collections import Counter, defaultdict
 from datetime import datetime
 
-VERSION = "2026-10-08c"
+VERSION = "2026-10-08d"
 STANDARD_ZIEL = r"\\DESKTOP-N2H75H\Netzwerk\Paketscheine\artikel_historie.csv"
 HEADER = "Monat;Artikelnummer;Bezeichnung;Bestellungen;Menge;Umsatz\n"
 
@@ -202,15 +202,17 @@ def schreibe_historie(ziel, agg, trocken=False):
 
 
 def zusammenfassung(agg):
-    je = defaultdict(lambda: [0, 0.0, 0.0])
+    je = defaultdict(lambda: [0, 0.0, 0.0, set()])
     for (mo, _), a in agg.items():
         je[mo][0] += 1
         je[mo][1] += a["menge"]
         je[mo][2] += a["umsatz"]
+        je[mo][3] |= a["rnr"]
     zeilen = []
     for mo in sorted(je):
-        n, m, u = je[mo]
-        zeilen.append("  %s: %d Artikel, %.0f Stück, Umsatz %.2f EUR" % (mo, n, m, u))
+        n, m, u, rg = je[mo]
+        zeilen.append("  %s: %d Rechnungen, %d Artikel, %.0f Stück, Umsatz %.2f EUR%s" % (
+            mo, len(rg), n, m, u, (" (%.2f EUR je Rechnung)" % (u / len(rg))) if rg else ""))
         top = sorted(((a["menge"], a["art"], a["titel"].most_common(1)[0][0]) for (k, _), a in agg.items() if k == mo),
                      reverse=True)[:3]
         zeilen += ["      %s  %-16s %s" % (("%.0f" % m_).rjust(6), a_[:16], t_[:44]) for m_, a_, t_ in top]

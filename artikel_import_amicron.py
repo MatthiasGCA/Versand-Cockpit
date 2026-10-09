@@ -61,7 +61,7 @@ import sys
 from collections import Counter, defaultdict
 from datetime import datetime
 
-VERSION = "2026-10-09d"
+VERSION = "2026-10-09e"
 PAKET = r"\\DESKTOP-N2H75H\Netzwerk\Paketscheine"
 STANDARD_ZIEL = PAKET + r"\artikel_amicron.csv"
 TAGE_HEADER = "Datum;Rechnungsnummer;Artikelnummer;Bezeichnung;Menge;Umsatz\n"
@@ -381,12 +381,19 @@ def aktive_komponenten(tab):
     return akt
 
 
+RE_PACK_NR = re.compile(r"^(.*?)[-/](\d+)$")
+
+
 def wende_stueckliste_an(zeilen, akt):
     """Wendet die Stuecklisten-Regel je Rechnung an (siehe Modul-Doku):
       * Set mit mind. 2 verschiedenen Bestandteilen (zusammengesetzter Artikel): Bestandteile entfernen, Set bleibt.
       * Set mit genau EINEM Bestandteil (Mehrfachpackung): Einzelartikel behalten, Set-Zeile entfernen, Umsatz des
         Sets dem Einzelartikel zuschlagen; fehlt die Bestandteil-Zeile, bleibt das Set unveraendert stehen.
       * "reine Komponenten" (nie Hauptzeile), die zu keinem erkannten Set gehoeren: entfernen.
+      * Auch OHNE Tabelle (Rueckfall fuer unbekannte Sets): Packung erkennen, wenn die Artikelnummer "<Einzelartikel>-N"
+        bzw. "<Einzelartikel>/N" lautet und die Rechnung eine Nullpreis-Zeile des Einzelartikels mit genau N x Menge hat;
+        uebrige Nullpreis-Zeilen einer Rechnung mit mindestens einer bepreisten Zeile entfernen (Hauptzeilen laut
+        Rechnungs-PDF haben nie Preis 0 - Stuecklistenzeilen/Zugaben sind keine Verkaeufe).
     Rueckgabe (behalten, n_zeilen, n_stueck, n_umsatz, pack) - n_* = entfernte Bestandteile/reine Komponenten,
     pack = {"sets": Zahl aufgeloester Packungen, "stueck": Stueck der Einzelartikel, "umsatz": zugeschlagen}."""
     je = defaultdict(list)
@@ -401,9 +408,10 @@ def wende_stueckliste_an(zeilen, akt):
     rein = akt.get("*", {}) if akt else {}
     for key in order:
         ls = [dict(l) for l in je[key]]
-        if not ls[0]["rnr"] or not akt:
+        if not ls[0]["rnr"]:
             behalten += ls
             continue
+        akt = akt or {}
         weg = set()                                     # Indizes entfernter Zeilen
         fest = set()                                    # Indizes bewusst behaltener Einzelartikel (Packungen)
         sets = defaultdict(list)
@@ -461,6 +469,33 @@ def wende_stueckliste_an(zeilen, akt):
             for ix in ixs:
                 weg.add(ix)
             pack["sets"] += 1
+        # --- Rueckfall: Packung ueber die Artikelnummer erkennen (<Einzelartikel>-N / <Einzelartikel>/N) ---
+        for ix, sl in enumerate(ls):
+            if ix in weg or ix in fest or sl["betrag"] <= 0.0001:
+                continue
+            m = RE_PACK_NR.match(sl["art"])
+            if not m or int(m.group(2)) < 2:
+                continue
+            n = int(m.group(2))
+            base = nrm(m.group(1))
+            for jx, xl_ in enumerate(ls):
+                if (jx != ix and jx not in weg and jx not in fest and nrm(xl_["art"]) == base
+                        and xl_["betrag"] <= 0.0001 and abs(xl_["menge"] - n * sl["menge"]) < 1e-6):
+                    xl_["betrag"] = sl["betrag"]
+                    xl_["fest"] = True
+                    fest.add(jx)
+                    weg.add(ix)
+                    pack["sets"] += 1
+                    pack["stueck"] += xl_["menge"]
+                    pack["umsatz"] += sl["betrag"]
+                    break
+        # --- Nullpreis-Zeilen (Stuecklistenzeilen/Zugaben) einer Rechnung mit bepreisten Zeilen ---
+        if any(l["betrag"] > 0.0001 for ix, l in enumerate(ls) if ix not in weg):
+            for ix, l in enumerate(ls):
+                if ix not in weg and ix not in fest and l["betrag"] <= 0.0001:
+                    weg.add(ix)
+                    n_zeilen += 1
+                    n_stueck += l["menge"]
         # --- reine Komponenten ohne erkanntes Set ---
         for ix, l in enumerate(ls):
             if ix not in weg and ix not in fest and nrm(l["art"]) in rein:
@@ -494,14 +529,14 @@ def aggregiere(zeilen):
     return agg
 
 
-def lies_export(text, monat=None, komponenten=None):
+def lies_export(text, monat=None, komponenten=None, filter_an=True):
     """-> (agg {(monat, art): {...}}, info dict). komponenten = aktive Tabelle (aktive_komponenten) oder None."""
     zeilen, info = parse_export(text, monat)
     info["komp_zeilen"] = info["komp_stueck"] = info["komp_umsatz"] = 0
     info["pack"] = {"sets": 0, "stueck": 0.0, "umsatz": 0.0}
-    if komponenten:
+    if filter_an:                                   # Stuecklisten-Regel (auch ohne Tabelle: Rueckfall-Regeln)
         (zeilen, info["komp_zeilen"], info["komp_stueck"], info["komp_umsatz"],
-         info["pack"]) = wende_stueckliste_an(zeilen, komponenten)
+         info["pack"]) = wende_stueckliste_an(zeilen, komponenten or {})
     info["zeilen_final"] = zeilen
     # Verdaechtige Reste: Nullpreis-Zeilen und "Master"-Artikel, die nicht als Komponente erkannt wurden
     verd = [l for l in zeilen if not l.get("fest") and (l["betrag"] == 0 or re.search(r"\bmaster\b", l["titel"], re.I))]
@@ -722,7 +757,12 @@ def selftest():
               sorted((k[1], a["menge"]) for k, a in neu_agg.items()), [("k1", 3.0), ("s1", 2.0), ("z9", 1.0)])
         check("entfernte Komponenten gezaehlt", (ni["komp_zeilen"], ni["komp_stueck"], round(ni["komp_umsatz"], 2)), (2, 14.0, 6.0))
         check("Umsatz der verbleibenden K1-Zeile = Einzelartikel", round(neu_agg[("2026-09", "k1")]["umsatz"], 2), 12.0)
-        check("ohne Tabelle: nichts entfernt", len(lies_export(kopf + "7001;20260901;S1;Set eins;1;14,99\n7001;20260901;K1;Komp;6;0,00\n")[0]), 2)
+        check("ohne Tabelle: Nullpreis-Zeile (Komponente/Zugabe) faellt trotzdem weg", len(lies_export(kopf + "7001;20260901;S1;Set eins;1;14,99\n7001;20260901;K1;Komp;6;0,00\n")[0]), 1)
+        # Rueckfall ohne Tabelle: Packung ueber die Artikelnummer (TS-G125x1/50 -> 50 x TS-G125x1)
+        rf, rfi = lies_export(kopf + "8001;20250105;TS-G125x1/50;Trennscheibe 50er;1;16,99\n8001;20250105;TS-G125x1;Trennscheibe Master;50;0,00\n"
+                              "8002;20250105;X-5;Anderes 5er;1;9,00\n8002;20250105;X;Einzel;4;0,00\n")
+        check("Rueckfall Prefix-Regel: 50er-Packung -> TS-G125x1 mit 50 Stueck und 16,99 EUR; falsche Menge (X-5 braucht 5) bleibt unveraendert, Nullpreis X faellt weg",
+              sorted((k[1], a_["menge"], round(a_["umsatz"], 2)) for k, a_ in rf.items()), [("ts-g125x1", 50.0, 16.99), ("x-5", 1.0, 9.0)])
         # Zaehler mehrerer Laeufe addieren
         gem = merge_tabellen(tab, tab)
         check("merge: Rechnungszahlen addiert", (gem["s1"]["n"], gem["s1"]["komp"]["k1"][0]), (tab["s1"]["n"] * 2, tab["s1"]["komp"]["k1"][0] * 2))
@@ -829,7 +869,7 @@ def main(argv=None):
             print("    erkannte Spalten:", finde_spalten(rows[0]) if rows else {})
             continue
         try:
-            agg, info = lies_export(text, arg.monat, komp)
+            agg, info = lies_export(text, arg.monat, komp, filter_an=not arg.ohne_komponentenfilter)
         except ValueError as e:
             print("%s: %s" % (pfad, e))
             return 1

@@ -2,7 +2,10 @@
 """
 artikel_upload.py  --  laeuft auf dem Lager-PC (DESKTOP-N2H75H), wie statistik_upload.py
 ============================================================================
-Verdichtet die Artikel-Verkaeufe des Carrier-Dashboards (artikel_verkaeufe.csv) zu einer kompakten
+Verdichtet die Artikel-Verkaeufe zu einer kompakten artikel.json. QUELLE: artikel_amicron.csv (Amicron-Export, tages-
+genau, Stueck laut Stueckliste - siehe artikel_import_amicron.py); fuer Rechnungen, die dort noch NICHT stehen (neuer
+als der letzte Export), springt die Auswertung auf die Dashboard-Daten (artikel_verkaeufe.csv) ein und rechnet
+Mehrfachpackungen mit der Stueckfaktor-Tabelle auf den Einzelartikel um (BP-GF-24 -> 24 x BP-GF). Ergebnis:
 artikel.json (Tageswerte je Artikel: Bestellungen / Menge / Umsatz) und laedt sie per HTTPS-POST an
 vs-ingest.php (Ziel "artikel"). Die Seite versandstatistik/index.html zeigt daraus den Reiter
 "Top-Artikel" (frei waehlbarer Zeitraum, Top 20, Vorjahresvergleich, Artikelverlauf).
@@ -34,13 +37,14 @@ import sys
 import urllib.error
 import urllib.request
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 
-VERSION = "2026-10-09a"
+VERSION = "2026-10-09b"
 BASIS = os.path.dirname(os.path.abspath(__file__))
 STANDARD = {
     "url": "https://www.gasecenter-onlineshop.de/vs-ingest.php",
     "verkaeufe_csv": r"\\DESKTOP-N2H75H\Netzwerk\Paketscheine\artikel_verkaeufe.csv",
+    "amicron_csv": r"\\DESKTOP-N2H75H\Netzwerk\Paketscheine\artikel_amicron.csv",
     "historie_csv": r"\\DESKTOP-N2H75H\Netzwerk\Paketscheine\artikel_historie.csv",
     "stueckfaktor_csv": r"\\DESKTOP-N2H75H\Netzwerk\Paketscheine\artikel_stueckfaktor.csv",
     "log": r"C:\Packlisten\artikel_upload.log",
@@ -86,6 +90,64 @@ def lies_verkaeufe(pfad):
     return zeilen
 
 
+def lies_amicron(pfad):
+    """Zeilen (datum, rnr, art, bez, menge, umsatz) aus artikel_amicron.csv (Datum;Rechnungsnummer;Artikelnummer;
+    Bezeichnung;Menge;Umsatz)."""
+    zeilen = []
+    if not os.path.exists(pfad):
+        return zeilen
+    with open(pfad, encoding="utf-8-sig") as f:
+        next(f, None)
+        for z in f:
+            t = z.rstrip("\n").split(";")
+            if len(t) >= 6 and t[0]:
+                zeilen.append((t[0], t[1], t[2], t[3], num(t[4]), num(t[5])))
+    return zeilen
+
+
+def lies_faktor_tabelle(pfad):
+    """{art_klein: (faktor, gruppe, bezeichnung, artikelnummer_original)} aus artikel_stueckfaktor.csv."""
+    out = {}
+    if not os.path.exists(pfad):
+        return out
+    with open(pfad, encoding="utf-8-sig") as f:
+        next(f, None)
+        for z in f:
+            t = z.rstrip("\r\n").split(";")
+            if len(t) >= 3 and t[0].strip():
+                try:
+                    fk = float(t[2].strip().replace(",", "."))
+                except ValueError:
+                    continue
+                if fk > 0:
+                    out[t[0].strip().lower()] = (fk, t[3].strip() if len(t) > 3 else "", t[1].strip(), t[0].strip())
+    return out
+
+
+def kombiniere(amicron, dashboard, faktoren):
+    """Amicron-Zeilen (Stueck laut Stueckliste) plus Dashboard-Zeilen NUR fuer Rechnungen, die in amicron fehlen.
+    Dashboard-Packungen werden mit der Stueckfaktor-Tabelle auf den Einzelartikel der Gruppe umgerechnet
+    (Faktor > 1 und Einzelartikel mit Faktor 1 in derselben Gruppe vorhanden); sonst bleibt die Zeile wie sie ist."""
+    bekannt = {z[1] for z in amicron}
+    basis = {}
+    for art, (fk, gr, bez, orig) in faktoren.items():
+        if gr and fk == 1 and gr.lower() not in basis:
+            basis[gr.lower()] = (orig, bez)
+    out = list(amicron)
+    umgerechnet = 0
+    for datum, rnr, art, bez, menge, umsatz in dashboard:
+        if rnr in bekannt:
+            continue
+        fk, gr = faktoren.get(art.lower(), (1, "", "", ""))[:2]
+        if fk > 1 and gr and gr.lower() in basis and basis[gr.lower()][0].lower() != art.lower():
+            b_art, b_bez = basis[gr.lower()]
+            out.append((datum, rnr, b_art, b_bez or bez, menge * fk, umsatz))
+            umgerechnet += 1
+        else:
+            out.append((datum, rnr, art, bez, menge, umsatz))
+    return out, umgerechnet
+
+
 def lies_historie(pfad):
     """Zeilen (monat 'JJJJ-MM', art, bez, bestellungen|None, menge, umsatz) aus artikel_historie.csv."""
     zeilen = []
@@ -120,6 +182,9 @@ def lies_faktoren(pfad):
     return out
 
 
+TAGE_DETAIL = 430          # so viele Tage bleiben tagesgenau; Aelteres wird zu Monatswerten verdichtet
+
+
 def baue(verkaeufe, historie, jetzt=None, faktoren=None):
     """Kompaktes JSON-Objekt: artikel [[nr, bez]], tage {datum: [[idx, best, menge, umsatz]]},
     monate {JJJJ-MM: [[idx, best|None, menge, umsatz]]} (nur Monate VOR dem ersten Tag mit Tagesdaten)."""
@@ -138,13 +203,24 @@ def baue(verkaeufe, historie, jetzt=None, faktoren=None):
         return idx[k]
 
     tage = defaultdict(lambda: defaultdict(lambda: [set(), 0.0, 0.0]))
+    grenze = (jetzt - timedelta(days=TAGE_DETAIL)).strftime("%Y-%m-%d")
+    alt_monate = defaultdict(lambda: defaultdict(lambda: [set(), 0.0, 0.0]))     # Monatsverdichtung aelterer Tage
     for datum, rnr, art, bez, menge, umsatz in verkaeufe:
         i = nr_idx(art, bez, datum)
-        a = tage[datum][i]
+        a = alt_monate[datum[:7]][i] if datum < grenze else tage[datum][i]
         a[0].add(rnr)
         a[1] += menge
         a[2] += umsatz
     erster_tag = min(tage) if tage else None
+    if erster_tag and erster_tag[8:] != "01":          # Tagesdaten fangen mitten im Monat an: diesen Monat noch als Monat fuehren
+        for d in [d for d in tage if d[:7] == erster_tag[:7]]:
+            for i, v in tage[d].items():
+                a = alt_monate[d[:7]][i]
+                a[0] |= v[0]
+                a[1] += v[1]
+                a[2] += v[2]
+            del tage[d]
+        erster_tag = min(tage) if tage else None
     # Faengt die Tagesdaten mitten im Monat an (z.B. 16.07., weil das Archiv dort beginnt), liefert die
     # Amicron-Monatshistorie den GANZEN Monat: dann zaehlen fuer diesen Monat NUR die Monatswerte.
     if erster_tag and erster_tag[8:] != "01" and any(h[0] == erster_tag[:7] for h in historie):
@@ -152,6 +228,12 @@ def baue(verkaeufe, historie, jetzt=None, faktoren=None):
             del tage[d]
         erster_tag = min(tage) if tage else None
     monate = defaultdict(lambda: defaultdict(lambda: [None, 0.0, 0.0]))
+    for mo, per_art in alt_monate.items():            # aus Tagesdaten verdichtete Monate
+        for i, v in per_art.items():
+            m = monate[mo][i]
+            m[0] = len(v[0])
+            m[1] += v[1]
+            m[2] += v[2]
     for monat, art, bez, best, menge, umsatz in historie:
         if erster_tag and monat >= erster_tag[:7]:
             continue                                   # ab dem ersten Tagesdaten-Monat zaehlen die Tageswerte
@@ -206,20 +288,23 @@ def main(argv=None):
     cfg = lade_config()
     lg = cfg["log"]
     try:
-        verk = lies_verkaeufe(cfg["verkaeufe_csv"])
+        dash = lies_verkaeufe(cfg["verkaeufe_csv"])
+        amic = lies_amicron(cfg["amicron_csv"])
         hist = lies_historie(cfg["historie_csv"])
+        verk, n_umgerechnet = kombiniere(amic, dash, lies_faktor_tabelle(cfg["stueckfaktor_csv"]))
     except OSError as e:
         log("FEHLER beim Lesen: %s" % e, lg)
         return 1
     if not verk and not hist:
         log("keine Daten gefunden (%s)" % cfg["verkaeufe_csv"], lg)
         return 1
-    obj = baue(verk, hist, faktoren=lies_faktoren(cfg["stueckfaktor_csv"]))
+    obj = baue(verk, hist)
     roh = json.dumps(obj, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     pruef = hashlib.sha256(json.dumps({k: v for k, v in obj.items() if k != "generated"},
                                       sort_keys=True).encode("utf-8")).hexdigest()
-    info = "%d Artikel, %d Tage, %d Monate, %.0f KB" % (len(obj["artikel"]), len(obj["tage"]),
-                                                      len(obj["monate"]), len(roh) / 1024)
+    info = "%d Artikel, %d Tage, %d Monate, %.0f KB (Amicron %d Zeilen, Dashboard-Ersatz fuer neuere Rechnungen: %d Zeilen, davon %d Packungen umgerechnet)" % (
+        len(obj["artikel"]), len(obj["tage"]), len(obj["monate"]), len(roh) / 1024, len(amic),
+        len(verk) - len(amic), n_umgerechnet)
     if arg.dry_run:
         if arg.out:
             with open(arg.out, "wb") as f:

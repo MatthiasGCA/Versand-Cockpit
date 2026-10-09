@@ -33,21 +33,22 @@ lokal/im Austauschpaket – nicht weitergeben.
   Zeitraum des Vorjahres; je Artikel Vorjahres-Stückzahl und Veränderung in %
 - Klick auf einen Artikel: Verlauf der verkauften Stück je Monat, Jahre übereinander (Saisonbild)
 
-## Stückzahlen statt Verkaufseinheiten
+## Was „Stück“ bedeutet (Regel von Matthias, 2026-10-09)
 
-Die Auswertung zeigt **Stück** (z. B. 1 × „GermanFire 24 Stück“ = 24 Stück) und daneben die VE (Verkaufseinheiten
-laut Rechnung). Die Umrechnung steht in `artikel_stueckfaktor.csv` (Paketscheine):
-`Artikelnummer;Bezeichnung;Faktor;Gruppe;Quelle`. Das Carrier-Dashboard trägt neue Packungsartikel bei jedem
-Schritt 2 selbst ein (Marker „N-Fach-Artikel“); von Hand gepflegte Zeilen (Excel) haben Vorrang. Mit der Option
-„Packungsgrößen zusammenfassen“ werden Artikel derselben **Gruppe** (z. B. BP-GF-6/-12/-24/-48) zu einem Produkt
-zusammengezählt. `py artikel_stueckfaktor.py --pruefliste` zeigt Artikel, die wie Mehrfachpackungen aussehen, aber
-noch keinen Faktor haben.
+Die Auswertung zählt die **tatsächlich verkauften Einzelteile laut Stückliste** (Amicron-Export):
+- **Mehrfachpackung** (Set aus N × einem Einzelartikel, z. B. „GermanFire 6 Stück“ = 6 × BP-GF): es zählt der
+  Einzelartikel (BP-GF, 6 Stück); der Umsatz der Packung wird dem Einzelartikel zugeschlagen.
+- **Zusammengesetzter Artikel** (z. B. Paella-Schlauch, Bunsenbrenner + Kartuschen): es zählt der Artikel selbst, die
+  Bestandteile fallen weg.
+- normale Artikel: wie auf der Rechnung. Es wird nichts mit Faktoren umgerechnet.
+Quelle ist `artikel_amicron.csv` (tagesgenau, per `artikel_import_amicron.py` aus dem Amicron-Export). Rechnungen, die
+dort noch fehlen, ergänzt `artikel_upload.py` aus den Dashboard-Daten (Packungen werden dann mit
+`artikel_stueckfaktor.csv` auf den Einzelartikel umgerechnet).
 
 ## Datenquellen und Grenzen
 
-- Tagesgenau: alle Rechnungen, die das Carrier-Dashboard (Schritt 2) verarbeitet hat, ab 16.07.2026
-  (Beginn des Archivs). Menge = wie auf der Rechnung (ein Karton „GermanFire 24 Stück“ zählt 1).
-- Frühere Zeiträume (2025 bis Juni 2026): nur monatsgenau aus dem Amicron-Export
-  (`artikel_historie.csv`) – diese Monate zählen im Zeitraum nur, wenn sie komplett darin liegen.
+- Tagesgenau (letzte ~14 Monate), ältere Tage werden zu Monaten verdichtet; Monate zählen im Zeitraum nur, wenn sie
+  komplett darin liegen.
+- Aktuell bleibt die Auswertung nur so frisch wie der letzte Amicron-Export; dazwischen springen die Dashboard-Daten ein.
 - Die Seite ist passwortgeschützt (Basic-Auth wie bisher); es werden keine Kundendaten übertragen,
   nur Artikelnummer, Bezeichnung, Mengen und Preise je Tag.

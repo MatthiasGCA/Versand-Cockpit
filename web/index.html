@@ -46,6 +46,7 @@
   .ctl input,.ctl select{font:inherit;font-size:14px;padding:6px 8px;border:1px solid var(--line);border-radius:7px;
     background:var(--card);color:var(--ink)}
   .tbl td.ve{color:var(--faint);font-size:12px}
+  .tbl th:nth-child(6),.tbl td:nth-child(6){display:none}      /* VE-Spalte: Stueck steht schon in Stueck (Stueckliste) */
   .presets{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px}
   .presets button{border:1px solid var(--line);background:var(--card);border-radius:7px;padding:5px 11px;
     font-size:13px;color:var(--muted);cursor:pointer}
@@ -98,7 +99,7 @@
           <option value="best">Bestellungen</option><option value="stueck">Stückzahl</option><option value="umsatz">Umsatz</option>
         </select></label>
         <label>Anzahl<select id="an"><option>20</option><option>50</option><option>100</option></select></label>
-        <label style="flex-direction:row;align-items:center;gap:6px;padding-bottom:7px"><input type="checkbox" id="agrp">Packungsgrößen zusammenfassen</label>
+        <label style="display:none"><input type="checkbox" id="agrp"></label>
       </div>
       <div class="presets" id="apresets"></div>
       <div class="kpis" id="akpis"></div>
@@ -302,8 +303,7 @@
     if(selKey&&!cur.rows[selKey]) selKey=null;
     showTrend(selKey?cur.rows[selKey]:null,byGroup);
 
-    var r=dataRange(), notes=['Daten von '+dmy(r.first)+' bis '+dmy(r.last)+'. <b>Stück</b> = Verkaufseinheiten (VE laut Rechnung) × Stückfaktor, z. B. 1 × „GermanFire 24 Stück“ = 24 Stück.'];
-    if(byGroup) notes.push('Bestellungen je Gruppe = Summe der Bestellungen der einzelnen Packungsgrößen.');
+    var r=dataRange(), notes=['Daten von '+dmy(r.first)+' bis '+dmy(r.last)+'. <b>Stück</b> = tatsächlich verkaufte Einzelteile laut Stückliste: eine Mehrfachpackung zählt als ihr Einzelartikel (z. B. 1 × „GermanFire 6 Stück“ = 6 × BP-GF), ein zusammengesetzter Artikel (z. B. Paella-Schlauch) als dieser Artikel.'];
     if(cur.skipped.length) notes.push('<span class="warn">Frühere Daten liegen nur monatsgenau vor: '+cur.skipped.join(', ')+' wurden nicht mitgezählt, weil der Monat nicht komplett im Zeitraum liegt.</span>');
     if(!prevOk) notes.push('Für den Vorjahreszeitraum ('+dmy(prevVon)+' – '+dmy(prevBis)+') liegen keine Daten vor.');
     if(cur.hasMonth&&!cur.bestOk) notes.push('Bestellungen sind für die monatsgenauen Altdaten nicht verfügbar.');

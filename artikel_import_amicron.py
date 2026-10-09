@@ -2,8 +2,16 @@
 """
 artikel_import_amicron.py - Amicron-Export der Ausgangsrechnungen -> artikel_historie.csv
 ============================================================================
-Traegt FRUEHERE Zeitraeume (vor dem Carrier-Dashboard) monatsweise in die Artikel-Historie ein, damit die
-Online-Auswertung "Top-Artikel" Vorjahresvergleiche und Saisonverlaeufe zeigen kann (siehe artikel_upload.py).
+Traegt Rechnungspositionen aus dem Amicron-Export TAGESGENAU in artikel_amicron.csv ein (Datum;Rechnungsnummer;
+Artikelnummer;Bezeichnung;Menge;Umsatz) - Quelle der Online-Auswertung "Top-Artikel" (siehe artikel_upload.py):
+Vorjahresvergleiche, Saisonverlaeufe, Top-Artikel in STUECK.
+
+WAS GEZAEHLT WIRD (Regel von Matthias, 2026-10-09):
+  * Mehrfachpackung (Set = N x EIN Einzelartikel, z.B. BP-GF-6 = 6 x BP-GF): es zaehlt der EINZELARTIKEL mit seiner
+    Menge aus der Stueckliste (BP-GF, 6 Stueck); der Umsatz der Packung wird dem Einzelartikel zugeschlagen.
+  * Zusammengesetzter Artikel (Set aus verschiedenen Teilen, z.B. Paella-Schlauch Pr1509mm, Bunsenbrenner + Kartuschen):
+    es zaehlt der Artikel selbst, seine Bestandteile fallen weg.
+  * normale Artikel: wie auf der Rechnung. Es muss nichts mit Faktoren umgerechnet werden.
 
 Eingabe: CSV-Export(e) der Ausgangsrechnungen aus Amicron (Semikolon, Windows-1252 oder UTF-8), erzeugt mit
 amicron/Exportdefinition_Artikelverkaeufe.XML (oder _v2). Die Spalten werden am Namen erkannt:
@@ -30,9 +38,9 @@ Zuordnung zum Monat:
     ganzes Jahr ist moeglich); --monat JJJJ-MM begrenzt dann auf diesen Monat.
   * ohne Datumsspalte muss --monat JJJJ-MM angegeben werden (eine Datei = ein Monat).
 
-Ergebnis: artikel_historie.csv (Monat;Artikelnummer;Bezeichnung;Bestellungen;Menge;Umsatz). Bereits vorhandene
-Zeilen eines importierten Monats werden ERSETZT, andere Monate bleiben - der Import ist wiederholbar.
-"Bestellungen" ist leer, wenn der Export keine Rechnungsnummer enthaelt.
+Ergebnis: artikel_amicron.csv. Bereits vorhandene Zeilen der importierten Rechnungen werden ERSETZT, alle anderen
+bleiben - der Import ist beliebig wiederholbar (z.B. woechentlich ein neuer Export). Ohne Datumsspalte (--monat)
+steht der 1. des Monats als Datum.
 
 Aufruf:
     py artikel_import_amicron.py export_2025.csv --trocken               (Auswertung ansehen, nichts schreiben)
@@ -53,9 +61,10 @@ import sys
 from collections import Counter, defaultdict
 from datetime import datetime
 
-VERSION = "2026-10-09c"
+VERSION = "2026-10-09d"
 PAKET = r"\\DESKTOP-N2H75H\Netzwerk\Paketscheine"
-STANDARD_ZIEL = PAKET + r"\artikel_historie.csv"
+STANDARD_ZIEL = PAKET + r"\artikel_amicron.csv"
+TAGE_HEADER = "Datum;Rechnungsnummer;Artikelnummer;Bezeichnung;Menge;Umsatz\n"
 STANDARD_KOMPONENTEN = PAKET + r"\artikel_komponenten.csv"
 STANDARD_VERKAEUFE = PAKET + r"\artikel_verkaeufe.csv"
 STANDARD_FAKTOREN = PAKET + r"\artikel_stueckfaktor.csv"
@@ -107,6 +116,19 @@ def zahl(s):
         return float(s)
     except ValueError:
         return 0.0
+
+
+def tag_aus_datum(s):
+    """'TT.MM.JJJJ' / 'JJJJ-MM-TT' / 'JJJJMMTT' -> 'JJJJ-MM-TT' (None bei unlesbarem Datum)."""
+    s = (s or "").strip()[:10]
+    if re.fullmatch(r"\d{8}", s):
+        s = s[:4] + "-" + s[4:6] + "-" + s[6:]
+    for fmt in ("%d.%m.%Y", "%Y-%m-%d", "%d.%m.%y"):
+        try:
+            return datetime.strptime(s, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return None
 
 
 def monat_aus_datum(s):
@@ -178,7 +200,8 @@ def parse_export(text, monat=None):
         if not art or art == "660" or ist_versand(art, titel):      # Versand-/Dienstleistungszeilen ("DHL Paket", 660)
             info["versand"] += 1
             continue
-        mo = monat_aus_datum(z[cols["datum"]]) if "datum" in cols else monat
+        tag = tag_aus_datum(z[cols["datum"]]) if "datum" in cols else (monat + "-01" if monat else None)
+        mo = tag[:7] if tag else None
         if not mo:
             info["ohne_monat"] += 1
             continue
@@ -188,7 +211,7 @@ def parse_export(text, monat=None):
         menge = zahl(z[cols["menge"]])
         ep = zahl(z[cols["ep"]]) if "ep" in cols else 0.0
         betrag = zahl(z[cols["betrag"]]) if "betrag" in cols else menge * ep
-        out.append({"rnr": rnr, "mo": mo, "art": art, "titel": titel, "menge": menge, "ep": ep, "betrag": betrag,
+        out.append({"rnr": rnr, "mo": mo, "tag": tag, "art": art, "titel": titel, "menge": menge, "ep": ep, "betrag": betrag,
                     "rnr_da": "rnr" in cols})
     return out, info
 
@@ -358,9 +381,14 @@ def aktive_komponenten(tab):
     return akt
 
 
-def entferne_komponenten(zeilen, akt):
-    """Entfernt (bzw. kuerzt die Menge) die Komponentenzeilen jeder Rechnung nach der gelernten Tabelle.
-    Rueckgabe (behalten, entfernt_zeilen, entfernte_stueck, entfernter_scheinumsatz)."""
+def wende_stueckliste_an(zeilen, akt):
+    """Wendet die Stuecklisten-Regel je Rechnung an (siehe Modul-Doku):
+      * Set mit mind. 2 verschiedenen Bestandteilen (zusammengesetzter Artikel): Bestandteile entfernen, Set bleibt.
+      * Set mit genau EINEM Bestandteil (Mehrfachpackung): Einzelartikel behalten, Set-Zeile entfernen, Umsatz des
+        Sets dem Einzelartikel zuschlagen; fehlt die Bestandteil-Zeile, bleibt das Set unveraendert stehen.
+      * "reine Komponenten" (nie Hauptzeile), die zu keinem erkannten Set gehoeren: entfernen.
+    Rueckgabe (behalten, n_zeilen, n_stueck, n_umsatz, pack) - n_* = entfernte Bestandteile/reine Komponenten,
+    pack = {"sets": Zahl aufgeloester Packungen, "stueck": Stueck der Einzelartikel, "umsatz": zugeschlagen}."""
     je = defaultdict(list)
     order = []
     for l in zeilen:
@@ -369,42 +397,84 @@ def entferne_komponenten(zeilen, akt):
             order.append(key)
         je[key].append(l)
     behalten, n_zeilen, n_stueck, n_umsatz = [], 0, 0.0, 0.0
+    pack = {"sets": 0, "stueck": 0.0, "umsatz": 0.0}
+    rein = akt.get("*", {}) if akt else {}
     for key in order:
-        ls = je[key]
+        ls = [dict(l) for l in je[key]]
         if not ls[0]["rnr"] or not akt:
             behalten += ls
             continue
-        sets = defaultdict(float)
-        for l in ls:
-            if nrm(l["art"]) in akt and nrm(l["art"]) != "*":
-                sets[nrm(l["art"])] += l["menge"]
-        erwartet = Counter()
-        for s, ms in sets.items():
-            for x, rt in akt[s].items():
-                erwartet[x] += rt * ms
-        rein = akt.get("*", {})
-        for l in ls:
+        weg = set()                                     # Indizes entfernter Zeilen
+        fest = set()                                    # Indizes bewusst behaltener Einzelartikel (Packungen)
+        sets = defaultdict(list)
+        for ix, l in enumerate(ls):
             k = nrm(l["art"])
-            if k in rein:                              # reine Komponente: nie eine Hauptzeile
+            if k in akt and k != "*":
+                sets[k].append(ix)
+        # --- zusammengesetzte Artikel: Bestandteile entfernen ---
+        erwartet = Counter()
+        for s_, ixs in sets.items():
+            if len(akt[s_]) >= 2:
+                ms = sum(ls[ix]["menge"] for ix in ixs)
+                for x, rt in akt[s_].items():
+                    erwartet[x] += rt * ms
+        for ix, l in enumerate(ls):
+            k = nrm(l["art"])
+            if erwartet[k] > 1e-9 and k not in sets:
+                rest = l["menge"] - erwartet[k]
+                erwartet[k] = max(0.0, erwartet[k] - l["menge"])
+                gewicht = l["menge"] - max(rest, 0.0)
+                n_zeilen += 1
+                n_stueck += gewicht
+                if l["menge"]:
+                    n_umsatz += l["betrag"] * (gewicht / l["menge"])
+                if rest > 1e-9:
+                    l["betrag"] = l["betrag"] * (rest / l["menge"]) if l["menge"] else l["betrag"]
+                    l["menge"] = rest
+                else:
+                    weg.add(ix)
+        # --- Mehrfachpackungen: Einzelartikel zaehlt, Set-Zeile faellt weg ---
+        for s_, ixs in sets.items():
+            if len(akt[s_]) != 1:
+                continue
+            x, rt = next(iter(akt[s_].items()))
+            q = sum(ls[ix]["menge"] for ix in ixs)
+            b = sum(ls[ix]["betrag"] for ix in ixs)
+            erw = rt * q
+            xl = [ix for ix, l in enumerate(ls) if nrm(l["art"]) == x and ix not in weg and ix not in sets.get(x, [])]
+            if not xl or sum(ls[ix]["menge"] for ix in xl) < 0.5 * erw:
+                continue                                  # Bestandteil fehlt -> Set unveraendert lassen
+            rest = erw
+            for ix in xl:
+                if rest <= 1e-9:
+                    break
+                l = ls[ix]
+                t = min(l["menge"], rest)
+                anteil = b * (t / erw) if erw else 0.0
+                eigen = l["betrag"] * ((l["menge"] - t) / l["menge"]) if l["menge"] else 0.0
+                l["betrag"] = anteil + eigen
+                rest -= t
+                l["fest"] = True
+                fest.add(ix)
+                pack["stueck"] += t
+                pack["umsatz"] += anteil
+            for ix in ixs:
+                weg.add(ix)
+            pack["sets"] += 1
+        # --- reine Komponenten ohne erkanntes Set ---
+        for ix, l in enumerate(ls):
+            if ix not in weg and ix not in fest and nrm(l["art"]) in rein:
+                weg.add(ix)
                 n_zeilen += 1
                 n_stueck += l["menge"]
                 n_umsatz += l["betrag"]
-            elif erwartet[k] > 1e-9:
-                rest = l["menge"] - erwartet[k]
-                erwartet[k] = max(0.0, erwartet[k] - l["menge"])
-                weg = l["menge"] - max(rest, 0.0)
-                n_zeilen += 1
-                n_stueck += weg
-                if l["menge"]:
-                    n_umsatz += l["betrag"] * (weg / l["menge"])
-                if rest > 1e-9:
-                    kopie = dict(l)
-                    kopie["betrag"] = l["betrag"] * (rest / l["menge"]) if l["menge"] else l["betrag"]
-                    kopie["menge"] = rest
-                    behalten.append(kopie)
-            else:
-                behalten.append(l)
-    return behalten, n_zeilen, n_stueck, n_umsatz
+        behalten += [l for ix, l in enumerate(ls) if ix not in weg]
+    return behalten, n_zeilen, n_stueck, n_umsatz, pack
+
+
+def entferne_komponenten(zeilen, akt):
+    """Kompatibilitaet: wie wende_stueckliste_an, ohne das pack-Ergebnis."""
+    return wende_stueckliste_an(zeilen, akt)[:4]
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -428,13 +498,53 @@ def lies_export(text, monat=None, komponenten=None):
     """-> (agg {(monat, art): {...}}, info dict). komponenten = aktive Tabelle (aktive_komponenten) oder None."""
     zeilen, info = parse_export(text, monat)
     info["komp_zeilen"] = info["komp_stueck"] = info["komp_umsatz"] = 0
+    info["pack"] = {"sets": 0, "stueck": 0.0, "umsatz": 0.0}
     if komponenten:
-        zeilen, info["komp_zeilen"], info["komp_stueck"], info["komp_umsatz"] = entferne_komponenten(zeilen, komponenten)
+        (zeilen, info["komp_zeilen"], info["komp_stueck"], info["komp_umsatz"],
+         info["pack"]) = wende_stueckliste_an(zeilen, komponenten)
+    info["zeilen_final"] = zeilen
     # Verdaechtige Reste: Nullpreis-Zeilen und "Master"-Artikel, die nicht als Komponente erkannt wurden
-    verd = [l for l in zeilen if l["betrag"] == 0 or re.search(r"\bmaster\b", l["titel"], re.I)]
+    verd = [l for l in zeilen if not l.get("fest") and (l["betrag"] == 0 or re.search(r"\bmaster\b", l["titel"], re.I))]
     info["verdaechtig"] = len(verd)
     info["verdaechtig_stueck"] = sum(l["menge"] for l in verd)
     return aggregiere(zeilen), info
+
+
+def schreibe_tage(ziel, zeilen, trocken=False):
+    """Schreibt die Positionen TAGESGENAU nach artikel_amicron.csv (je Rechnung+Artikel eine Zeile). Zeilen bereits
+    vorhandener Rechnungen werden ersetzt. Rueckgabe (neue_rechnungen, geschriebene_zeilen)."""
+    agg = {}
+    for l in zeilen:
+        if not l["rnr"]:
+            continue
+        a = agg.setdefault((l["rnr"], l["art"].lower()), {"tag": l["tag"], "art": l["art"], "titel": Counter(),
+                                                         "menge": 0.0, "umsatz": 0.0})
+        a["titel"][l["titel"]] += 1
+        a["menge"] += l["menge"]
+        a["umsatz"] += l["betrag"]
+    rnrs = {k[0] for k in agg}
+    behalten = []
+    if os.path.exists(ziel):
+        with open(ziel, encoding="utf-8-sig") as f:
+            next(f, None)
+            behalten = [z for z in f if z.strip() and z.split(";", 2)[1] not in rnrs]
+
+    def zt(x):
+        return str(int(x)) if x == int(x) else ("%.2f" % x).replace(".", ",")
+    neu = []
+    for (rnr, _), a in sorted(agg.items(), key=lambda kv: (kv[1]["tag"], kv[0])):
+        titel = " ".join(a["titel"].most_common(1)[0][0].replace(";", ",").split())
+        neu.append("%s;%s;%s;%s;%s;%s\n" % (a["tag"], rnr, a["art"].replace(";", ","), titel, zt(a["menge"]),
+                                           ("%.2f" % a["umsatz"]).replace(".", ",")))
+    if not trocken:
+        ordner = os.path.dirname(ziel)
+        if ordner:
+            os.makedirs(ordner, exist_ok=True)
+        alle = sorted(behalten + neu, key=lambda z: (z.split(";", 1)[0], z.split(";", 2)[1], z.split(";", 3)[2].lower()))
+        with open(ziel, "w", encoding="utf-8", newline="") as f:
+            f.write(TAGE_HEADER)
+            f.writelines(z if z.endswith("\n") else z + "\n" for z in alle)
+    return len(rnrs), len(neu)
 
 
 def zeile_text(mo, a):
@@ -555,6 +665,32 @@ def selftest():
         schreibe_tabelle(tp, tab)
         akt2 = aktive_komponenten(lies_tabelle(tp))
         check("Tabelle speichern/lesen", {x: round(v, 2) for x, v in akt2["s1"].items()}, {"k1": 6.0, "k2": 1.0})
+        # --- Regel Mehrfachpackung / zusammengesetzter Artikel (Matthias 2026-10-09) ---
+        pk = {"bpgf6": {"bpgf": 6.0}, "pr1509mm": {"1419": 1.0, "1695": 1.5}, "*": {"bpgf": 1.0}}
+        kp = kopf
+        pa, pi = lies_export(kp + "1;20260805;BP-GF-6;GermanFire 6 Stück;1;14,99\n1;20260805;BP-GF;Brennpaste Dose;6;0,00\n", komponenten=pk)
+        check("Packung: BP-GF-6 faellt weg, BP-GF zaehlt 6 Stueck mit dem Umsatz der Packung (auch wenn BP-GF 'reine Komponente' ist)",
+              sorted((k[1], a_["menge"], round(a_["umsatz"], 2)) for k, a_ in pa.items()), [("bp-gf", 6.0, 14.99)])
+        check("Packungsinfo", (pi["pack"]["sets"], pi["pack"]["stueck"], pi["pack"]["umsatz"]), (1, 6.0, 14.99))
+        pb, _ = lies_export(kp + "2;20260805;BP-GF-6;GermanFire 6 Stück;1;14,99\n2;20260805;BP-GF;Brennpaste Dose;6;0,00\n"
+                            "2;20260805;BP-GF;Brennpaste Dose einzeln;2;5,00\n", komponenten={"bpgf6": {"bpgf": 6.0}})
+        check("Packung + Einzelverkauf desselben Artikels in einer Rechnung: 6 (Packung) + 2 (einzeln)",
+              (round(sum(a_["menge"] for a_ in pb.values()), 2), round(sum(a_["umsatz"] for a_ in pb.values()), 2)), (8.0, 24.99))
+        pc, _ = lies_export(kp + "3;20260805;BP-GF-6;GermanFire 6 Stück;1;14,99\n", komponenten={"bpgf6": {"bpgf": 6.0}})
+        check("Packung ohne Bestandteil-Zeile bleibt unveraendert", sorted(k[1] for k in pc), ["bp-gf-6"])
+        pd_, _ = lies_export(kp + "4;20260805;Pr1509mm;Paella-Schlauch;1;12,50\n4;20260805;1419;Ueberwurfmutter;1;0,00\n"
+                             "4;20260805;1695;Schlauch Meterware;1,5;0,00\n", komponenten=pk)
+        check("zusammengesetzter Artikel: Paella-Schlauch bleibt, Bestandteile fallen weg", sorted(k[1] for k in pd_), ["pr1509mm"])
+        # Tagesausgabe
+        zl4, _ = parse_export(kp + "10;20260805;A;Artikel A;2;3,00\n10;20260805;A;Artikel A;1;3,00\n11;20260806;B;Artikel B;1;7,50\n")
+        tg = os.path.join(tmp, "t.csv")
+        check("schreibe_tage: 2 Rechnungen, A je Rechnung zusammengefasst", schreibe_tage(tg, zl4), (2, 2))
+        t1 = open(tg, encoding="utf-8").read().strip().split("\n")
+        check("Tageszeile", t1[1], "2026-08-05;10;A;Artikel A;3;9,00")
+        schreibe_tage(tg, parse_export(kp + "10;20260805;A;Artikel A;5;3,00\n12;20260807;C;Artikel C;1;1,00\n")[0])
+        t2 = open(tg, encoding="utf-8").read().strip().split("\n")
+        check("wiederholbar: Rechnung 10 ersetzt, 11 bleibt, 12 neu", [z.split(";")[1:5] for z in t2[1:]],
+              [["10", "A", "Artikel A", "5"], ["11", "B", "Artikel B", "1"], ["12", "C", "Artikel C", "1"]])
         # Beziehungen aus der Stueckfaktor-Tabelle (BP-GF-6 = 6 x BP-GF)
         ft = os.path.join(tmp, "f.csv")
         open(ft, "w", encoding="utf-8").write("Artikelnummer;Bezeichnung;Faktor;Gruppe;Quelle\nBP-GF;Dose;1;BP-GF;auto\n"
@@ -620,7 +756,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="Amicron-Export -> artikel_historie.csv")
     ap.add_argument("dateien", nargs="*")
     ap.add_argument("--monat", default=None, help="JJJJ-MM")
-    ap.add_argument("--ziel", default=STANDARD_ZIEL)
+    ap.add_argument("--ziel", default=STANDARD_ZIEL, help="artikel_amicron.csv (tagesgenau)")
     ap.add_argument("--komponenten", default=STANDARD_KOMPONENTEN)
     ap.add_argument("--verkaeufe", default=STANDARD_VERKAEUFE)
     ap.add_argument("--faktoren", default=STANDARD_FAKTOREN)
@@ -682,6 +818,7 @@ def main(argv=None):
                   "(oft mit Listenpreis); Stueck und Umsatz sind dann zu hoch. Erst lernen: --lerne august.csv ..." % arg.komponenten)
 
     gesamt = {}
+    alle_zeilen = []
     for pfad in arg.dateien:
         text, enc = lies_text(pfad)
         if arg.zeige_spalten:
@@ -704,10 +841,14 @@ def main(argv=None):
         if info["komp_zeilen"]:
             print("    Komponentenzeilen entfernt: %d Zeilen, %.0f Stück, %.0f EUR Scheinumsatz" % (
                 info["komp_zeilen"], info["komp_stueck"], info["komp_umsatz"]))
+        if info["pack"]["sets"]:
+            print("    Mehrfachpackungen aufgeloest: %d Packungen -> %.0f Stück Einzelartikel (%.0f EUR Umsatz zugeschlagen)" % (
+                info["pack"]["sets"], info["pack"]["stueck"], info["pack"]["umsatz"]))
         if info["verdaechtig"]:
             print("    Verbleibend verdächtig (Preis 0 oder 'Master' im Titel, nicht als Komponente gelernt): "
                   "%d Zeilen, %.0f Stück" % (info["verdaechtig"], info["verdaechtig_stueck"]))
         print("    Spalten: %s" % ", ".join("%s=%d" % kv for kv in sorted(info["spalten"].items())))
+        alle_zeilen.extend(info["zeilen_final"])
         for k, a in agg.items():
             if k in gesamt:
                 g = gesamt[k]
@@ -726,8 +867,8 @@ def main(argv=None):
     if not any(a["umsatz"] for a in gesamt.values()):
         print("\nHINWEIS: Der Betrag ist ueberall 0 bzw. fehlt - die Auswertung zeigt dann keinen Umsatz "
               "(Zubehoer-Listen fuer den Amicron-Import haben absichtlich Betrag 0,00).")
-    n = schreibe_historie(arg.ziel, gesamt, arg.trocken)
-    print("\n%s %d Zeilen -> %s" % ("Trockenlauf:" if arg.trocken else "Geschrieben:", n, arg.ziel))
+    n_rg, n_z = schreibe_tage(arg.ziel, alle_zeilen, arg.trocken)
+    print("\n%s %d Rechnungen, %d Zeilen -> %s" % ("Trockenlauf:" if arg.trocken else "Geschrieben:", n_rg, n_z, arg.ziel))
     return 0
 
 

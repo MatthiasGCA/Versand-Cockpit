@@ -99,7 +99,11 @@ from tkinter import messagebox, simpledialog, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-10-09a"
+VERSION = "2026-10-09b"
+# 2026-10-09b: Schritt 2 verarbeitet Rechnungen mit Fehler oder noch nicht quittiertem Hinweis
+#   GAR NICHT mehr (vorher: gepackt + archiviert, aber ohne Carrier-CSV/Label - z.B. nach Klick
+#   auf die Kachel "Hinweise" + Schritt 2). Sie bleiben im Pool/in der Tabelle, bis sie behoben
+#   bzw. quittiert sind; ohne eine einzige exportierbare Rechnung bricht Schritt 2 mit Meldung ab.
 # 2026-10-09a: Schritt 2 pflegt zusaetzlich die Stueckfaktor-Tabelle (artikel_stueckfaktor.csv,
 #   carrier_statistik.merke_stueckfaktoren) fuer die Stueck-Auswertung (Packungen -> Stueck).
 # 2026-10-08b: automatische Aufraeumung (aufraeumen.py) - einmal taeglich beim Dashboard-Start,
@@ -412,6 +416,14 @@ def hat_offenen_hinweis(b):
     im Ergebnis-dict erhalten (Meldungstext/Detailansicht) - er zaehlt nur
     nicht mehr fuer die Hinweise-Kachel/den Hinweise-Filter."""
     return bool(b["hinweise"]) and not b.get("quittiert")
+
+
+def ohne_label(b):
+    """True, wenn zu b in Schritt 2 KEINE Carrier-CSV-Zeile entstehen wuerde (Fehler oder
+    noch nicht quittierter Hinweis; dieselbe Bedingung wie carrier_statistik.exportierbare).
+    Solche Rechnungen werden in Schritt 2 gar nicht verarbeitet (nicht gepackt, nicht
+    archiviert) und bleiben bis zur Korrektur/Quittierung im Pool."""
+    return b["status"] != "ok" or not b["carrier"]
 
 
 def braucht_paketaufteilung(b):
@@ -1639,8 +1651,14 @@ def gui():
         alle = list(enumerate(zip(rechnungen_roh, ergebnisse)))
         # Kopien einer doppelten Rechnungsnummer (b["dup_kopie"], siehe
         # _markiere_pool_duplikate) zaehlen wie nicht lesbare PDFs: nicht verarbeiten.
+        # Rechnungen ohne moegliche Carrier-CSV-Zeile (Fehler / offener Hinweis) werden
+        # ebenfalls NICHT verarbeitet: sonst waeren sie gepackt + archiviert, aber ohne Label.
+        zurueckgestellt = [b for i, (r, b) in alle
+                           if r is not None and not b.get("dup_kopie")
+                           and i in sichtbare_indizes and ohne_label(b)]
         paare = [(r, b) for i, (r, b) in alle
-                 if r is not None and not b.get("dup_kopie") and i in sichtbare_indizes]
+                 if r is not None and not b.get("dup_kopie") and i in sichtbare_indizes
+                 and not ohne_label(b)]
         # Rechnungen, deren PDF gar nicht erst gelesen werden konnte (kein Positionen
         # erkannt / PDF nicht lesbar) - die werden von Schritt 2 komplett uebersprungen
         # (nicht gepackt, nicht archiviert) und bleiben unveraendert im Pool liegen.
@@ -1648,11 +1666,19 @@ def gui():
                          if (r is None or b.get("dup_kopie")) and i in sichtbare_indizes]
         verarbeitete_indizes = {i for i, (r, b) in alle
                                 if r is not None and not b.get("dup_kopie")
-                                and i in sichtbare_indizes}
+                                and i in sichtbare_indizes and not ohne_label(b)}
         if not paare:
-            messagebox.showinfo("Carrier-Dashboard",
-                                "Keine gueltigen Rechnungen zum Verarbeiten - bitte zuerst "
-                                "Schritt 1 erneut ausfuehren.")
+            if zurueckgestellt:
+                messagebox.showwarning(
+                    "Carrier-Dashboard",
+                    "Keine exportierbare Rechnung dabei - es wird NICHTS gepackt oder "
+                    "archiviert.\n\n%d Rechnung(en) haben einen Fehler oder einen noch nicht "
+                    "quittierten Hinweis. Bitte zuerst beheben bzw. \"Hinweis quittieren\" "
+                    "und dann Schritt 2 erneut starten." % len(zurueckgestellt))
+            else:
+                messagebox.showinfo("Carrier-Dashboard",
+                                    "Keine gueltigen Rechnungen zum Verarbeiten - bitte zuerst "
+                                    "Schritt 1 erneut ausfuehren.")
             return
 
         # Sicherung gegen Teilverarbeitung: ist ein Filter aktiv, wird nur der
@@ -1731,25 +1757,24 @@ def gui():
                                  "AUSGABE_ORDNER darf nicht gleich POOL_ORDNER sein - bitte "
                                  "im Quelltext (carrier_dashboard.py, Kopf) korrigieren.")
             return
-        n_fehler = sum(1 for _, b in paare if b["status"] == "fehler")
-        # Offener (NICHT quittierter) Hinweis blockiert den Carrier-Export
-        # GENAUSO wie ein Fehler (siehe carrier_export.exportiere(): nur
-        # status "ok" wird exportiert) - Rechnung wird trotzdem gepackt.
-        n_hinweis_offen = sum(1 for _, b in paare if hat_offenen_hinweis(b))
+        # Fehler und offene (NICHT quittierte) Hinweise liefern keine Carrier-CSV-Zeile
+        # (carrier_export.exportiere(): nur status "ok") - solche Rechnungen sind oben
+        # schon aus paare herausgenommen (zurueckgestellt) und bleiben im Pool.
+        n_fehler = sum(1 for b in zurueckgestellt if b["status"] == "fehler")
+        n_hinweis_offen = len(zurueckgestellt) - n_fehler
         os.makedirs(ausgabe_ordner, exist_ok=True)
         # Sekundengenauer, kollisionssicherer Dateiname (dateiname() haengt bei
         # Bedarf _2/_3/... an) - eine Minute allein reichte nicht aus und liess
         # zwei Laeufe binnen derselben Minute die vorige Pickliste ueberschreiben.
         ausgabe_pfad = carrier_export.dateiname(ausgabe_ordner, "Pickliste", ext="pdf")
-        hinweis_fehler = ("\n\n%d davon werden zwar gepackt, aber NICHT in eine "
-                          "Carrier-CSV geschrieben (Zuordnungsfehler, siehe Tabelle) - "
-                          "diese muessen manuell nachbearbeitet werden." % n_fehler
+        hinweis_fehler = ("\n\nNICHT verarbeitet (bleiben im Pool, nicht gepackt, nicht "
+                          "archiviert): %d Rechnung(en) mit Zuordnungsfehler (siehe Tabelle) - "
+                          "erst beheben." % n_fehler
                           ) if n_fehler else ""
-        hinweis_offen_txt = ("\n\n%d davon haben einen noch NICHT quittierten Hinweis und "
-                             "werden zwar gepackt, aber ebenfalls NICHT in eine Carrier-CSV "
-                             "geschrieben - erst \"Hinweis quittieren\" (oder beheben) und "
-                             "danach erneut verarbeiten." % n_hinweis_offen
-                             ) if n_hinweis_offen else ""
+        hinweis_offen_txt = ("\n\nNICHT verarbeitet (bleiben im Pool, nicht gepackt, nicht "
+                             "archiviert): %d Rechnung(en) mit noch nicht quittiertem Hinweis - "
+                             "erst \"Hinweis quittieren\" (oder beheben), dann Schritt 2 erneut."
+                             % n_hinweis_offen) if n_hinweis_offen else ""
         hinweis_uebersprungen = ("\n\n%d Rechnung(en) konnten gar nicht gelesen werden bzw. "
                                  "sind KOPIEN einer doppelten Rechnungsnummer "
                                  "(siehe Fehlermeldung in der Tabelle) und werden JETZT NICHT "
@@ -1836,7 +1861,8 @@ def gui():
                                       "Pool): %d" % export_info["uebersprungen"])
                     if verbleibend:
                         zeilen.append("Verbleibend in der Tabelle (nicht verarbeitet, z.B. "
-                                      "wegen aktivem Filter oder Lesefehler): %d" % verbleibend)
+                                      "wegen Fehler/offenem Hinweis, aktivem Filter oder Lesefehler): %d"
+                                      % verbleibend)
                     if bericht["kg_geloggt"]:
                         zeilen.append("Kg-Statistik: %d Rechnung(en) erfasst" %
                                       bericht["kg_geloggt"])

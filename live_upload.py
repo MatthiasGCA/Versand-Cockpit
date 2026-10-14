@@ -38,7 +38,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime
 
-VERSION = "2026-10-14c"
+VERSION = "2026-10-14d"
 BASIS = os.path.dirname(os.path.abspath(__file__))
 STANDARD = {
     "url": "https://www.gasecenter-onlineshop.de/vs-ingest.php",

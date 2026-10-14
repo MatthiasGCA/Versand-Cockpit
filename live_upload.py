@@ -38,13 +38,16 @@ import urllib.error
 import urllib.request
 from datetime import datetime
 
-VERSION = "2026-10-14a"
+VERSION = "2026-10-14b"
 BASIS = os.path.dirname(os.path.abspath(__file__))
 STANDARD = {
     "url": "https://www.gasecenter-onlineshop.de/vs-ingest.php",
     "quelle": r"\\DESKTOP-N2H75H\Netzwerk\Paketscheine\cockpit_live.json",
-    "log": r"C:\Packlisten\live_upload.log",
+    "log": os.path.join(BASIS, "live_upload.log"),     # immer neben dem Skript - kein fester Ordner
 }
+# Wo nach statistik_upload.py (Token) gesucht wird: zuerst neben diesem Skript,
+# dann die ueblichen Ordner auf dem Lager-PC.
+TOKEN_SUCHORTE = [BASIS, r"C:\Versand\statistik", r"C:\Packlisten"]
 POLL_S = 5                    # so oft nach einer geaenderten Datei sehen
 MAX_ALTER_S = 120             # aelter als das wird NICHT hochgeladen (Cockpit tot -> Seite zeigt das selbst)
 LOG_MAX_BYTES = 300_000       # Log wird bei Ueberschreitung auf die jungen Haelfte gekuerzt
@@ -59,9 +62,11 @@ def lade_config():
         with open(pfad, encoding="utf-8-sig") as f:
             cfg.update({k: v for k, v in json.load(f).items() if isinstance(v, str) and v.strip()})
     if not cfg.get("token"):
-        for kand in (os.path.join(BASIS, "statistik_upload.py"), r"C:\Packlisten\statistik_upload.py"):
+        for ordner in TOKEN_SUCHORTE:
+            kand = os.path.join(ordner, "statistik_upload.py")
             if os.path.exists(kand):
-                m = re.search(r'^UPLOAD_TOKEN\s*=\s*"(.*)"\s*$', open(kand, encoding="utf-8").read(), re.M)
+                m = re.search(r'^UPLOAD_TOKEN\s*=\s*["\'](.*)["\']\s*(#.*)?$',
+                              open(kand, encoding="utf-8-sig").read(), re.M)
                 if m:
                     cfg["token"] = m.group(1)
                     break
@@ -88,8 +93,22 @@ def hochladen(roh, url, token):
     req = urllib.request.Request(ziel, data=roh, method="POST", headers={
         "Content-Type": "application/json; charset=utf-8", "X-Upload-Token": token,
         "User-Agent": "live_upload/" + VERSION})
-    with urllib.request.urlopen(req, timeout=20) as r:
-        return r.status, r.read().decode("utf-8", "replace").strip()
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return r.status, r.read().decode("utf-8", "replace").strip()
+    except urllib.error.HTTPError as e:
+        # Antworttext des Servers mitnehmen und die haeufigen Ursachen benennen
+        try:
+            body = e.read().decode("utf-8", "replace").strip()[:200]
+        except OSError:
+            body = ""
+        tipps = {400: "Webspace hat noch die ALTE vs-ingest.php (kennt Ziel 'live' nicht)",
+                 403: "Token stimmt nicht mit dem Geheimwort in vs-ingest.php ueberein",
+                 404: "vs-ingest.php nicht unter dieser URL gefunden",
+                 413: "Datei zu gross", 500: "Server kann live.json nicht schreiben "
+                      "(Ordner versandstatistik/ fehlt oder nicht beschreibbar)"}
+        raise OSError("HTTP %s %s%s" % (e.code, ("- '%s' " % body) if body else "",
+                                        ("-> " + tipps[e.code]) if e.code in tipps else ""))
 
 
 def einmal(cfg, state):
@@ -124,7 +143,9 @@ def main(argv=None):
     cfg = lade_config()
     lg = cfg["log"]
     if not cfg.get("token"):
-        log("FEHLER: kein Upload-Token (live_upload_config.json oder statistik_upload.py)", lg)
+        log("FEHLER: kein Upload-Token gefunden. Gesucht wurde statistik_upload.py in: %s - "
+            "bitte live_upload.py in denselben Ordner wie statistik_upload.py legen oder "
+            "live_upload_config.json mit {\"token\": \"...\"} anlegen." % ", ".join(TOKEN_SUCHORTE), lg)
         return 1
     sperre = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:

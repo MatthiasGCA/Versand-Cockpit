@@ -47,7 +47,7 @@ STANDARD = {
 }
 # Wo nach statistik_upload.py (Token) gesucht wird: zuerst neben diesem Skript,
 # dann die ueblichen Ordner auf dem Lager-PC.
-TOKEN_SUCHORTE = [BASIS, r"C:\Versand\statistik", r"C:\Packlisten"]
+TOKEN_SUCHORTE = [BASIS, r"C:\VersandStatistik", r"C:\Packlisten"]
 POLL_S = 5                    # so oft nach einer geaenderten Datei sehen
 MAX_ALTER_S = 120             # aelter als das wird NICHT hochgeladen (Cockpit tot -> Seite zeigt das selbst)
 LOG_MAX_BYTES = 300_000       # Log wird bei Ueberschreitung auf die jungen Haelfte gekuerzt

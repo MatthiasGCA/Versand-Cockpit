@@ -64,6 +64,28 @@
   .tbl td.art{font-size:12px;color:var(--faint)}
   .rank{color:var(--faint);width:34px}
   .charttitle{font-size:14px;font-weight:600;margin:0 0 8px 4px}
+  /* Reiter "Live" (Spiegel des Versandcockpits) */
+  .lbanner{border-radius:12px;padding:16px 18px;font-size:20px;font-weight:600;margin-bottom:14px;
+    border:1px solid var(--line);background:var(--card)}
+  .lbanner small{display:block;font-size:13px;font-weight:400;margin-top:2px;opacity:.85}
+  .lbanner.ok{background:#e6f4ec;border-color:#b9dec6;color:#14663a}
+  .lbanner.work{background:#eaf1fb;border-color:#c6d8f2;color:#1d4f91}
+  .lbanner.warn{background:#fff6dd;border-color:#f0dca0;color:#7a5600}
+  .lbanner.stale{background:#fdeceb;border-color:#f3c4c1;color:#8f2f2b}
+  .ltiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px;margin-bottom:14px}
+  .ltile{background:var(--card);border:2px solid var(--line);border-radius:12px;padding:14px 16px}
+  .ltile .lh{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+  .ltile .lname{font-size:17px;font-weight:700}
+  .ltile .ldl{font-size:12px;color:var(--faint)}
+  .ltile .lcount{font-size:28px;font-weight:600;margin:6px 0 8px;font-variant-numeric:tabular-nums}
+  .ltile .lcount.red{color:var(--bad)} .ltile .lcount.done{color:var(--good)}
+  .lbar{height:10px;border-radius:5px;background:#ebeae5;overflow:hidden}
+  .lbar div{height:100%;border-radius:5px;transition:width .4s}
+  .ltile .lsub{font-size:13px;color:var(--muted);margin:6px 0 8px;font-variant-numeric:tabular-nums}
+  .ltile .llist{font:12px/1.55 Consolas,Menlo,monospace;color:var(--ink);max-height:190px;overflow:auto;
+    border-top:1px solid var(--line);padding-top:6px}
+  .ltile .llist .zu{color:var(--faint)}
+  .lwarn{margin:0 0 10px;font-size:13px;color:#8f2f2b}
   @media (max-width:520px){ h1{font-size:18px} .kpi .val{font-size:22px} .chart{height:300px} }
 </style>
 </head>
@@ -80,6 +102,7 @@
       <button data-tab="monat" type="button">Monat</button>
       <button data-tab="jahr" type="button">Jahr</button>
       <button data-tab="artikel" type="button">Top-Artikel</button>
+      <button data-tab="live" type="button">Live</button>
     </div>
     <div id="versandPanel">
     <div class="sub" id="sub"></div>
@@ -87,6 +110,14 @@
     <div class="legend" id="legend"></div>
     <div class="chartbox"><div class="chart"><canvas id="chart" role="img" aria-label="Diagramm der Paketmengen je Versender">Paketmengen je Versender DPD, DHL und Post.</canvas></div></div>
     <div class="note" id="note"></div>
+    </div>
+
+    <div id="livePanel" style="display:none">
+      <div class="lbanner" id="lbanner">Lade &hellip;</div>
+      <div class="kpis" id="lkpis"></div>
+      <div class="ltiles" id="ltiles"></div>
+      <div class="lwarn" id="lwarn"></div>
+      <div class="note" id="lnote"></div>
     </div>
 
     <div id="artikelPanel" style="display:none">
@@ -125,6 +156,7 @@
   var MON = ['Jan','Feb','Mär','Apr','Mai','Jun','Jul','Aug','Sep','Okt','Nov','Dez'];
   var GRID = '#ebeae5', TICK = '#8a8984';
   var DATA = null, tab = 'tag', chart = null;
+  (function(){ var h=(location.hash||'').replace('#',''); if(['tag','monat','jahr','artikel','live'].indexOf(h)>=0) tab=h; })();
   var ART = null, ARTERR = null, tchart = null, selKey = null;
 
   function ddmm(iso){ var p = iso.split('-'); return p[2]+'.'+p[1]; }
@@ -327,13 +359,109 @@
       .catch(function(err){ ARTERR=String(err); renderArtikel(); });
   }
 
+  /* ---------- Reiter "Live": Spiegel des Versandcockpits ---------- */
+  var LIVE = null, LIVEERR = null, liveTimer = null, liveTick = null, liveOffset = 0;
+  function liveStop(){ if(liveTimer){ clearInterval(liveTimer); liveTimer=null; } if(liveTick){ clearInterval(liveTick); liveTick=null; } }
+  function liveStart(){
+    if(liveTimer) return;
+    loadLive();
+    liveTimer = setInterval(loadLive, 10*1000);   // alle 10 s neu holen
+    liveTick  = setInterval(renderLive, 1000);    // Countdown jede Sekunde
+  }
+  function loadLive(){
+    fetch('live.json?ts='+Date.now(),{cache:'no-store'})
+      .then(function(r){
+        if(!r.ok) throw new Error('HTTP '+r.status);
+        var d=r.headers.get('Date');                 // Serverzeit -> unabhaengig von der Uhr dieses Rechners
+        if(d){ var t=Date.parse(d); if(!isNaN(t)) liveOffset=t-Date.now(); }
+        return r.json();
+      })
+      .then(function(j){ LIVE=j; LIVEERR=null; renderLive(); })
+      .catch(function(err){ LIVEERR=String(err); renderLive(); });
+  }
+  function hm(sec){ sec=Math.max(0,Math.floor(sec)); var h=Math.floor(sec/3600), m=Math.floor(sec%3600/60), s=sec%60;
+    return pad(h)+':'+pad(m)+':'+pad(s); }
+  function renderLive(){
+    if(tab!=='live') return;
+    var ban=document.getElementById('lbanner'), kp=document.getElementById('lkpis'),
+        ti=document.getElementById('ltiles'), wa=document.getElementById('lwarn'), no=document.getElementById('lnote');
+    if(!LIVE){
+      ban.className='lbanner'+(LIVEERR?' stale':'');
+      ban.innerHTML = LIVEERR ? 'Noch keine Live-Daten.<small>'+esc(LIVEERR)+' &ndash; Sobald <code>live_upload.py</code> auf dem Lager-PC läuft und das Cockpit offen ist, erscheint hier der aktuelle Stand.</small>' : 'Lade &hellip;';
+      kp.innerHTML=''; ti.innerHTML=''; wa.innerHTML=''; no.innerHTML=''; return;
+    }
+    var jetztMs = Date.now()+liveOffset;
+    var alter = LIVE.empfangen ? (jetztMs/1000 - LIVE.empfangen) : 1e9;
+    var stale = (alter > 120);
+    var gen = LIVE.generated||'';
+    var offen=LIVE.offen_gesamt||0, heute=LIVE.heute_gesamt||0, oz=LIVE.ohne_zuordnung||0;
+    if(stale){
+      ban.className='lbanner stale';
+      ban.innerHTML='Cockpit meldet sich nicht<small>Letzter Stand '+esc(gen.substr(11,5))+' Uhr ('+Math.round(alter/60)+' Min. her) &ndash; Cockpit geschlossen oder Upload (<code>live_upload.py</code>) läuft nicht. Die Zahlen unten sind veraltet.</small>';
+    } else if(LIVE.status==='fertig'){
+      ban.className='lbanner ok';
+      ban.innerHTML='Alles gedruckt &ndash; nächster Rechnungslauf kann gestartet werden<small>'+nf(heute)+' Sendungen heute gedruckt</small>';
+    } else if(LIVE.status==='bereit'){
+      ban.className='lbanner ok';
+      ban.innerHTML='Bereit &ndash; nichts offen<small>Noch nichts gedruckt heute</small>';
+    } else if(LIVE.status==='ohne_zuordnung'){
+      ban.className='lbanner warn';
+      ban.innerHTML=nf(oz)+' Post-Label ohne Zuordnung<small>Adresse im Cockpit prüfen &ndash; sonst ist alles gedruckt</small>';
+    } else {
+      ban.className='lbanner work';
+      ban.innerHTML='In Arbeit &ndash; '+nf(offen)+' offen<small>'+nf(heute)+' von '+nf(heute+offen)+' Sendungen gedruckt</small>';
+    }
+    var proz = (heute+offen)>0 ? Math.round(heute/(heute+offen)*100) : 0;
+    kp.innerHTML = kpi('Offen',offen)+kpi('Heute gedruckt',heute)+kpi('Fortschritt',proz)+(oz?kpi('Ohne Zuordnung',oz):'');
+    kp.querySelectorAll('.kpi')[2].querySelector('.val').textContent = proz+' %';
+
+    var nowD = new Date(jetztMs);
+    ti.innerHTML = (LIVE.versender||[]).map(function(v){
+      var ges=v.gesamt||0, ged=v.gedruckt||0, off=v.offen||0, p=ges>0?Math.round(ged/ges*100):0;
+      var cnt='–', cls='';
+      if(off===0 && ges>0){ cnt='fertig'; cls=' done'; }
+      else if(off===0){ cnt='nichts offen'; cls=' done'; }
+      else if(v.deadline){
+        var hh=v.deadline.split(':'), z=new Date(nowD); z.setHours(+hh[0],+hh[1],0,0);
+        var d=(z-nowD)/1000;
+        if(d<0){ cnt='überfällig'; cls=' red'; } else { cnt=hm(d); if(d<=30*60) cls=' red'; }
+      }
+      var items=(v.liste||[]), mx=40;
+      var lst = items.slice(0,mx).map(function(e){
+        return esc(e.nr)+(e.name?'  '+esc(e.name):'')+(e.info?'  <span class="zu">['+esc(e.info)+']</span>':'');
+      }).join('<br>');
+      if(items.length>mx) lst+='<br><span class="zu">&hellip; +'+(items.length-mx)+' weitere</span>';
+      if(off>items.length && items.length>=mx) lst+='';
+      if(!items.length) lst='<span class="zu">(nichts offen)</span>';
+      var col=v.farbe||'#888';
+      return '<div class="ltile" style="border-color:'+esc(col)+'">'
+        +'<div class="lh"><span class="lname">'+esc(v.name)+'</span><span class="ldl">'+(v.deadline?'Abholung '+esc(v.deadline):'')+'</span></div>'
+        +'<div class="lcount'+cls+'">'+esc(cnt)+'</div>'
+        +'<div class="lbar"><div style="width:'+p+'%;background:'+esc(col)+'"></div></div>'
+        +'<div class="lsub">'+nf(ged)+' von '+nf(ges)+' gedruckt &middot; '+nf(off)+' offen</div>'
+        +'<div class="llist">'+lst+'</div></div>';
+    }).join('');
+
+    var w=[];
+    (LIVE.warnungen||[]).forEach(function(t){ w.push('⚠ '+esc(t)); });
+    if(LIVE.mengenliste_ok===false) w.push('⚠ '+esc(LIVE.mengenliste||'Mengenliste nicht in Ordnung'));
+    wa.innerHTML=w.join('<br>');
+    no.innerHTML='Stand '+esc(gen)+' &middot; Cockpit v'+esc(LIVE.version||'?')+' &middot; aktualisiert sich alle 10 Sekunden'
+      +(LIVE.versender&&LIVE.versender.some(function(v){return (v.liste||[]).some(function(e){return e.name;});})?'':' &middot; ohne Empfängernamen');
+  }
+
+  var TABS = ['tag','monat','jahr','artikel','live'];
+
   function render(){
     Array.prototype.forEach.call(document.querySelectorAll('#tabs button'), function(b){
       b.classList.toggle('on', b.dataset.tab===tab);
     });
-    var istArtikel=(tab==='artikel');
-    document.getElementById('versandPanel').style.display=istArtikel?'none':'block';
+    var istArtikel=(tab==='artikel'), istLive=(tab==='live');
+    document.getElementById('versandPanel').style.display=(istArtikel||istLive)?'none':'block';
     document.getElementById('artikelPanel').style.display=istArtikel?'block':'none';
+    document.getElementById('livePanel').style.display=istLive?'block':'none';
+    if(istLive){ liveStart(); renderLive(); return; }
+    liveStop();
     if(istArtikel){ if(ART){ renderArtikel(); } else if(!ARTERR){ loadArtikel(); } else { renderArtikel(); } return; }
     if(chart){ chart.destroy(); chart=null; }
     var kp=document.getElementById('kpis'), sub=document.getElementById('sub'),
@@ -419,7 +547,11 @@
   }
 
   Array.prototype.forEach.call(document.querySelectorAll('#tabs button'), function(b){
-    b.addEventListener('click', function(){ tab=b.dataset.tab; render(); });
+    b.addEventListener('click', function(){
+      tab=b.dataset.tab;
+      try{ history.replaceState(null,'','#'+tab); }catch(e){}   // Lesezeichen z.B. auf .../versandstatistik/#live
+      render();
+    });
   });
   document.getElementById('refresh').addEventListener('click', load);
   setInterval(load, 5*60*1000);    // alle 5 Minuten still nachladen

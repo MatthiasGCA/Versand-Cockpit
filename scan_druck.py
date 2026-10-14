@@ -30,6 +30,7 @@ import re
 import io
 import sys
 import csv
+import json
 import glob
 import time
 import shutil
@@ -50,9 +51,18 @@ try:
 except Exception:
     _HAS_REPORTLAB = False
 # ============================ KONFIGURATION ============================
-VERSION = "2026-10-05b"          # im Fenstertitel sichtbar -> Deployment pruefbar
+VERSION = "2026-10-14a"          # im Fenstertitel sichtbar -> Deployment pruefbar
 # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je Aenderung am selben Tag (erste
 # Aenderung des Tages = a, dann b, c ...; ein neuer Tag beginnt wieder bei a).
+# 2026-10-14a: Live-Spiegel fuer die Versandstatistik-Webseite (Reiter "Live").
+#   Das Cockpit schreibt seinen Stand (je Versender gedruckt/offen/Deadline,
+#   offene Rechnungsnummern mit Scan-/EAN-Fortschritt, Warnungen, Status) als
+#   cockpit_live.json in den Paketscheine-Ordner - bei Aenderung (max. alle 5 s)
+#   und als Lebenszeichen alle 30 s, in einem Hintergrund-Thread, Fehler werden
+#   verschluckt (kann das Cockpit nie stoeren). Hochgeladen wird die Datei von
+#   live_upload.py auf dem Lager-PC (dort liegt das Upload-Token). Standard:
+#   nur Rechnungsnummern, keine Empfaengernamen (LIVE_MIT_NAMEN). Abschaltbar
+#   mit LIVE_STATUS_DATEI = "". Keine Aenderung am Druck-/Scan-Verhalten.
 # 2026-10-05b: Knopf "Log zuruecksetzen" ausgebaut (er schaltete den Doppeldruck-
 #   Schutz komplett ab: nach dem Leeren druckte ein erneut gescanntes Label ohne
 #   jede Warnung ein zweites Mal; fuer den Normalbetrieb unnoetig, da ein
@@ -419,6 +429,16 @@ DRUCK_LOG = r"\\DESKTOP-N2H75H\Netzwerk\Paketscheine\gedruckt.log"
 # (Nachsendung/Wiederverwendung: Stunden bis wenige Wochen). Statistik
 # (statistik.csv) und Tagesrekord sind davon NICHT betroffen.
 DRUCK_LOG_AUFBEWAHRUNG_TAGE = 90
+# Live-Spiegel fuer die Versandstatistik-Webseite (Reiter "Live"): das Cockpit
+# schreibt seinen Stand regelmaessig als kleine JSON-Datei in den Paketscheine-
+# Ordner; live_upload.py auf dem Lager-PC (dort liegt das Upload-Token) schickt
+# sie an die Webseite. Leerer Pfad = Funktion aus.
+LIVE_STATUS_DATEI = r"\\DESKTOP-N2H75H\Netzwerk\Paketscheine\cockpit_live.json"
+LIVE_MIT_NAMEN = False        # True = Empfaengernamen der offenen Auftraege mit
+                              # uebertragen (Kundendaten!), sonst nur Rechnungsnummern
+LIVE_MIN_ABSTAND_S = 5        # frueheste Wiederholung bei Aenderung
+LIVE_HEARTBEAT_S = 30         # auch ohne Aenderung so oft neu schreiben ("Cockpit lebt")
+LIVE_MAX_LISTE = 150          # max. offene Auftraege je Versender in der Datei
 STATISTIK_DATEI = r"\\DESKTOP-N2H75H\Netzwerk\Paketscheine\statistik.csv"
 # Firmenlogo fuer die Cockpit-Kopfzeile. PNG oder GIF laufen ohne Zusatzpaket
 # (Tkinter kann beides); mit installiertem Pillow zusaetzlich JPG und glattere
@@ -1211,6 +1231,18 @@ def lade_gedruckt_heute(pfad):
 def merke_gedruckt(pfad, nr):
     with open(pfad, "a", encoding="utf-8") as f:
         f.write(f"{nr}\t{datetime.now():%Y-%m-%d %H:%M:%S}\n")
+def schreibe_live_status(pfad, daten):
+    """Schreibt den Live-Stand atomar (Temp-Datei + os.replace). Jeder Fehler
+    (Netzlaufwerk weg, Datei gesperrt) wird verschluckt - der Live-Spiegel darf
+    das Cockpit nie stoeren. Rueckgabe True bei Erfolg."""
+    try:
+        tmp = pfad + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(daten, f, ensure_ascii=False, separators=(",", ":"))
+        os.replace(tmp, pfad)
+        return True
+    except (OSError, TypeError, ValueError):
+        return False
 def bereinige_druck_log(pfad, tage=DRUCK_LOG_AUFBEWAHRUNG_TAGE):
     """Entfernt Eintraege aelter als `tage` Tage aus dem Druck-Log. Rueckgabe:
     Anzahl entfernter Zeilen (0 = nichts zu tun oder Fehler - das Log bleibt dann
@@ -2349,6 +2381,34 @@ def starte_cockpit():
                        font=("Segoe UI", 20, "bold"))
         cv.create_text(75, 96, text=f"{gedruckt}/{gesamt}", fill=MUTED,
                        font=("Segoe UI", 11))
+    # ---- Live-Spiegel (Versandstatistik-Webseite, Reiter "Live") ----
+    live_state = {"sig": None, "ts": 0.0, "busy": False}
+    def live_veroeffentlichen(payload):
+        """Reicht den Stand an einen Hintergrund-Thread weiter, der ihn in
+        LIVE_STATUS_DATEI schreibt. Nur bei Aenderung (max. alle
+        LIVE_MIN_ABSTAND_S) bzw. als Lebenszeichen alle LIVE_HEARTBEAT_S -
+        nie auf dem GUI-Thread, damit ein haengendes Netzlaufwerk das Cockpit
+        nicht einfriert."""
+        if not LIVE_STATUS_DATEI:
+            return
+        sig = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+        jetzt = time.time()
+        if live_state["busy"]:
+            return
+        seit = jetzt - live_state["ts"]
+        if seit < LIVE_MIN_ABSTAND_S:
+            return
+        if sig == live_state["sig"] and seit < LIVE_HEARTBEAT_S:
+            return
+        live_state.update(sig=sig, ts=jetzt, busy=True)
+        daten = dict(payload, epoch=int(jetzt),
+                     generated=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        def _schreibe():
+            try:
+                schreibe_live_status(LIVE_STATUS_DATEI, daten)
+            finally:
+                live_state["busy"] = False
+        threading.Thread(target=_schreibe, daemon=True).start()
     # ---- Gesamt-Aktualisierung der Anzeige ----
     def aktualisiere_anzeige():
         # Status der Mengenliste (Mehrartikel-Sicherung) anzeigen
@@ -2440,6 +2500,42 @@ def starte_cockpit():
         else:
             status_lbl.configure(
                 text=f"In Arbeit - {offen_gesamt} offen", fg=FG, bg=neu_bg)
+        # ---- Live-Spiegel fuer die Webseite ----
+        if LIVE_STATUS_DATEI:
+            v_liste = []
+            for v in kacheln:
+                gedr = gedruckt_pv.get(v, 0)
+                off = offen_pv.get(v, 0)
+                eintr = []
+                for nr, emp in offen.get(v, [])[:LIVE_MAX_LISTE]:
+                    if nr in ean_offen:
+                        info = f"EAN {ean_offen[nr][0]}/{ean_offen[nr][1]}"
+                    elif fortschritt.get(nr):
+                        info = f"{fortschritt[nr]}/{soll_scans(nr)} gescannt"
+                    else:
+                        info = ""
+                    e = {"nr": nr, "info": info}
+                    if LIVE_MIT_NAMEN:
+                        e["name"] = emp
+                    eintr.append(e)
+                v_liste.append({
+                    "name": v, "farbe": farbe_von(v), "deadline": deadline_von(v),
+                    "gedruckt": gedr, "offen": off, "gesamt": gedr + off,
+                    "liste": eintr,
+                })
+            if fertig:
+                live_status = "fertig" if heute_summe > 0 else "bereit"
+            elif unzuordenbar and offen_gesamt == 0:
+                live_status = "ohne_zuordnung"
+            else:
+                live_status = "arbeit"
+            live_veroeffentlichen({
+                "version": VERSION, "status": live_status,
+                "offen_gesamt": offen_gesamt, "heute_gesamt": heute_summe,
+                "ohne_zuordnung": len(unzuordenbar),
+                "warnungen": list(warn_texte), "mengenliste": mtxt,
+                "mengenliste_ok": bool(ok), "versender": v_liste,
+            })
     # ---- Takt: Uhr + Countdown jede Sekunde, Anzeige alle 0,5 s ----
     def takt():
         jetzt = datetime.now()

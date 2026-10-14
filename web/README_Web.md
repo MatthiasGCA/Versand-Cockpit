@@ -52,3 +52,42 @@ dort noch fehlen, ergänzt `artikel_upload.py` aus den Dashboard-Daten (Packunge
 - Aktuell bleibt die Auswertung nur so frisch wie der letzte Amicron-Export; dazwischen springen die Dashboard-Daten ein.
 - Die Seite ist passwortgeschützt (Basic-Auth wie bisher); es werden keine Kundendaten übertragen,
   nur Artikelnummer, Bezeichnung, Mengen und Preise je Tag.
+
+---
+
+# Reiter „Live“ – Spiegel des Versandcockpits (2026-10-14)
+
+Zeigt auf der Versandstatistik-Seite, wie weit das Lager gerade ist: je Versender gedruckt / offen, Countdown zur
+Abhol-Deadline, die offenen Rechnungsnummern (mit Scan-/EAN-Fortschritt), Warnungen und oben ein Statusbalken –
+**„Alles gedruckt – nächster Rechnungslauf kann gestartet werden“** wenn nichts mehr offen ist. Aktualisiert sich alle
+10 Sekunden. Direktlink/Lesezeichen: `https://gasecenter-onlineshop.de/versandstatistik/#live`.
+
+## Weg der Daten
+
+```
+scan_druck.py (Scanner-PC)  →  Paketscheine\cockpit_live.json  →  live_upload.py (Lager-PC)  →  vs-ingest.php?ziel=live  →  versandstatistik/live.json  →  Reiter „Live“
+```
+
+- `scan_druck.py` schreibt die kleine JSON-Datei bei jeder Änderung (höchstens alle 5 s) und als Lebenszeichen alle 30 s,
+  in einem Hintergrund-Thread. Fehler dabei stören das Cockpit nie.
+- `live_upload.py` läuft im Dauerlauf auf dem Lager-PC (dort liegt das Upload-Token aus `statistik_upload.py`; die
+  Scanner-PCs brauchen es nicht) und lädt die Datei hoch, sobald sie sich ändert.
+- Läuft das Cockpit nicht (oder der Upload), erscheint auf der Seite nach 2 Minuten rot „Cockpit meldet sich nicht“
+  mit der Uhrzeit des letzten Stands.
+
+## Datenschutz
+
+Standardmäßig werden **nur Rechnungsnummern** übertragen, keine Empfängernamen. Wer die Namen der offenen Aufträge
+auf der Seite sehen will: in `scan_druck.py` `LIVE_MIT_NAMEN = True` setzen (Kundendaten gehen dann auf den
+Webspace – Seite ist passwortgeschützt, trotzdem bewusst entscheiden).
+
+## Einrichten
+
+1. **Webspace:** `vs-ingest.php` (mit Geheimwort) und `index.html` austauschen (alte vorher sichern). Neu in der PHP:
+   Ziel `live` → `versandstatistik/live.json`, Server-Empfangszeit wird mit eingetragen.
+2. **Scanner-PC:** neue `scan_druck.py` (Version ab `2026-10-14a`) einsetzen, Cockpit neu starten. In
+   `LIVE_STATUS_DATEI` steht der Pfad (Standard: `Paketscheine\cockpit_live.json`).
+3. **Lager-PC:** `live_upload.py` + `live_upload.vbs` neben `statistik_upload.py` legen (z. B. `C:\Packlisten`).
+   Test: `py live_upload.py --once` → „Upload OK“. Dauerbetrieb: `live_upload.vbs` in den Autostart-Ordner legen
+   (`Win+R` → `shell:startup`) und einmal doppelklicken. Log: `C:\Packlisten\live_upload.log`.
+4. Seite öffnen → Reiter **Live**.

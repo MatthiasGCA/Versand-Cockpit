@@ -38,7 +38,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime
 
-VERSION = "2026-10-14b"
+VERSION = "2026-10-14c"
 BASIS = os.path.dirname(os.path.abspath(__file__))
 STANDARD = {
     "url": "https://www.gasecenter-onlineshop.de/vs-ingest.php",
@@ -148,12 +148,15 @@ def main(argv=None):
             "live_upload_config.json mit {\"token\": \"...\"} anlegen." % ", ".join(TOKEN_SUCHORTE), lg)
         return 1
     sperre = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        sperre.bind(("127.0.0.1", SPERR_PORT))
-    except OSError:
-        print("laeuft bereits - beende mich")
-        return 0
-    log("live_upload %s gestartet, Quelle: %s" % (VERSION, cfg["quelle"]), lg)
+    if not nur_einmal:        # --once (Test) darf auch neben einem laufenden Dauerlauf starten
+        try:
+            sperre.bind(("127.0.0.1", SPERR_PORT))
+        except OSError:
+            print("live_upload.py laeuft bereits im Hintergrund (Dauerlauf) - das ist in Ordnung, "
+                  "diese zweite Instanz beendet sich. Zum Testen: py live_upload.py --once")
+            return 0
+    log("live_upload %s gestartet%s, Quelle: %s" % (VERSION, " (einmalig)" if nur_einmal else "",
+                                                     cfg["quelle"]), lg)
     state, letzter_fehler = {}, {}
     while True:
         try:

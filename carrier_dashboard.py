@@ -86,9 +86,11 @@ den Faktura-PC) einfach die Konstanten unten im Quelltext bearbeiten, genau
 wie bei Pickliste_erstellen.bat.
 """
 
+import collections
 import glob
 import os
 import queue
+import re
 import sys
 import threading
 import time
@@ -99,7 +101,12 @@ from tkinter import messagebox, simpledialog, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-10-09b"
+VERSION = "2026-10-15a"
+# 2026-10-15a: weniger Meldungen: keine Rueckfrage "Jetzt ausfuehren?" mehr bei sauberem Lauf (nur
+#   noch, wenn Rechnungen zurueckgestellt werden); der Fertig-Dialog erscheint nur noch bei
+#   Problemen (nicht archiviert, Bruecken-CSV/WC-Kopie fehlgeschlagen, Druck/Oeffnen fehlgeschlagen,
+#   gesperrte/uebersprungene Rechnungen) - sonst nur eine Zeile in der Statusleiste. Ordnerpfade
+#   (Pool/Bruecken-Ziel) oben im Dashboard entfernt.
 # 2026-10-09b: Schritt 2 verarbeitet Rechnungen mit Fehler oder noch nicht quittiertem Hinweis
 #   GAR NICHT mehr (vorher: gepackt + archiviert, aber ohne Carrier-CSV/Label - z.B. nach Klick
 #   auf die Kachel "Hinweise" + Schritt 2). Sie bleiben im Pool/in der Tabelle, bis sie behoben
@@ -1023,12 +1030,6 @@ def gui():
     # oben - der Platz bleibt frei fuer spaetere Erweiterungen.
     kopf = ttk.Frame(root, padding=8)
     kopf.pack(fill="x")
-    ttk.Label(kopf, text="Pool-Ordner: %s" % POOL_ORDNER,
-              foreground=MUTED).pack(anchor="w")
-    if BRUECKEN_ZIEL:
-        ttk.Label(kopf, text="Brücken-CSVs für scan_druck → %s" % BRUECKEN_ZIEL,
-                  foreground=MUTED).pack(anchor="w")
-
     zaehler = tk.Label(kopf, textvariable=pool_anz, font=("Segoe UI", 18, "bold"),
                        anchor="w", bg=BG, fg=FG)
     zaehler.pack(anchor="w", pady=(8, 0))
@@ -1767,29 +1768,21 @@ def gui():
         # Bedarf _2/_3/... an) - eine Minute allein reichte nicht aus und liess
         # zwei Laeufe binnen derselben Minute die vorige Pickliste ueberschreiben.
         ausgabe_pfad = carrier_export.dateiname(ausgabe_ordner, "Pickliste", ext="pdf")
-        hinweis_fehler = ("\n\nNICHT verarbeitet (bleiben im Pool, nicht gepackt, nicht "
-                          "archiviert): %d Rechnung(en) mit Zuordnungsfehler (siehe Tabelle) - "
-                          "erst beheben." % n_fehler
-                          ) if n_fehler else ""
-        hinweis_offen_txt = ("\n\nNICHT verarbeitet (bleiben im Pool, nicht gepackt, nicht "
-                             "archiviert): %d Rechnung(en) mit noch nicht quittiertem Hinweis - "
-                             "erst \"Hinweis quittieren\" (oder beheben), dann Schritt 2 erneut."
-                             % n_hinweis_offen) if n_hinweis_offen else ""
-        hinweis_uebersprungen = ("\n\n%d Rechnung(en) konnten gar nicht gelesen werden bzw. "
-                                 "sind KOPIEN einer doppelten Rechnungsnummer "
-                                 "(siehe Fehlermeldung in der Tabelle) und werden JETZT NICHT "
-                                 "gepackt oder verschoben - sie bleiben unveraendert im "
-                                 "Pool-Ordner liegen und muessen manuell geprueft werden."
-                                 % len(uebersprungen)) if uebersprungen else ""
-        frage = ("%d Rechnung(en) werden verarbeitet:%s%s%s\n\n"
-                "Pickliste + Bruecken-CSVs -> %s\n"
-                "Carrier-CSVs -> %s\n"
-                "Die eingelesenen PDFs werden anschliessend NACH %s VERSCHOBEN "
-                "(nicht kopiert).\n\nJetzt ausfuehren?"
-                % (len(paare), hinweis_fehler, hinweis_offen_txt, hinweis_uebersprungen,
-                   ausgabe_ordner, carrier_ordner, archiv_ordner or "(nicht archiviert)"))
-        if not messagebox.askyesno("Carrier-Dashboard", frage):
-            return
+        # Rueckfrage nur, wenn etwas NICHT mitverarbeitet wird (Fehler, offener Hinweis,
+        # unlesbare PDF/Kopie) - bei sauberem Lauf genuegt der Klick auf Schritt 2.
+        teile = []
+        if n_fehler:
+            teile.append("%d mit Fehler" % n_fehler)
+        if n_hinweis_offen:
+            teile.append("%d mit offenem Hinweis" % n_hinweis_offen)
+        if uebersprungen:
+            teile.append("%d nicht lesbar/doppelt" % len(uebersprungen))
+        if teile:
+            frage = ("%d Rechnung(en) werden verarbeitet.\n\nBleiben im Pool (nicht gepackt, "
+                     "nicht archiviert): %s.\n\nJetzt ausfuehren?"
+                     % (len(paare), ", ".join(teile)))
+            if not messagebox.askyesno("Carrier-Dashboard", frage):
+                return
         export_info["uebersprungen"] = len(uebersprungen)
         export_info["verarbeitete_indizes"] = verarbeitete_indizes
         laeuft["an"] = True
@@ -1834,76 +1827,46 @@ def gui():
                     btn_export.configure(state=("normal" if ergebnisse else "disabled"))
                     aktualisiere_zaehler()
                     verbleibend = len(ergebnisse)
-                    status_var.set("Fertig: %d Rechnung(en) verarbeitet, %d archiviert%s." %
-                                   (bericht["anzahl"], bericht["archiviert"],
-                                    (", %d verbleiben in der Tabelle" % verbleibend)
-                                    if verbleibend else ""))
-                    zeilen = ["Pickliste:        %s" % bericht["pickliste"],
-                             "Rechnungen:       %d" % bericht["anzahl"],
-                             "Archiviert:       %d -> %s" % (
-                                 bericht["archiviert"], bericht["archiv_ziel"] or "-")]
+                    # Nur Wichtiges melden: ein Dialog erscheint ausschliesslich bei Problemen,
+                    # sonst genuegt die Zeile in der Statusleiste.
                     pl = zeige_pickliste(bericht["pickliste"])
-                    if pl["geoeffnet"] or pl["gedruckt"]:
-                        zeilen.append("Pickliste:        %s" % " und ".join(
-                            t for t, ok in (("geöffnet", pl["geoeffnet"]),
-                                            (("an '%s' gesendet" % pl["drucker"]) if pl.get("drucker")
-                                             else "an den Standarddrucker gesendet", pl["gedruckt"]))
-                            if ok))
+                    probleme = []
                     if pl["fehler"]:
-                        zeilen.append("WARNUNG Pickliste: %s - bitte von Hand öffnen/drucken."
-                                      % "; ".join(pl["fehler"]))
+                        probleme.append("Pickliste: %s - bitte von Hand öffnen/drucken."
+                                        % "; ".join(pl["fehler"]))
                     if bericht["archiv_fehler"]:
-                        zeilen.append("NICHT archiviert (%d): %s" %
-                                      (len(bericht["archiv_fehler"]),
-                                       "; ".join(bericht["archiv_fehler"])))
-                    if export_info["uebersprungen"]:
-                        zeilen.append("UEBERSPRUNGEN (PDF nicht lesbar, liegen noch im "
-                                      "Pool): %d" % export_info["uebersprungen"])
-                    if verbleibend:
-                        zeilen.append("Verbleibend in der Tabelle (nicht verarbeitet, z.B. "
-                                      "wegen Fehler/offenem Hinweis, aktivem Filter oder Lesefehler): %d"
-                                      % verbleibend)
-                    if bericht["kg_geloggt"]:
-                        zeilen.append("Kg-Statistik: %d Rechnung(en) erfasst" %
-                                      bericht["kg_geloggt"])
-                    if bericht["artikel_geloggt"]:
-                        zeilen.append("Artikel-Statistik: %d Rechnung(en) erfasst" %
-                                      bericht["artikel_geloggt"])
-                    if bericht.get("verkaeufe_geloggt"):
-                        zeilen.append("Artikel-Verkäufe: %d Positionen erfasst" %
-                                      bericht["verkaeufe_geloggt"])
+                        probleme.append("NICHT archiviert (%d): %s" %
+                                        (len(bericht["archiv_fehler"]),
+                                         "; ".join(bericht["archiv_fehler"])))
                     if bericht["wc_kopie"] is False:
-                        zeilen.append("ACHTUNG: wc_bestellnummern.csv konnte NICHT nach %s "
-                                      "kopiert werden - WooCommerce-Sendungsnummer-Sync "
-                                      "bekommt fuer diesen Lauf keine Zuordnung." % WC_SYNC_ORDNER)
-                    if bericht["carrier_dateien"]:
-                        zeilen.append("")
-                        zeilen.append("Carrier-CSVs:")
-                        zeilen += ["  %s (%d Rechnung(en))" % (os.path.basename(p), n)
-                                   for p, n in bericht["carrier_dateien"].items()]
-                    else:
-                        zeilen.append("")
-                        zeilen.append("Keine Carrier-CSV geschrieben (keine exportierbare "
-                                      "Rechnung dabei).")
+                        probleme.append("wc_bestellnummern.csv konnte NICHT nach %s kopiert werden "
+                                        "(WooCommerce-Sync ohne Zuordnung)." % WC_SYNC_ORDNER)
                     br = bericht.get("bruecken")
-                    if br is not None:
-                        zeilen.append("")
-                        if br["fehler"]:
-                            zeilen.append("WARNUNG: Brücken-CSVs für scan_druck NICHT vollständig "
-                                          "nach %s kopiert - scan_druck arbeitet mit ALTEN Daten "
-                                          "weiter! Netzfreigabe prüfen und Schritt 2 NICHT "
-                                          "wiederholen, sondern Dateien von Hand aus %s kopieren:"
-                                          % (br["ziel"], os.path.dirname(bericht["pickliste"])))
-                            zeilen += ["  - " + f for f in br["fehler"]]
-                        else:
-                            zeilen.append("Brücken-CSVs nach %s kopiert (%d Dateien)."
-                                          % (br["ziel"], len(br["kopiert"])))
+                    if br is not None and br["fehler"]:
+                        probleme.append("Brücken-CSVs NICHT vollständig nach %s kopiert - scan_druck "
+                                        "arbeitet mit ALTEN Daten! Schritt 2 NICHT wiederholen, "
+                                        "Dateien von Hand aus %s kopieren: %s"
+                                        % (br["ziel"], os.path.dirname(bericht["pickliste"]),
+                                           "; ".join(br["fehler"])))
                     if bericht.get("carrier_gesperrt"):
-                        zeilen.append("")
-                        zeilen.append("NICHT erneut in eine Carrier-CSV geschrieben (laut Statistik "
-                                      "schon früher exportiert): %s"
-                                      % ", ".join(bericht["carrier_gesperrt"]))
-                    messagebox.showinfo("Carrier-Dashboard - Fertig", "\n".join(zeilen))
+                        probleme.append("Nicht erneut in eine Carrier-CSV geschrieben (laut Statistik "
+                                        "schon früher exportiert): %s"
+                                        % ", ".join(bericht["carrier_gesperrt"]))
+                    if bericht["anzahl"] and not bericht["carrier_dateien"]:
+                        probleme.append("Keine Carrier-CSV geschrieben.")
+                    je_carrier = collections.OrderedDict()
+                    for pfad_, n_ in bericht["carrier_dateien"].items():
+                        k_ = re.sub(r"_\d{4}-\d{2}-\d{2}.*$", "", os.path.splitext(os.path.basename(pfad_))[0])
+                        je_carrier[k_] = je_carrier.get(k_, 0) + n_
+                    kurz = "Fertig: %d Rechnung(en)" % bericht["anzahl"]
+                    if je_carrier:
+                        kurz += " - " + ", ".join("%s %d" % (k_.replace("_", " "), n_)
+                                                  for k_, n_ in je_carrier.items())
+                    if verbleibend:
+                        kurz += " (%d bleiben in der Tabelle)" % verbleibend
+                    status_var.set(kurz + (" - ACHTUNG, siehe Meldung" if probleme else "."))
+                    if probleme:
+                        messagebox.showwarning("Carrier-Dashboard", "\n\n".join(probleme))
                     return
                 elif m[0] == "export_abbruch":
                     laeuft["an"] = False

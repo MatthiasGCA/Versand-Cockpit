@@ -70,7 +70,13 @@ from reportlab.graphics.shapes import Drawing
 # KONFIGURATION
 # ----------------------------------------------------------------------------
 
-VERSION = "2026-10-02d"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+VERSION = "2026-10-15b"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+# 2026-10-15b: Leerseiten (nur "Erstellt am"-Fuss) in der Pickliste: der Abstand NACH dem letzten
+#   Rahmen einer Seite ragte ueber den Seitenrand, der PageBreak erzeugte dann eine zusaetzliche Seite.
+#   Abstand steht jetzt VOR jedem Rahmen (im KeepTogether).
+# 2026-10-15a: Hausnummer in EIGENER Zeile VOR der Strasse (eBay-Adresszusatz, Rechnung 1709223:
+#   "Robert Schulze" / "39" / "Klein-Muckrow" / "DE-15848 Friedland") wird der Strassenzeile
+#   zugeschlagen ("Klein-Muckrow 39"); siehe _hausnr_zeile_zusammenfuehren().
 # 2026-10-02d: Belegnummern-Sperre nur noch Praefix 111/444 (+ leere Nummer), KEINE
 #   Format-Pruefung mehr (Entscheidung Matthias).
 # 2026-10-02c: Belegnummern-Sperre - nur Packlisten mit AKTUELLER Rechnungsnummer; Gutschriften (Nr. beginnt
@@ -520,6 +526,31 @@ def _hausnr(street):
     blieb die Hausnummer dann leer und das Matching lief nur ueber den Namen."""
     m = re.search(r"(\d+\s*[a-zA-Z]?)[\s,.;]*$", (street or "").strip())
     return re.sub(r"\s+", "", m.group(1)) if m else ""
+
+
+RE_NUR_HAUSNR = re.compile(r"^\d{1,4}\s?[a-zA-Z]?(?:\s?[-/]\s?\d{1,4}\s?[a-zA-Z]?)?$")
+RE_PLZ_ZEILE = re.compile(r"\s*(?:[A-Z]{1,3}-?\s?)?\d{4,5}")
+
+
+def _hausnr_zeile_zusammenfuehren(zeilen):
+    """Steht die Hausnummer allein in einer Zeile VOR der Strasse (Name / '39' /
+    'Klein-Muckrow' / PLZ Ort - Adresszusatz aus eBay), wird sie an die Strassenzeile
+    angehaengt ('Klein-Muckrow 39') und die Einzelzeile entfaellt. Nur wenn die
+    Folgezeile Buchstaben, aber KEINE Ziffer enthaelt (also eine Strasse ohne
+    Hausnummer ist) und nicht die PLZ-Zeile ist; die Namenszeile (Index 0) wird nie
+    angefasst."""
+    z = list(zeilen)
+    i = 1
+    while i < len(z) - 1:
+        a, b = z[i].strip(), z[i + 1].strip()
+        if (RE_NUR_HAUSNR.match(a) and re.search(r"[A-Za-zÄÖÜäöüß]", b)
+                and not re.search(r"\d", b) and not RE_PLZ_ZEILE.match(b)
+                and not re.search(r"OESTERREICH|ÖSTERREICH|AUSTRIA", b.upper())):
+            z[i + 1] = "%s %s" % (b, re.sub(r"\s+", "", a))
+            del z[i]
+            continue
+        i += 1
+    return z
 
 
 def _plz(s, land="DE"):
@@ -1058,7 +1089,7 @@ def extrahiere_adresse(words):
     right_real = [l for l in rights if "Lieferadresse" not in l and "Rechnungsadresse" not in l]
     same = any("Rechnungsadresse" in l for l in rights)
     deliv = lefts if (same or not right_real) else right_real
-    deliv = [l for l in deliv if l.strip()]
+    deliv = _hausnr_zeile_zusammenfuehren([l for l in deliv if l.strip()])
     if not deliv:
         return "", "", "", ""
     name = deliv[0]
@@ -1138,7 +1169,7 @@ def lieferadresse_zeilen(words):
                   if "Lieferadresse" not in l and "Rechnungsadresse" not in l]
     same = any("Rechnungsadresse" in l for l in rights)
     deliv = lefts if (same or not right_real) else right_real
-    return [l.strip() for l in deliv if l.strip()]
+    return _hausnr_zeile_zusammenfuehren([l.strip() for l in deliv if l.strip()])
 
 
 def parse_pdf(path):
@@ -1813,7 +1844,12 @@ def baue_pdf(rechnungen, pdf_pfad, gruppen, carrier_je_rnr=None):
         t.setStyle(_liste_style())
         inhalt.append(Spacer(1, 4))
         inhalt.append(t)
-        return KeepTogether([rahmen_block(inhalt, SEITE), Spacer(1, 8)])
+        # Abstand VOR dem Rahmen als spaceBefore (am Seitenanfang entfaellt er): ein Spacer NACH
+        # dem Rahmen ragte bei fast vollen Seiten ueber den Rand und erzeugte vor dem PageBreak
+        # eine Seite nur mit Fusszeile.
+        kt = KeepTogether([rahmen_block(inhalt, SEITE)])
+        kt.spaceBefore = 8
+        return kt
 
     def gruppe_block(g, gruppe_rechnungen):
         """Sammeldruck-Gruppe: alle betroffenen Bestellungen in einem
@@ -1861,7 +1897,9 @@ def baue_pdf(rechnungen, pdf_pfad, gruppen, carrier_je_rnr=None):
             ("RIGHTPADDING", (0, 0), (-1, -1), 6),
         ]))
         # Eine Sammeldruck-Gruppe nie ueber einen Seitenumbruch trennen.
-        return KeepTogether([t])
+        kt = KeepTogether([t])
+        kt.spaceBefore = 10
+        return kt
 
     # ============================ PDF zusammenbauen =========================
     writer = PdfWriter()
@@ -1922,7 +1960,6 @@ def baue_pdf(rechnungen, pdf_pfad, gruppen, carrier_je_rnr=None):
             fl.append(einzel_block(r))
         for g, gr in gruppen_k:
             fl.append(gruppe_block(g, gr))
-            fl.append(Spacer(1, 10))
         return fl
 
     # ---- Pro Lagerort: Kommissionierliste + DIREKT die Packuebersicht --------

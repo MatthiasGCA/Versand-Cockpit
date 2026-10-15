@@ -70,7 +70,11 @@ from reportlab.graphics.shapes import Drawing
 # KONFIGURATION
 # ----------------------------------------------------------------------------
 
-VERSION = "2026-10-15b"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+VERSION = "2026-10-15c"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+# 2026-10-15c: (1) Rechnungen mit sehr vielen Positionen (Rahmen hoeher als eine Seite) fuehrten zu
+#   einem reportlab-LayoutError und damit zum Abbruch der Pickliste - der Rahmen wird jetzt auf mehrere
+#   Teile (Fortsetzung 2/3 ...) verteilt, jeder Teil passt auf eine Seite. (2) Fuss der Seiten mit
+#   ausgeschriebenem Wochentag: "Erstellt am Donnerstag, 15.10.2026 um 09:10 Uhr".
 # 2026-10-15b: Leerseiten (nur "Erstellt am"-Fuss) in der Pickliste: der Abstand NACH dem letzten
 #   Rahmen einer Seite ragte ueber den Seitenrand, der PageBreak erzeugte dann eine zusaetzliche Seite.
 #   Abstand steht jetzt VOR jedem Rahmen (im KeepTogether).
@@ -1807,7 +1811,7 @@ def baue_pdf(rechnungen, pdf_pfad, gruppen, carrier_je_rnr=None):
             ("RIGHTPADDING", (-1, 0), (-1, -1), 0),
             ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
         ]))
-        inhalt = [kopf]
+        warn_flow = []
         if not (r["zeilen_ok"] and r["summe_ok"] and r.get("vollstaendig_ok", True)):
             details = []
             if not r["zeilen_ok"]:
@@ -1818,9 +1822,9 @@ def baue_pdf(rechnungen, pdf_pfad, gruppen, carrier_je_rnr=None):
             if not r.get("vollstaendig_ok", True):
                 details.append("Position unvollständig: "
                                + ", ".join(r.get("unvollstaendig", [])))
-            inhalt.append(Paragraph("⚠ Prüfung NICHT bestanden: " + "; ".join(details), st_warn))
+            warn_flow.append(Paragraph("⚠ Prüfung NICHT bestanden: " + "; ".join(details), st_warn))
         elif not r.get("total_lesbar", True):
-            inhalt.append(Paragraph(
+            warn_flow.append(Paragraph(
                 "ℹ Rechnungsbetrag im PDF nicht maschinell lesbar (vermutlich sehr "
                 "lange Bezeichnung) – Positionssumme "
                 + ('%.2f' % r['summe']).replace('.', ',') + " €, Positionen geprüft",
@@ -1840,16 +1844,53 @@ def baue_pdf(rechnungen, pdf_pfad, gruppen, carrier_je_rnr=None):
                 Paragraph(lager, st_cell),
                 CheckBox(),
             ])
-        t = Table(data, colWidths=[aw, bw, mw, lw, cw], repeatRows=1)
-        t.setStyle(_liste_style())
-        inhalt.append(Spacer(1, 4))
-        inhalt.append(t)
-        # Abstand VOR dem Rahmen als spaceBefore (am Seitenanfang entfaellt er): ein Spacer NACH
-        # dem Rahmen ragte bei fast vollen Seiten ueber den Rand und erzeugte vor dem PageBreak
-        # eine Seite nur mit Fusszeile.
-        kt = KeepTogether([rahmen_block(inhalt, SEITE)])
-        kt.spaceBefore = 8
-        return kt
+        def teil_rahmen(rows, teil, teile):
+            """Ein Rahmen mit Kopf (+ Warnung nur im ersten Teil) und den Positionszeilen rows."""
+            if teile > 1 and teil > 1:
+                kopf_t = Table([[Paragraph("<font size=8>Rechnung Nr. %s &nbsp;&middot;&nbsp; "
+                                           "<b>Fortsetzung %d/%d</b></font><br/><font size=12><b>%s</b></font>"
+                                           % (r["rnr"], teil, teile, r["name"]), st_pack_kopf)]],
+                               colWidths=[inner])
+                kopf_t.setStyle(TableStyle([("LEFTPADDING", (0, 0), (-1, -1), 0)]))
+                inh = [kopf_t]
+            else:
+                inh = [kopf] + warn_flow
+            t = Table([head2] + rows, colWidths=[aw, bw, mw, lw, cw], repeatRows=1)
+            t.setStyle(_liste_style())
+            inh.append(Spacer(1, 4))
+            inh.append(t)
+            return rahmen_block(inh, SEITE)
+
+        # Passt der Rahmen nicht auf EINE Seite (sehr viele Positionen; ein 1x1-Tabellenblock ist
+        # nicht teilbar -> reportlab LayoutError, Pickliste-Abbruch), wird er auf mehrere Rahmen
+        # verteilt, die einzeln auf eine Seite passen (Rahmenhoehe wird gemessen).
+        MAX_H = 735          # nutzbare Rahmenhoehe 762 pt minus spaceBefore/Reserve
+        rows = data[1:]
+
+        def hoehe(rs, teil=1, teile=1):
+            return teil_rahmen(rs, teil, teile).wrap(SEITE, 100000)[1]
+
+        gruppen_rows = []
+        if not rows or hoehe(rows) <= MAX_H:
+            gruppen_rows = [rows]
+        else:
+            i = 0
+            while i < len(rows):
+                n = 1
+                while i + n < len(rows) and hoehe(rows[i:i + n + 1], 2 if i else 1, 2) <= MAX_H:
+                    n += 1
+                gruppen_rows.append(rows[i:i + n])
+                i += n
+        teile = len(gruppen_rows)
+        out = []
+        for ti, rs in enumerate(gruppen_rows, 1):
+            kt = KeepTogether([teil_rahmen(rs, ti, teile)])
+            # Abstand VOR dem Rahmen als spaceBefore (am Seitenanfang entfaellt er): ein Spacer NACH
+            # dem Rahmen ragte bei fast vollen Seiten ueber den Rand und erzeugte vor dem PageBreak
+            # eine Seite nur mit Fusszeile.
+            kt.spaceBefore = 8
+            out.append(kt)
+        return out
 
     def gruppe_block(g, gruppe_rechnungen):
         """Sammeldruck-Gruppe: alle betroffenen Bestellungen in einem
@@ -1906,7 +1947,9 @@ def baue_pdf(rechnungen, pdf_pfad, gruppen, carrier_je_rnr=None):
 
     # Erstellungszeitpunkt einmal festhalten -> auf jeder Seite als Fuss.
     erstellt = datetime.now()
-    fusstext = f"Erstellt am {erstellt:%d.%m.%Y} um {erstellt:%H:%M} Uhr"
+    wochentag = ("Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag",
+                 "Sonntag")[erstellt.weekday()]
+    fusstext = f"Erstellt am {wochentag}, {erstellt:%d.%m.%Y} um {erstellt:%H:%M} Uhr"
 
     def add_story(story, pad_even=False):
         reader = _story_to_reader(story, fusstext)
@@ -1957,7 +2000,7 @@ def baue_pdf(rechnungen, pdf_pfad, gruppen, carrier_je_rnr=None):
                 "Haupt-Lagerort gepackt werden.", st_klein))
             return fl
         for r in einzel_k:
-            fl.append(einzel_block(r))
+            fl.extend(einzel_block(r))
         for g, gr in gruppen_k:
             fl.append(gruppe_block(g, gr))
         return fl

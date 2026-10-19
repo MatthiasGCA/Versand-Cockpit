@@ -51,8 +51,18 @@ try:
 except Exception:
     _HAS_REPORTLAB = False
 # ============================ KONFIGURATION ============================
-VERSION = "2026-10-14a"          # im Fenstertitel sichtbar -> Deployment pruefbar
-# Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je Aenderung am selben Tag (erste
+VERSION = "2026-10-20a"          # im Fenstertitel sichtbar -> Deployment pruefbar
+# 2026-10-20a: Netzwerk-Ausfall. (1) KRITISCH: war der Paketscheine-Ordner nicht erreichbar, sah das
+#   Cockpit eine leere Liste -> nach VERSCHWINDEN_TOLERANZ Polls galten alle Dateien als weg und das
+#   Cockpit zeigte "Alles gedruckt" (gruen), obendrein wurden die Zuordnungs-CSVs als "fehlt" geleert
+#   (Mehrfach-Scan-/EAN-Sicherung aus). Jetzt: ist der Ordner nicht lesbar, bleibt der Zustand
+#   EINGEFROREN, die Anzeige zeigt rot "NETZWERK NICHT ERREICHBAR", Scans werden abgewiesen (kein
+#   Druck ohne Log/Zuordnung). Kommt das Netz zurueck, laeuft alles ohne Neustart weiter.
+#   (2) NOTBETRIEB: Labels (PDFs) + die vier Zuordnungs-CSVs (+ optional gedruckt.log) z.B. per USB in
+#   NOTFALL_ORDNER legen und das Cockpit im Notbetrieb starten (Startparameter "notbetrieb" oder
+#   Rueckfrage beim Start, wenn der Netzwerkordner nicht erreichbar ist). Alle Daten (Log, Statistik)
+#   liegen dann lokal; beim naechsten Normalstart werden Druck-Log und Statistik automatisch in die
+#   Netzwerkdateien uebernommen (Doppeldruck-Schutz bleibt lueckenlos).# Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je Aenderung am selben Tag (erste
 # Aenderung des Tages = a, dann b, c ...; ein neuer Tag beginnt wieder bei a).
 # 2026-10-14a: Live-Spiegel fuer die Versandstatistik-Webseite (Reiter "Live").
 #   Das Cockpit schreibt seinen Stand (je Versender gedruckt/offen/Deadline,
@@ -296,6 +306,10 @@ VERSION = "2026-10-14a"          # im Fenstertitel sichtbar -> Deployment pruefb
 #   (AUTO_ENTER_BEI_TIPPPAUSE=False) - gedruckt wird per Enter (Scanner sendet es).
 # (Netzwerk-)Ordner mit den Label-PDFs. UNC erlaubt, z.B. r"\\server\Versand".
 LABEL_ORDNER = r"\\DESKTOP-N2H75H\Netzwerk\Paketscheine"
+# Notbetrieb bei Netzwerkausfall (siehe aktiviere_notbetrieb): lokaler Ordner auf dem Lager-PC, in den
+# die Labels und Zuordnungs-CSVs z.B. per USB-Stick kopiert werden.
+NOTFALL_ORDNER = r"C:\Paketscheine_Notfall"
+NOTBETRIEB = False                # wird von aktiviere_notbetrieb() gesetzt
 DATEI_MUSTER = "*.pdf"            # alle PDFs pruefen; Versender wird am Inhalt erkannt
 # Adress-Zuordnung fuer Deutsche-Post-Labels (wird von packliste.py erzeugt):
 POST_ZUORDNUNG_CSV = r"\\DESKTOP-N2H75H\Netzwerk\Paketscheine\post_zuordnung.csv"
@@ -514,6 +528,8 @@ DUPLIKAT_MIN_TEXTLAENGE = 20
 class Zustand:
     def __init__(self):
         self.lock = threading.RLock()
+        self.offline = False             # Label-Ordner gerade nicht lesbar (Zustand eingefroren)
+        self.offline_seit = None
         self.index = defaultdict(list)   # nr -> [(pfad, seite, versender)]
         self.empfaenger = {}             # nr -> Empfaengername
         self.datei_nrs = {}              # pfad -> set(nr)
@@ -985,6 +1001,18 @@ def parse_datei(pfad, belegte=None):
 # parse_datei puffert die unzuordenbar-Liste je Datei zwischen; nur der
 # Live-Index (aktualisiere_index) uebernimmt sie.
 POST_UNZUORDENBAR_TMP = {}
+def liste_pdfs_sicher(ordner):
+    """PDF-Pfade des Ordners oder None, wenn der Ordner NICHT lesbar ist (Netzwerk weg).
+    Unterscheidet damit "Ordner leer" von "Ordner nicht erreichbar" (glob liefert in beiden
+    Faellen eine leere Liste)."""
+    try:
+        namen = os.listdir(ordner)
+    except OSError:
+        return None
+    import fnmatch
+    return [os.path.join(ordner, n) for n in namen
+            if fnmatch.fnmatch(n.lower(), DATEI_MUSTER.lower())
+            and os.path.isfile(os.path.join(ordner, n))]
 def liste_pdfs(ordner):
     out = []
     for pfad in glob.glob(os.path.join(ordner, DATEI_MUSTER)):
@@ -1065,6 +1093,18 @@ def gedruckt_vor_datei(z, nr, datei_mtime):
 def aktualisiere_index(z, ordner):
     """Synchronisiert den Index mit dem Ordnerinhalt. True bei Aenderung."""
     with z.lock:
+        pdfs = liste_pdfs_sicher(ordner)
+        if pdfs is None:
+            # Ordner nicht erreichbar: NICHTS veraendern (Index, Zuordnungen, Druck-Log bleiben
+            # wie sie sind) - sonst gelten nach wenigen Polls alle Labels als erledigt.
+            if not z.offline:
+                z.offline = True
+                z.offline_seit = datetime.now()
+                return True
+            return False
+        wieder_da = z.offline
+        z.offline = False
+        z.offline_seit = None
         post_geaendert = lade_post_zuordnung(POST_ZUORDNUNG_CSV)
         lade_sammel_zuordnung(SAMMEL_ZUORDNUNG_CSV)
         lade_mengen_zuordnung(MENGEN_ZUORDNUNG_CSV)
@@ -1093,8 +1133,10 @@ def aktualisiere_index(z, ordner):
             for pfad, unzuordenbar in list(z.post_unzuordenbar.items()):
                 if unzuordenbar:
                     z.datei_sig.pop(pfad, None)
-        aktuelle = set(liste_pdfs(ordner))
-        geaendert = False
+        aktuelle = set(pdfs)
+        geaendert = wieder_da
+        if wieder_da:
+            z.fehlend_seit.clear()          # Netz wieder da: Fehlzaehler der Offline-Phase verwerfen
         for pfad in list(z.datei_nrs):
             if pfad not in aktuelle:
                 # Nicht sofort entfernen - ein einzelner Poll, in dem eine
@@ -1198,6 +1240,64 @@ def aktualisiere_index(z, ordner):
                 if archiviere(z, pfad, ordner):
                     geaendert = True
         return geaendert
+def aktiviere_notbetrieb():
+    """Schaltet ALLE Pfade auf den lokalen NOTFALL_ORDNER um (Labels, Zuordnungs-CSVs, Druck-Log,
+    Statistik); Live-Spiegel aus. Vor dem Start des Cockpits aufrufen."""
+    global LABEL_ORDNER, POST_ZUORDNUNG_CSV, SAMMEL_ZUORDNUNG_CSV, MENGEN_ZUORDNUNG_CSV
+    global EAN_ZUORDNUNG_CSV, DRUCK_LOG, STATISTIK_DATEI, LIVE_STATUS_DATEI, NOTBETRIEB
+    os.makedirs(NOTFALL_ORDNER, exist_ok=True)
+    LABEL_ORDNER = NOTFALL_ORDNER
+    POST_ZUORDNUNG_CSV = os.path.join(NOTFALL_ORDNER, "post_zuordnung.csv")
+    SAMMEL_ZUORDNUNG_CSV = os.path.join(NOTFALL_ORDNER, "sammel_zuordnung.csv")
+    MENGEN_ZUORDNUNG_CSV = os.path.join(NOTFALL_ORDNER, "mengen_zuordnung.csv")
+    EAN_ZUORDNUNG_CSV = os.path.join(NOTFALL_ORDNER, "ean_zuordnung.csv")
+    DRUCK_LOG = os.path.join(NOTFALL_ORDNER, "gedruckt.log")
+    STATISTIK_DATEI = os.path.join(NOTFALL_ORDNER, "statistik.csv")
+    LIVE_STATUS_DATEI = ""
+    NOTBETRIEB = True
+def uebernehme_notbetrieb_daten(notfall_ordner, druck_log, statistik_datei):
+    """Nach dem Notbetrieb: Druck-Log und Statistik aus dem lokalen Notfallordner in die Netzwerk-
+    Dateien uebernehmen (nur Eintraege, die dort noch fehlen), danach die lokalen Dateien umbenennen
+    (*.uebernommen_<Zeitstempel>), damit nichts doppelt uebernommen wird. Rueckgabe (n_log, n_stat).
+    Fehler (Netz weg, gesperrt) -> nichts umbenennen, naechster Start versucht es erneut."""
+    n_log = n_stat = 0
+    lokal_log = os.path.join(notfall_ordner, "gedruckt.log")
+    lokal_stat = os.path.join(notfall_ordner, "statistik.csv")
+    stempel = datetime.now().strftime("%Y%m%d_%H%M%S")
+    try:
+        if os.path.isfile(lokal_log):
+            vorhanden = lade_gedruckt(druck_log)
+            neue = []
+            with open(lokal_log, encoding="utf-8") as f:
+                for zeile in f:
+                    t = zeile.rstrip("\n").split("\t")
+                    if t and t[0] and t[0] not in vorhanden:
+                        neue.append(zeile if zeile.endswith("\n") else zeile + "\n")
+                        vorhanden[t[0]] = t[1] if len(t) > 1 else "?"
+            if neue:
+                with open(druck_log, "a", encoding="utf-8") as f:
+                    f.writelines(neue)
+            n_log = len(neue)
+            os.replace(lokal_log, lokal_log + ".uebernommen_" + stempel)
+        if os.path.isfile(lokal_stat):
+            bekannt = set()
+            if os.path.exists(statistik_datei):
+                with open(statistik_datei, encoding="utf-8") as f:
+                    bekannt = {z.rstrip("\n") for z in f}
+            with open(lokal_stat, encoding="utf-8") as f:
+                zeilen = [z.rstrip("\n") for z in f][1:]
+            neu = [z for z in zeilen if z and z not in bekannt]
+            if neu:
+                kopf_noetig = not os.path.exists(statistik_datei)
+                with open(statistik_datei, "a", encoding="utf-8") as f:
+                    if kopf_noetig:
+                        f.write("Datum;Versender;Rechnungsnummer;Pakete;Uhrzeit\n")
+                    f.writelines(z + "\n" for z in neu)
+            n_stat = len(neu)
+            os.replace(lokal_stat, lokal_stat + ".uebernommen_" + stempel)
+    except OSError:
+        pass
+    return n_log, n_stat
 def lade_gedruckt(pfad):
     gedruckt = {}
     if os.path.exists(pfad):
@@ -2014,6 +2114,21 @@ def starte_cockpit():
     GOLD = "#FFD54F"      # Tagesrekord-Anzeige in der Kopfzeile
     WOCHENTAGE = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag",
                   "Samstag", "Sonntag"]          # datetime.weekday(): Montag = 0
+    # Netzwerk weg beim Start? -> Notbetrieb anbieten (lokaler Ordner, z.B. per USB befuellt).
+    if not NOTBETRIEB and not os.path.isdir(LABEL_ORDNER):
+        _r = tk.Tk()
+        _r.withdraw()
+        if messagebox.askyesno(
+                "Netzwerk nicht erreichbar",
+                "Der Paketscheine-Ordner ist nicht erreichbar:\n" + LABEL_ORDNER + "\n\n"
+                "Im NOTBETRIEB starten?\nDann werden Labels und Zuordnungs-CSVs aus dem lokalen "
+                "Ordner\n" + NOTFALL_ORDNER + "\ngelesen (z.B. per USB-Stick dorthin kopiert).",
+                icon="warning", default=messagebox.NO, parent=_r):
+            aktiviere_notbetrieb()
+        _r.destroy()
+    if not NOTBETRIEB and os.path.isdir(NOTFALL_ORDNER):
+        # Normalbetrieb mit erreichbarem Netz: Reste eines frueheren Notbetriebs uebernehmen.
+        uebernehme_notbetrieb_daten(NOTFALL_ORDNER, DRUCK_LOG, STATISTIK_DATEI)
     z = Zustand()
     # Altlast im Druck-Log still entfernen, BEVOR es geladen wird (siehe
     # DRUCK_LOG_AUFBEWAHRUNG_TAGE); Fehler/Netzwerk weg -> Log bleibt wie es ist.
@@ -2026,7 +2141,8 @@ def starte_cockpit():
     lade_sammel_zuordnung(SAMMEL_ZUORDNUNG_CSV)
     lade_mengen_zuordnung(MENGEN_ZUORDNUNG_CSV)
     root = tk.Tk()
-    root.title(f"Versand-Cockpit  -  Gasecenter Augsburg  -  v{VERSION}")
+    root.title(f"Versand-Cockpit  -  Gasecenter Augsburg  -  v{VERSION}"
+               + ("  -  NOTBETRIEB (lokal)" if NOTBETRIEB else ""))
     # Startgroesse an den Bildschirm anpassen: fest 1240x780 ragte auf kleinen
     # Laptops / bei hoher Skalierung unten aus dem Bild (Meldezeilen weg).
     fenster_b = min(1240, root.winfo_screenwidth() - 20)
@@ -2312,6 +2428,11 @@ def starte_cockpit():
         scan_entry.focus_set()
         if not eingabe:
             return
+        if z.offline:
+            meld_lbl.configure(text="NETZWERK NICHT ERREICHBAR - es wird NICHT gedruckt. Netz pruefen oder "
+                                    "Cockpit im Notbetrieb neu starten.", fg=ROT)
+            ton(TON_STANDARD)
+            return
         try:
             status, meldung, info = verarbeite_scan(z, eingabe, LABEL_ORDNER, erneut_frage)
         except Exception as e:
@@ -2424,6 +2545,14 @@ def starte_cockpit():
             menge_status_lbl.configure(text="⚠ " + mtxt, fg=ROT)
         # Duplikat-/Verdaechtig-Warnungen (Datei-Handling-Absicherung)
         warn_texte = warnungen_liste(z)
+        if NOTBETRIEB:
+            warn_texte = ["NOTBETRIEB - lokaler Ordner " + LABEL_ORDNER] + warn_texte
+        if not z.offline and str(meld_lbl.cget("text")).startswith("NETZWERK NICHT ERREICHBAR"):
+            meld_lbl.configure(text="Netzwerk wieder erreichbar. Barcode scannen ...", fg=FG)
+        if z.offline:
+            seit = z.offline_seit.strftime("%H:%M:%S") if z.offline_seit else "?"
+            warn_texte = ["NETZWERK NICHT ERREICHBAR seit " + seit
+                          + " - Anzeige NICHT aktuell, kein Druck moeglich"] + warn_texte
         warnungen_lbl.configure(
             text=("⚠ " + "   |   ".join(warn_texte)) if warn_texte else "")
         with z.lock:
@@ -2478,7 +2607,7 @@ def starte_cockpit():
         if heute_summe != z.highscore_sig:
             z.highscore_sig = heute_summe
             highscore_lbl.configure(text=highscore_text(STATISTIK_DATEI))
-        fertig = (offen_gesamt == 0 and not unzuordenbar)
+        fertig = (offen_gesamt == 0 and not unzuordenbar and not z.offline)
         flaechen = [root, kopf, unten, btns]
         transparente = ([uhr_lbl, datum_lbl, meld_lbl]
                         + list(kopf.winfo_children())
@@ -2491,7 +2620,9 @@ def starte_cockpit():
                 c.configure(bg=neu_bg)
             except tk.TclError:
                 pass
-        if fertig:
+        if z.offline:
+            status_lbl.configure(text="NETZWERK WEG - Stand veraltet", fg=ROT, bg=neu_bg)
+        elif fertig:
             txt = "Alles gedruckt" if sum(gedruckt_pv.values()) > 0 else "Bereit - nichts offen"
             status_lbl.configure(text=txt, fg="#A5D6A7", bg=neu_bg)
         elif unzuordenbar and offen_gesamt == 0:
@@ -2523,7 +2654,9 @@ def starte_cockpit():
                     "gedruckt": gedr, "offen": off, "gesamt": gedr + off,
                     "liste": eintr,
                 })
-            if fertig:
+            if z.offline:
+                live_status = "offline"
+            elif fertig:
                 live_status = "fertig" if heute_summe > 0 else "bereit"
             elif unzuordenbar and offen_gesamt == 0:
                 live_status = "ohne_zuordnung"
@@ -2564,6 +2697,13 @@ def starte_cockpit():
         messagebox.showwarning("Ordner fehlt",
                                f"Label-Ordner nicht erreichbar:\n{LABEL_ORDNER}\n\n"
                                "Pfad in der Konfiguration pruefen.")
+    elif NOTBETRIEB:
+        n_pdf = len(liste_pdfs_sicher(LABEL_ORDNER) or [])
+        messagebox.showinfo("Notbetrieb",
+                            f"NOTBETRIEB aktiv.\nLokaler Ordner: {LABEL_ORDNER}\n"
+                            f"Gefundene Label-PDFs: {n_pdf}\n\n"
+                            "Dort muessen auch post_/sammel_/mengen_/ean_zuordnung.csv liegen "
+                            "(sonst Mehrfach-Scan-/EAN-Sicherung und Post-Zuordnung ohne Daten).")
     aktualisiere_index(z, LABEL_ORDNER)
     threading.Thread(target=beobachter, daemon=True).start()
     scan_entry.focus_set()
@@ -2583,6 +2723,8 @@ def starte_cockpit():
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "selftest":
         sys.exit(0)
+    if len(sys.argv) > 1 and sys.argv[1].lower() in ("notbetrieb", "--notbetrieb"):
+        aktiviere_notbetrieb()
     # Diagnose:  py scan_druck.py mengentest [Rechnungsnummer]
     # Zeigt, ob die Mengenliste gefunden/geladen wird und was fuer eine Rechnung
     # an Scans verlangt wuerde. Hilft, "warum druckt das in 1 Scan?" zu klaeren.

@@ -51,7 +51,15 @@ try:
 except Exception:
     _HAS_REPORTLAB = False
 # ============================ KONFIGURATION ============================
-VERSION = "2026-10-20a"          # im Fenstertitel sichtbar -> Deployment pruefbar
+VERSION = "2026-10-20b"          # im Fenstertitel sichtbar -> Deployment pruefbar
+# 2026-10-20b: Sammeldruck (drucke_sammel): Deckblatt + Druckauftrag je DRUCKER statt je Versender.
+#   Laufen zwei Versender auf denselben Drucker (z.B. DHL + DPD auf VerpackungsraumZ) und eine
+#   Sammelgruppe enthaelt Bestellungen mit abweichendem Versender (z.B. Oesterreich), kamen bisher
+#   ZWEI Deckblaetter + zwei Auftraege auf dieselbe Rolle. Jetzt ein Deckblatt je physischem
+#   Drucker; Anzahl = Bestellungen in DIESEM Buendel; unten alle Versender ("DHL + DPD"). Eine
+#   Rechnung gilt nur als gedruckt, wenn ALLE Druckauftraege mit ihren Seiten erfolgreich waren;
+#   die Fehlermeldung nennt weiter die betroffenen Versender. Mit gemockten Druckern geprueft
+#   (gleicher Drucker / zwei Drucker / ein Drucker faellt aus / gemeinsamer Drucker faellt aus).
 # 2026-10-20a: Netzwerk-Ausfall. (1) KRITISCH: war der Paketscheine-Ordner nicht erreichbar, sah das
 #   Cockpit eine leere Liste -> nach VERSCHWINDEN_TOLERANZ Polls galten alle Dateien als weg und das
 #   Cockpit zeigte "Alles gedruckt" (gruen), obendrein wurden die Zuordnungs-CSVs als "fehlt" geleert
@@ -1619,7 +1627,7 @@ def deckblatt_seite(breite, hoehe, code, art, bez, anzahl, versender, menge_je="
     buf.seek(0)
     return PdfReader(buf).pages[0]
 def drucke_sammel(z, code, ordner, station=None):
-    """Alle Labels eines Sammelcodes auf einmal drucken: je Versender ein
+    """Alle Labels eines Sammelcodes auf einmal drucken: je Drucker ein
     Deckblatt (Artikel/Menge/Bezeichnung) + dessen Labels. (status, meldung)."""
     g = SAMMEL_LOOKUP.get(code)
     if not g:
@@ -1651,18 +1659,32 @@ def drucke_sammel(z, code, ordner, station=None):
     # fuer BEIDE Versender faelschlich dieselbe Gesamtzahl "5 x ..." statt
     # der tatsaechlich in diesem Buendel steckenden Anzahl - genau die Zahl,
     # nach der sich der Packer beim Sammeldruck richtet.
-    nach_versender = defaultdict(list)   # versender -> [(pfad, idx)]
-    rnrs_je_versender = defaultdict(set)  # versender -> {rnr, ...}
+    #
+    # 2026-10-19: Buendelung je DRUCKER statt je Versender. Vorher bekam jeder
+    # Versender ein eigenes Deckblatt + einen eigenen Druckauftrag - auch wenn
+    # zwei Versender auf DENSELBEN Drucker laufen (z.B. DHL + DPD beide auf
+    # VerpackungsraumZ). Folge: eine Sammelgruppe, in der eine Bestellung wegen
+    # abweichender Lieferadresse (z.B. Oesterreich) anders verschickt wird,
+    # lieferte ZWEI Deckblaetter auf derselben Rolle. Jetzt: ein Deckblatt +
+    # ein Druckauftrag je physischem Drucker; Anzahl = Bestellungen in DIESEM
+    # Buendel; unten stehen alle enthaltenen Versender ("DHL + DPD").
+    buendel = {}   # drucker -> {"seiten": [(pfad, idx)], "rnr": set(), "vers": [..]}
+    drucker_je_rnr = defaultdict(set)    # rnr -> {drucker, ...}
     for _rnr, tr in gefunden:
         for (pfad, idx, vers) in tr:
-            nach_versender[vers].append((pfad, idx))
-            rnrs_je_versender[vers].add(_rnr)
-    # Erfolg je Versender einzeln merken: schlaegt der Druckauftrag fuer einen
-    # Versender fehl (falscher/offline Drucker), duerfen dessen Rechnungen NICHT
-    # als gedruckt gelten - frueher wurden hier ALLE `gefunden`-Rechnungen
-    # unbedingt markiert, unabhaengig vom tatsaechlichen Druckergebnis.
-    versender_ok = {}
-    for versender, seiten in nach_versender.items():
+            dr = drucker_von(vers, station)
+            b = buendel.setdefault(dr, {"seiten": [], "rnr": set(), "vers": []})
+            b["seiten"].append((pfad, idx))
+            b["rnr"].add(_rnr)
+            if vers not in b["vers"]:
+                b["vers"].append(vers)
+            drucker_je_rnr[_rnr].add(dr)
+    # Erfolg je Drucker einzeln merken: schlaegt ein Druckauftrag fehl (falscher/
+    # offline Drucker), duerfen dessen Rechnungen NICHT als gedruckt gelten.
+    drucker_ok = {}
+    for dr, b in buendel.items():
+        seiten = b["seiten"]
+        vers_text = " + ".join(b["vers"])
         writer = PdfWriter()
         try:
             erste = _reader(z, seiten[0][0]).pages[seiten[0][1]]
@@ -1671,7 +1693,7 @@ def drucke_sammel(z, code, ordner, station=None):
             except Exception:
                 bseite, hseite = 283.0, 425.0
             deck = deckblatt_seite(bseite, hseite, code, g["art"], g["bez"],
-                                   len(rnrs_je_versender[versender]), versender,
+                                   len(b["rnr"]), vers_text,
                                    g.get("menge_je", "1 Stück"), g.get("lagerort", ""))
             if deck is not None:
                 writer.add_page(deck)
@@ -1679,22 +1701,22 @@ def drucke_sammel(z, code, ordner, station=None):
                 writer.add_page(_reader(z, pfad).pages[idx])
         except OSError as e:
             # s.o. (drucke()): Label-Datei kurzzeitig verschwunden (Race-
-            # Condition-Toleranzfenster). Nur DIESEN Versender als fehlgeschlagen
-            # werten, die anderen im selben Sammeldruck laufen unbeeinflusst
-            # weiter - statt die gesamte Funktion mit einer rohen Exception
-            # abzubrechen.
+            # Condition-Toleranzfenster). Nur DIESEN Druckauftrag als
+            # fehlgeschlagen werten, die anderen laufen unbeeinflusst weiter.
             print(f"Drucken fehlgeschlagen (Label-Datei kurzzeitig nicht "
-                  f"verfuegbar, Sammelcode {code}/{versender}): {e}")
-            versender_ok[versender] = False
+                  f"verfuegbar, Sammelcode {code}/{vers_text}): {e}")
+            drucker_ok[dr] = False
             continue
-        versender_ok[versender] = _drucke_pdf(
-            writer, drucker_von(versender, station),
-            f"sammel_{code}_{versender}".replace(" ", "_"))
-    # je Rechnung als gedruckt markieren + Statistik - nur wenn der Druckauftrag
-    # fuer ihren Versender tatsaechlich erfolgreich war.
+        drucker_ok[dr] = _drucke_pdf(
+            writer, dr,
+            f"sammel_{code}_{dr or 'Standard'}".replace(" ", "_"))
+    # je Rechnung als gedruckt markieren + Statistik - nur wenn ALLE Druck-
+    # auftraege, in denen Seiten dieser Rechnung steckten, erfolgreich waren.
     jetzt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    ok_liste = [(rnr, tr) for rnr, tr in gefunden if versender_ok.get(tr[0][2])]
-    druckfehler = sorted({vers for vers, ok in versender_ok.items() if not ok})
+    ok_liste = [(rnr, tr) for rnr, tr in gefunden
+                if all(drucker_ok.get(dr) for dr in drucker_je_rnr[rnr])]
+    druckfehler = sorted({v for dr, b in buendel.items() if not drucker_ok.get(dr)
+                          for v in b["vers"]})
     for rnr, tr in ok_liste:
         with z.lock:
             z.gedruckt[rnr] = jetzt

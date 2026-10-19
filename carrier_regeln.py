@@ -58,7 +58,8 @@ Siehe ist_auslands_kleinpaket() und die Konstanten KLEINPAKET_*.
 import html
 import re
 
-VERSION = "2026-10-19a"
+VERSION = "2026-10-20a"
+# 2026-10-20a: Ort in eigener Zeile nach "DE 92237" (neues Lieferadress-Format, Rg 1709625/1709769) wird als Ort erkannt.
 # 2026-10-19a: Deutsche Inseln sind fuer DPD zuschlagspflichtig (hoher Inselzuschlag): Sendungen, die sonst
 #   DPD waeren, gehen per DHL, bis 1 kg als Kleinpaket (siehe DPD_INSEL_PLZ / ist_dpd_insel()).
 
@@ -360,9 +361,19 @@ def analysiere_adresse(zeilen):
     # "Frankenhausen/Kyffhaeuser OT" / "Esperste"). Nur kurze Zeilen ohne Ziffern,
     # die kein Laendername sind, hoechstens 2 - alles andere bleibt "Unerwartete
     # Zeile". Ein angehaengtes "OT xyz" wird unten wie sonst als Ortsteil abgetrennt.
+    # Neues Amicron-Format der abweichenden Lieferadresse (real 1709625/1709769): "DE 92237"
+    # und der ORT steht in der naechsten Zeile ("SULZBACH-ROSENBERG") - dann ist diese Zeile
+    # der Ort (nur kurzer Text ohne Ziffern, kein Laendername).
+    ort_zeile = 0
+    if not out["ort"] and idx + 1 < len(zl):
+        z0 = zl[idx + 1]
+        if (len(z0) <= 40 and not _LAND_NAME.get(_norm_land(z0))
+                and re.match(r"^[A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß .\-/()']*$", z0)):
+            out["ort"] = z0
+            ort_zeile = 1
     fortsetzung = []
     if out["ort"]:
-        for z in zl[idx + 1:idx + 3]:
+        for z in zl[idx + 1 + ort_zeile:idx + 3 + ort_zeile]:
             if (len(z) > 30 or re.search(r"\d", z) or _LAND_NAME.get(_norm_land(z))
                     or not re.match(r"^[A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß .\-/()]*$", z)):
                 break
@@ -419,7 +430,7 @@ def analysiere_adresse(zeilen):
             out["fehler"].append("Länderkürzel '%s' vor der PLZ unbekannt" % pre)
     if not land and ort_land:
         land = ort_land                     # "... Ornding - Austria" ohne Praefix
-    rest = zl[idx + 1 + len(fortsetzung):]
+    rest = zl[idx + 1 + ort_zeile + len(fortsetzung):]
     if not land and rest:
         cand = _LAND_NAME.get(_norm_land(rest[-1]))
         if cand:
@@ -1582,6 +1593,21 @@ def selftest():
     check("Rügen 18528 / Usedom 17419 / Fehmarn 23769 (Bruecke, nicht auf DPD-Liste) bleiben DPD",
           [_insel(["wapo"], 0.5, 17.5, z)["carrier"] for z in ("18528 Bergen", "17419 Ahlbeck", "23769 Fehmarn")],
           [DPD, DPD, DPD])
+    # Ort in eigener Zeile nach "DE 92237" (Lieferadresse im neuen Amicron-Format, real 1709625/1709769)
+    a_o = analysiere_adresse(["HEISS ISABELLA", "VILLENSTR. 6A", "DE 92237", "SULZBACH-ROSENBERG"])
+    check("Ort in eigener Zeile (1709625): Ort/PLZ/Land/Fehler/Hinweise",
+          (a_o["ort"], a_o["plz"], a_o["land"], a_o["fehler"], a_o["hinweise"], a_o["strasse"], a_o["hausnr"]),
+          ("SULZBACH-ROSENBERG", "92237", "DE", [], [], "VILLENSTR.", "6A"))
+    a_o2 = analysiere_adresse(["Holterhoefer August", "Junkerweg 1", "DE 53809", "Ruppichteroth-Hambuchen"])
+    check("Ort in eigener Zeile (1709769)", (a_o2["ort"], a_o2["fehler"], a_o2["hinweise"]),
+          ("Ruppichteroth-Hambuchen", [], []))
+    a_o3 = analysiere_adresse(["Max Muster", "Weg 1", "DE 12345", "Bad", "Frankenhausen"])
+    check("Ort in eigener Zeile + umbrochener Ortsname", a_o3["ort"], "Bad Frankenhausen")
+    a_o4 = analysiere_adresse(["Max Muster", "Weg 1", "12345", "Deutschland"])
+    check("PLZ allein + nur Laenderzeile -> weiterhin Ort fehlt", a_o4["fehler"], ["Ort fehlt"])
+    a_o5 = analysiere_adresse(["Max Muster", "Weg 1", "DE 12345", "Musterstadt", "Deutschland"])
+    check("Ort in eigener Zeile + Laenderzeile danach", (a_o5["ort"], a_o5["land"], a_o5["fehler"]),
+          ("Musterstadt", "DE", []))
     check("ist_dpd_insel: Grenzen", (ist_dpd_insel("25929"), ist_dpd_insel("25933"), ist_dpd_insel("25934"),
                                      ist_dpd_insel(""), ist_dpd_insel(None)), (True, True, False, False, False))
 

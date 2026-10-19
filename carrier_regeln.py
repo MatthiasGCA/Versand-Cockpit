@@ -27,6 +27,9 @@ Mehrere Kennungen auf einer Rechnung: die HOECHSTE Klasse gewinnt
 DPD faehrt nur innerhalb Deutschlands - ein Auslands-Paket, das nach den Regeln
 DPD waere, geht per DHL. Deutsche Post Brief/Grossbrief gibt es fuer Inland UND
 Ausland (getrennte CSV-Dateien, siehe carrier_dashboard.py).
+DPD-Inseln (2026-10-19): Deutsche Inseln mit DPD-Inselzuschlag (DPD_INSEL_PLZ, offizielle DPD-Liste)
+werden NIE per DPD gefahren: eine Sendung, die sonst DPD waere, geht per DHL - bis 1 kg (und Warenwert unter
+50 EUR, keine Pax1) als DHL-Kleinpaket, darueber als DHL-Paket. Post Brief/Grossbrief bleiben unberuehrt.
 Grenzwert selbst (z.B. genau 1,1 kg) gehoert zur HOEHEREN Klasse ("unter" gilt
 strikt). Alle Grenzen stehen unten als Konstanten.
 
@@ -55,7 +58,9 @@ Siehe ist_auslands_kleinpaket() und die Konstanten KLEINPAKET_*.
 import html
 import re
 
-VERSION = "2026-10-08a"
+VERSION = "2026-10-19a"
+# 2026-10-19a: Deutsche Inseln sind fuer DPD zuschlagspflichtig (hoher Inselzuschlag): Sendungen, die sonst
+#   DPD waeren, gehen per DHL, bis 1 kg als Kleinpaket (siehe DPD_INSEL_PLZ / ist_dpd_insel()).
 
 # --- Gewichtsgrenzen in kg (Klasse gilt bei Gewicht STRIKT UNTER der Grenze) -----
 G_BRIEF = 0.05
@@ -73,6 +78,29 @@ KLEINPAKET_MIN_WARENWERT = 40.0               # EUR, strikt darueber
 # solche Werte versichert -, egal welche Versandart sonst gewaehlt wuerde.
 DHL_MIN_WARENWERT = 50.0
 KLEINPAKET_KENNUNGEN = {"wapo", "pox1"}
+# Zuschlagspflichtige deutsche Inseln bei DPD (offizielles DPD-Infoblatt "Zuschlagspflichtige Inseln und
+# Regionen", Stand 09/2024, Abschnitt Deutschland): DPD berechnet dort einen hohen Inselzuschlag.
+# Rügen/Usedom/Fehmarn (Bruecke/Damm) stehen NICHT in der Liste. Halbjaehrlich von DPD aktualisiert -
+# bei Aenderungen hier nachziehen. (von, bis) inklusive.
+DPD_INSEL_PLZ = [
+    (18565, 18565),                                  # Hiddensee
+    (25846, 25847), (25849, 25849), (25859, 25859), (25863, 25863), (25869, 25869),
+    (25929, 25933), (25938, 25942), (25946, 25949), (25952, 25955), (25961, 25970),
+    (25980, 25980), (25985, 25986), (25988, 25990), (25992, 25994), (25996, 25999),  # Nordfriesische Inseln
+    (26465, 26465), (26474, 26474), (26486, 26486), (26548, 26548), (26571, 26571),
+    (26579, 26579), (26757, 26757),                  # Ostfriesische Inseln
+    (27498, 27498), (27499, 27499),                  # Helgoland, Neuwerk
+    (83256, 83256),                                  # Chiemsee
+]
+
+
+def ist_dpd_insel(plz):
+    """True, wenn die (deutsche, 5-stellige) PLZ auf der DPD-Liste zuschlagspflichtiger Inseln steht."""
+    try:
+        n = int(str(plz).strip())
+    except (TypeError, ValueError):
+        return False
+    return any(a <= n <= b for a, b in DPD_INSEL_PLZ)
 # Nur EU-Laender (Matthias 2026-09-25): ausserhalb der EU (CH, LI, NO, GB ...)
 # braeuchte Warenpost International Zolldaten, die die CSV nicht enthaelt.
 EU_LAENDER = {"AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR", "DE", "GR", "HU",
@@ -540,8 +568,9 @@ def klasse_nach_gewicht(gewicht):
     return DHL
 
 
-def bestimme_carrier(kennungen, gewicht, land, packstation=False, dhl_zustellung=False):
-    """(carrier|None, grund, fehler, hinweise). carrier ist einer aus KLASSEN."""
+def bestimme_carrier(kennungen, gewicht, land, packstation=False, dhl_zustellung=False, plz=None):
+    """(carrier|None, grund, fehler, hinweise). carrier ist einer aus KLASSEN.
+    plz (optional): Zielort-PLZ - eine DPD-Sendung auf eine zuschlagspflichtige Insel geht per DHL."""
     kenn = sorted({k.lower() for k in (kennungen or []) if k and k.lower() in KENNUNG_KLASSE})
     fehler, hinweise = [], []
     if not kenn:
@@ -577,6 +606,9 @@ def bestimme_carrier(kennungen, gewicht, land, packstation=False, dhl_zustellung
         # Postfach bleibt davon unberuehrt (Post liefert Briefe ins Postfach).
         klasse = DHL
         grund += ", Packstation/Postfiliale - Brief nicht möglich → DHL"
+    if klasse == DPD and land == "DE" and plz and ist_dpd_insel(plz):
+        klasse = DHL
+        grund += ", DPD-Inselzuschlag (PLZ %s) → DHL" % plz
     if klasse == DPD and land != "DE":
         klasse = DHL
         grund += ", DPD nur Deutschland → DHL"
@@ -817,7 +849,11 @@ def bewerte_rechnung(r):
     dhl_zustellung = bool(re.search(r"packstation|postfiliale|postnummer|postnr",
                                     " ".join([adr["strasse"]] + list(adr["zusatz"])), re.I))
     carrier, grund, f2, h2 = bestimme_carrier(kenn, gewicht, adr["land"], adr["packstation"],
-                                              dhl_zustellung)
+                                              dhl_zustellung, adr["plz"])
+    # Insel: war es OHNE Inselregel DPD? (dann bis 1 kg DHL-Kleinpaket, siehe unten)
+    insel_war_dpd = (carrier == DHL and adr["land"] == "DE" and ist_dpd_insel(adr["plz"])
+                     and bestimme_carrier(kenn, gewicht, adr["land"], adr["packstation"],
+                                          dhl_zustellung)[0] == DPD)
     fehler += f2
     hinweise += h2
     # Versicherungsgrenze: ab DHL_MIN_WARENWERT immer DHL (siehe Konstante).
@@ -844,7 +880,15 @@ def bewerte_rechnung(r):
             fehler = [f for f in fehler if "DHL-Maximalgewicht" not in f]
             grund += ", " + je_paket_grund
     kleinpaket = carrier == DHL and ist_auslands_kleinpaket(r, kenn, gewicht, adr["land"])
-    if kleinpaket:
+    if (insel_war_dpd and carrier == DHL and "pax1" not in kenn and gewicht is not None
+            and round(gewicht, 5) <= KLEINPAKET_MAX_KG
+            and wert is not None and wert < DHL_MIN_WARENWERT):
+        # DPD-Inselzuschlag vermieden: bis 1 kg DHL-Kleinpaket (Inland, Produkt V62KP). Ab Warenwert
+        # 50 EUR bleibt es ein versichertes DHL-Paket; Pax1 = Paket-Pflicht.
+        kleinpaket = True
+        grund += ", bis 1 kg → DHL Kleinpaket"
+        hinweise = [h for h in hinweise if h != "Achtung bei DHL auf Kleinpaket abändern"]
+    elif kleinpaket:
         wert_kp = warenwert(r)
         # Warenwert kann hier None sein (Preis nicht lesbar) - die Wapo-Regel
         # braucht ihn gar nicht (siehe ist_auslands_kleinpaket()), der Grundtext
@@ -1510,6 +1554,36 @@ def selftest():
           _kp(["wapo"], 0.5, 17.5, ("A B", "Weg 1", "12345 Ort"))["kleinpaket"], False)
     check("Kleinpaket: wapo+pax1 unter 1,1 kg -> nein (Paket-Pflicht)",
           _kp(["pax1", "wapo"], 0.5, 17.5)["kleinpaket"], False)
+
+    # DPD-Inselzuschlag (2026-10-19): Inseln aus der DPD-Liste nie per DPD; bis 1 kg DHL-Kleinpaket
+    def _insel(kennung, gewicht, wert, plz_zeile="25980 Sylt"):
+        return _kp(kennung, gewicht, wert, ("A B", "Weg 1", plz_zeile))
+    for plz_, ort_ in (("25980", "Sylt"), ("26757", "Borkum"), ("27498", "Helgoland"), ("25938", "Wyk auf Föhr"),
+                       ("26548", "Norderney"), ("18565", "Kloster"), ("25946", "Nebel")):
+        check("Insel %s %s: wapo 0,5 kg -> DHL Kleinpaket (statt DPD)" % (plz_, ort_),
+              (lambda b_: (b_["carrier"], b_["kleinpaket"]))(_insel(["wapo"], 0.5, 17.5, "%s %s" % (plz_, ort_))),
+              (DHL, True))
+    b_i = _insel(["wapo"], 0.5, 17.5)
+    check("Insel: Grund nennt Inselzuschlag und Kleinpaket",
+          ("Inselzuschlag" in b_i["grund"], "Kleinpaket" in b_i["grund"], b_i["status"]), (True, True, "ok"))
+    check("Insel: genau 1,0 kg -> Kleinpaket", _insel(["wapo"], 1.0, 17.5)["kleinpaket"], True)
+    check("Insel: 1,05 kg -> DHL Paket (kein Kleinpaket)",
+          (lambda b_: (b_["carrier"], b_["kleinpaket"]))(_insel(["wapo"], 1.05, 17.5)), (DHL, False))
+    check("Insel: 2 kg -> DHL Paket", (lambda b_: (b_["carrier"], b_["kleinpaket"]))(_insel(["wapo"], 2.0, 17.5)), (DHL, False))
+    check("Insel: Warenwert 60 EUR -> DHL Paket (versichert, kein Kleinpaket)",
+          (lambda b_: (b_["carrier"], b_["kleinpaket"]))(_insel(["wapo"], 0.5, 60.0)), (DHL, False))
+    check("Insel: Pax1 -> DHL Paket", (lambda b_: (b_["carrier"], b_["kleinpaket"]))(_insel(["pax1", "wapo"], 0.5, 17.5)), (DHL, False))
+    check("Insel: Pox1 0,3 kg bleibt Post Grossbrief (kein DPD betroffen)",
+          (lambda b_: (b_["carrier"], b_["kleinpaket"]))(_insel(["pox1"], 0.3, 17.5)), (GROSSBRIEF, False))
+    check("Insel: Pox1 0,8 kg (waere DPD) -> DHL Kleinpaket",
+          (lambda b_: (b_["carrier"], b_["kleinpaket"]))(_insel(["pox1"], 0.8, 17.5)), (DHL, True))
+    check("Festland 25920 (nicht auf der Liste): wapo 0,5 kg bleibt DPD",
+          (lambda b_: (b_["carrier"], b_["kleinpaket"]))(_insel(["wapo"], 0.5, 17.5, "25920 Risum")), (DPD, False))
+    check("Rügen 18528 / Usedom 17419 / Fehmarn 23769 (Bruecke, nicht auf DPD-Liste) bleiben DPD",
+          [_insel(["wapo"], 0.5, 17.5, z)["carrier"] for z in ("18528 Bergen", "17419 Ahlbeck", "23769 Fehmarn")],
+          [DPD, DPD, DPD])
+    check("ist_dpd_insel: Grenzen", (ist_dpd_insel("25929"), ist_dpd_insel("25933"), ist_dpd_insel("25934"),
+                                     ist_dpd_insel(""), ist_dpd_insel(None)), (True, True, False, False, False))
 
     if n_fail:
         print("SELBSTTEST FEHLGESCHLAGEN (%d von %d):" % (len(n_fail), n_ok + len(n_fail)))

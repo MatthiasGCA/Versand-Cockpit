@@ -1,0 +1,24 @@
+{
+  "modus": "bericht",
+  "rechnungen_ordner": "\\\\DESKTOP-N2H75H\\Netzwerk\\Ausgangsrechnungen",
+  "packlisten_ordner": ["C:\\Packlisten", "C:\\Packlisten\\Archiv"],
+  "ausgabe_ordner": "C:\\Rechnungsversand\\Ausgabe",
+  "ab_rechnungsnummer": 1710009,
+  "max_alter_tage": 4,
+  "max_mails_pro_lauf": 400,
+  "pause_sekunden": 1.0,
+  "bei_fehler_abbrechen": true,
+  "absender": "rechnung@HIER-IHRE-DOMAIN.de",
+  "absender_name": "Gasecenter Augsburg",
+  "antwort_an": "",
+  "bcc": "",
+  "betreff": "Ihre Rechnung Nr. {rnr} - Gasecenter Augsburg",
+  "text": "Guten Tag,\n\nanbei erhalten Sie Ihre Rechnung Nr. {rnr} als PDF.\n\nVielen Dank für Ihre Bestellung!\n\nMit freundlichen Grüßen\nGasecenter Augsburg\n",
+  "smtp": {
+    "host": "smtp.office365.com",
+    "port": 587,
+    "sicherheit": "starttls",
+    "benutzer": "rechnung@HIER-IHRE-DOMAIN.de",
+    "passwort_env": "RECHNUNGSVERSAND_SMTP_PASSWORT"
+  }
+}

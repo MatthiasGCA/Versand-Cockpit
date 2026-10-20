@@ -38,7 +38,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime
 
-VERSION = "2026-10-14d"
+VERSION = "2026-10-20a"
 BASIS = os.path.dirname(os.path.abspath(__file__))
 STANDARD = {
     "url": "https://www.gasecenter-onlineshop.de/vs-ingest.php",
@@ -127,7 +127,10 @@ def einmal(cfg, state):
         daten = json.loads(roh.decode("utf-8"))
     except (OSError, ValueError):
         return "Quelle unlesbar (wird gerade geschrieben?)"
-    alter = time.time() - float(daten.get("epoch") or 0)
+    # Alter ueber die Datei-mtime (setzt der Dateiserver beim Schreiben - hier der Lager-PC selbst),
+    # NICHT ueber das epoch-Feld: das stammt von der Uhr des Scanner-PCs - laeuft die mehr als
+    # MAX_ALTER_S gegenueber dem Lager-PC falsch, wuerde sonst nie (oder zu lange) hochgeladen.
+    alter = time.time() - mtime
     if alter > MAX_ALTER_S:
         state["sig"] = (mtime, groesse)
         return "Quelle zu alt (%d s) - Cockpit laeuft nicht" % alter

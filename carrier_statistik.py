@@ -30,7 +30,7 @@ import os
 from collections import Counter, defaultdict
 from datetime import datetime
 
-VERSION = "2026-10-09a"
+VERSION = "2026-10-20a"
 # 2026-10-09a: Stueckfaktor-Tabelle (artikel_stueckfaktor.csv): Verkaufseinheiten (VE) -> Stueck, z.B.
 #   BP-GF-24 (24er Packung) = 24 Stueck. Wird bei jedem Schritt 2 aus den Rechnungen (Feld "fach", explizite
 #   "N-Fach-Artikel"-Marker) fortgeschrieben - Grundlage fuer "Stueck" in der Online-Auswertung, auch fuer
@@ -119,7 +119,7 @@ def log_lauf(ergebnisse, pfad=STATISTIK_DATEI, jetzt=None, gesperrt=()):
                     jetzt.strftime("%Y-%m-%d"), b["carrier"], gtxt,
                     b["adresse"]["land"] or "", "1" if b["ausland"] else "0",
                     b["rnr"]))
-    except OSError:
+    except Exception:        # best effort: JEDER Fehler (nicht nur OSError) - die Statistik darf nie den Export kippen
         return 0
     return len(zeilen)
 
@@ -162,7 +162,7 @@ def log_artikel(rechnungen, pfad=ARTIKEL_STATISTIK_DATEI, jetzt=None):
                 n = _artikelanzahl(r)
                 ntxt = str(int(n)) if n == int(n) else ("%.2f" % n).replace(".", ",")
                 f.write("%s;%s;%s\n" % (jetzt.strftime("%Y-%m-%d"), r.get("rnr") or "", ntxt))
-    except OSError:
+    except Exception:        # best effort: JEDER Fehler (nicht nur OSError) - die Statistik darf nie den Export kippen
         return 0
     return len(rechnungen)
 
@@ -204,7 +204,7 @@ def _lies_verkaeufe(pfad):
         except ValueError:
             return None
     try:
-        with open(pfad, encoding="utf-8") as fh:
+        with open(pfad, encoding="utf-8", errors="replace") as fh:   # kaputtes Byte darf nicht abbrechen
             next(fh, None)                      # Kopfzeile
             for z in fh:
                 t = z.rstrip("\n").split(";")
@@ -241,7 +241,7 @@ def lies_stueckfaktoren(pfad=ARTIKEL_STUECKFAKTOR_DATEI):
     if not os.path.exists(pfad):
         return out
     try:
-        with open(pfad, encoding="utf-8-sig") as f:
+        with open(pfad, encoding="utf-8-sig", errors="replace") as f:
             next(f, None)
             for z in f:
                 t = z.rstrip("\r\n").split(";")
@@ -301,7 +301,7 @@ def merke_stueckfaktoren(rechnungen, pfad=ARTIKEL_STUECKFAKTOR_DATEI):
                 f.write(_FAKTOR_HEADER)
             for art, bez, fach in sorted(neu.values()):
                 f.write("%s;%s;%s;%s;auto\n" % (art, bez, _faktor_txt(fach), gruppe_vorschlag(art, fach)))
-    except OSError:
+    except Exception:        # best effort: JEDER Fehler (nicht nur OSError) - die Statistik darf nie den Export kippen
         return 0
     return len(neu)
 
@@ -336,7 +336,7 @@ def log_verkaeufe(rechnungen, pfad=ARTIKEL_VERKAEUFE_DATEI, jetzt=None):
                 f.write("%s;%s;%s;%s;%s;%s;%s;%s\n" % (
                     datum, rnr, _csv_text(art), _csv_text(bez), _zahl_txt(menge),
                     _csv_text(einh), _preis_txt(ep), _preis_txt(gp)))
-    except OSError:
+    except Exception:        # best effort: JEDER Fehler (nicht nur OSError) - die Statistik darf nie den Export kippen
         return 0
     return len(neu_zeilen)
 
@@ -440,7 +440,7 @@ def _lies(pfad):
     if not os.path.exists(pfad):
         return zeilen
     try:
-        with open(pfad, encoding="utf-8") as f:
+        with open(pfad, encoding="utf-8", errors="replace") as f:
             next(f, None)                    # Kopfzeile
             for zeile in f:
                 t = zeile.rstrip("\n").split(";")
@@ -458,7 +458,7 @@ def _lies_artikel(pfad):
     if not os.path.exists(pfad):
         return zeilen
     try:
-        with open(pfad, encoding="utf-8") as f:
+        with open(pfad, encoding="utf-8", errors="replace") as f:
             next(f, None)                    # Kopfzeile
             for zeile in f:
                 t = zeile.rstrip("\n").split(";")
@@ -742,6 +742,20 @@ def selftest():
               log_verkaeufe([rg1, rg2, rg3], vpfad), 4)
         check("log_verkaeufe(): idempotent (gleiche Rechnungen nicht doppelt)",
               log_verkaeufe([rg1, rg2, rg3], vpfad), 0)
+        # Nicht-UTF-8-Byte in der Datei (z.B. nach Bearbeitung in Excel): darf NIE abbrechen
+        # (frueher UnicodeDecodeError -> Export brach vor dem Archivieren ab, Review 2026-10-20)
+        kpfad = os.path.join(tmp, "verkaeufe_kaputt.csv")
+        with open(kpfad, "wb") as f:
+            f.write(_VERKAEUFE_HEADER.encode("utf-8") + b"2026-10-01;1700001;A1;K\xfcche;1;Stk;1,00;1,00\n")
+        rg_k = {"rnr": "1799999", "datum": "20.10.2026",
+                "positionen": [{"art": "X1", "bez": "Test", "menge": 1.0, "einh": "Stk", "ep": 1.0, "gp": 1.0}]}
+        check("log_verkaeufe(): kaputtes Byte in der Datei -> kein Abbruch, Zeile geschrieben",
+              log_verkaeufe([rg_k], kpfad), 1)
+        check("_lies_verkaeufe(): kaputtes Byte -> Zeilen trotzdem lesbar",
+              len(_lies_verkaeufe(kpfad)), 2)
+        check("log_lauf()/log_artikel(): kaputte Eingabe -> 0 statt Exception",
+              (log_lauf([{"status": "ok", "carrier": "DHL", "gewicht": None}], os.path.join(tmp, "k1.csv")),
+               log_artikel([object()], os.path.join(tmp, "k2.csv"))), (0, 0))
         with open(vpfad, encoding="utf-8") as f:
             vzeilen = f.read().split("\n")
         check("Verkaeufe-CSV: Kopfzeile", vzeilen[0], _VERKAEUFE_HEADER.strip())

@@ -398,6 +398,9 @@
     if(stale){
       ban.className='lbanner stale';
       ban.innerHTML='Cockpit meldet sich nicht<small>Letzter Stand '+esc(gen.substr(11,5))+' Uhr ('+Math.round(alter/60)+' Min. her) &ndash; Cockpit geschlossen oder Upload (<code>live_upload.py</code>) läuft nicht. Die Zahlen unten sind veraltet.</small>';
+    } else if(LIVE.status==='offline'){
+      ban.className='lbanner stale';
+      ban.innerHTML='Netzwerk am Cockpit nicht erreichbar<small>Das Cockpit im Lager erreicht den Paketscheine-Ordner nicht &ndash; es wird dort gerade NICHT gedruckt, die Zahlen unten sind eingefroren (Stand '+esc(gen.substr(11,5))+' Uhr).</small>';
     } else if(LIVE.status==='fertig'){
       ban.className='lbanner ok';
       ban.innerHTML='Alles gedruckt &ndash; nächster Rechnungslauf kann gestartet werden<small>'+nf(heute)+' Sendungen heute gedruckt</small>';

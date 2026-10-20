@@ -34,7 +34,7 @@ import shutil
 import sys
 from datetime import date, datetime, timedelta
 
-VERSION = "2026-10-08c"
+VERSION = "2026-10-20a"
 # 2026-10-08c: aeltere Archivdateien heissen "Anlage.pdf", "Anlage1.pdf" ... (KEINE Rechnungsnummer im
 #   Namen) - dann wird die Nummer aus dem PDF-Inhalt (Seite 1) gelesen. Je Lauf hoechstens
 #   PDF_PRUEFUNGEN_MAX solche PDFs; der Rest folgt beim naechsten Lauf (CLI: --pdf-max N).
@@ -212,8 +212,19 @@ def regel_datumsordner(bericht, name, root, tage, jetzt, trocken):
             for f in fns:
                 if rg["geloescht"] < MAX_LOESCHUNGEN_JE_REGEL:
                     _loesche_datei(os.path.join(dp, f), root, trocken, rg)
+                else:
+                    rg["behalten"] += 1
         if not trocken:
-            shutil.rmtree(pfad, ignore_errors=True)
+            # NUR leere Ordner entfernen (von unten nach oben) - KEIN shutil.rmtree: das wuerde
+            # auch Dateien mitnehmen, die Notbremse (MAX_LOESCHUNGEN_JE_REGEL), Schutzliste
+            # (GESCHUETZT) oder Verknuepfungs-Schutz oben absichtlich behalten haben.
+            for dp, _dirs, _fns in os.walk(pfad, topdown=False):
+                if os.path.islink(dp):
+                    continue
+                try:
+                    os.rmdir(dp)
+                except OSError:
+                    rg["notiz"].append("%s: nicht leer - bleibt" % os.path.relpath(dp, root))
 
 
 def kuerze_log(bericht, pfad, trocken):
@@ -240,10 +251,12 @@ def lies_bekannte_rnr(verkaeufe_csv):
     if not verkaeufe_csv or not os.path.isfile(verkaeufe_csv):
         return None
     try:
-        with open(verkaeufe_csv, encoding="utf-8") as f:
+        # errors="replace": ein kaputtes Byte (z.B. nach Bearbeitung in Excel) darf die ganze
+        # Aufraeumung nicht abbrechen (Review 2026-10-20); die Rechnungsnummern bleiben lesbar.
+        with open(verkaeufe_csv, encoding="utf-8", errors="replace") as f:
             next(f, None)
             return {z.split(";", 2)[1] for z in f if z.count(";") >= 2}
-    except OSError:
+    except (OSError, ValueError):
         return None
 
 
@@ -254,20 +267,33 @@ def aufraeumen(pfade, tage=None, trocken=True, jetzt=None, pdf_max=None):
     t = dict(STANDARD_TAGE)
     t.update(tage or {})
     b = Bericht()
+
+    def sicher(name, fn, *args):
+        # Jede Regel einzeln absichern: eine kaputte Regel (Netz weg, unerwarteter Fehler) darf
+        # die uebrigen Regeln nicht verhindern - der Fehler steht im Protokoll der Regel.
+        try:
+            fn(*args)
+        except Exception as e:
+            b.regel(name)["notiz"].append("FEHLER: %s: %s" % (type(e).__name__, e))
+
     if pfade.get("archiv"):
-        regel_rechnungs_archiv(b, pfade["archiv"], t["rechnungs_archiv"], jetzt,
-                               lies_bekannte_rnr(pfade.get("verkaeufe_csv")), trocken, pdf_max)
+        sicher("rechnungs_archiv", lambda: regel_rechnungs_archiv(
+            b, pfade["archiv"], t["rechnungs_archiv"], jetzt,
+            lies_bekannte_rnr(pfade.get("verkaeufe_csv")), trocken, pdf_max))
     if pfade.get("ausgabe"):
-        regel_dateien(b, "pickliste_pdf", pfade["ausgabe"], _RE_PICKLISTE, t["pickliste_pdf"], jetzt, trocken)
+        sicher("pickliste_pdf", regel_dateien, b, "pickliste_pdf", pfade["ausgabe"], _RE_PICKLISTE,
+               t["pickliste_pdf"], jetzt, trocken)
     if pfade.get("carrier_export"):
-        regel_dateien(b, "carrier_csv", pfade["carrier_export"], _RE_CARRIER_CSV, t["carrier_csv"], jetzt, trocken)
+        sicher("carrier_csv", regel_dateien, b, "carrier_csv", pfade["carrier_export"], _RE_CARRIER_CSV,
+               t["carrier_csv"], jetzt, trocken)
     if pfade.get("label_archiv"):
-        regel_dateien(b, "label_archiv", pfade["label_archiv"], re.compile(r".*\.pdf$", re.I),
-                      t["label_archiv"], jetzt, trocken)
+        sicher("label_archiv", regel_dateien, b, "label_archiv", pfade["label_archiv"],
+               re.compile(r".*\.pdf$", re.I), t["label_archiv"], jetzt, trocken)
     if pfade.get("sync_archiv"):
-        regel_datumsordner(b, "sync_archiv", pfade["sync_archiv"], t["sync_archiv"], jetzt, trocken)
+        sicher("sync_archiv", regel_datumsordner, b, "sync_archiv", pfade["sync_archiv"],
+               t["sync_archiv"], jetzt, trocken)
     if pfade.get("dashboard_log"):
-        kuerze_log(b, pfade["dashboard_log"], trocken)
+        sicher("dashboard_log", kuerze_log, b, pfade["dashboard_log"], trocken)
     return b
 
 
@@ -386,6 +412,10 @@ def selftest():
         os.makedirs(os.path.join(sy, "2026-05-01"))
         os.makedirs(os.path.join(sy, "2026-10-01"))
         open(os.path.join(sy, "2026-05-01", "x.csv"), "w").write("x")
+        # alter Datumsordner mit einer GESCHUETZTEN Datei darin: die Datei (und damit der Ordner) muss bleiben
+        os.makedirs(os.path.join(sy, "2026-05-02"))
+        open(os.path.join(sy, "2026-05-02", "x.csv"), "w").write("x")
+        open(os.path.join(sy, "2026-05-02", "gedruckt.log"), "w").write("wichtig")
         lg = os.path.join(tmp, "Carrier-Dashboard.log")
         open(lg, "w", encoding="utf-8").write("zeile\n" * 300000)
         pf = {"archiv": arch, "ausgabe": aus, "carrier_export": car, "label_archiv": lab,
@@ -421,6 +451,27 @@ def selftest():
               [False, True, True])
         check("Sync-Archiv: alter Datumsordner weg, junger bleibt",
               [os.path.exists(os.path.join(sy, d)) for d in ("2026-05-01", "2026-10-01")], [False, True])
+        check("Sync-Archiv: GESCHUETZTE Datei im alten Ordner bleibt (kein rmtree), uebrige Datei weg",
+              sorted(os.listdir(os.path.join(sy, "2026-05-02"))), ["gedruckt.log"])
+        # kaputtes Byte in artikel_verkaeufe.csv: bricht nichts ab, Nummern bleiben lesbar
+        kv = os.path.join(tmp, "verkaeufe_kaputt.csv")
+        with open(kv, "wb") as fk:
+            fk.write(b"Datum;Rechnungsnummer;x\n2026-07-01;1700001;K\xfcche\n")
+        check("lies_bekannte_rnr: kaputtes Byte -> Nummern trotzdem gelesen", lies_bekannte_rnr(kv), {"1700001"})
+        # Eine fehlschlagende Regel darf die uebrigen nicht verhindern
+        global regel_dateien
+        _orig_regel = regel_dateien
+
+        def _kaputt(*a, **k):
+            raise RuntimeError("Testfehler")
+        regel_dateien = _kaputt
+        try:
+            b_f = aufraeumen({"ausgabe": aus, "dashboard_log": lg}, trocken=True, jetzt=jetzt)
+        finally:
+            regel_dateien = _orig_regel
+        check("kaputte Regel: Fehler im Protokoll, Lauf geht weiter",
+              (any("Testfehler" in n for n in b_f.regeln["pickliste_pdf"]["notiz"]), "dashboard_log" in b_f.regeln),
+              (True, True))
         check("Log gekuerzt auf letzte Zeilen", sum(1 for _ in open(lg, encoding="utf-8")), LOG_BEHALTEN_ZEILEN)
         check("verkaeufe.csv unberuehrt", os.path.exists(verk), True)
         # ohne artikel_verkaeufe: Rechnungs-Archiv wird NICHT angefasst

@@ -70,7 +70,12 @@ from reportlab.graphics.shapes import Drawing
 # KONFIGURATION
 # ----------------------------------------------------------------------------
 
-VERSION = "2026-10-20b"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+VERSION = "2026-10-20c"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+# 2026-10-20c: Code-Review-Fixes. (1) _hausnr_zeile_zusammenfuehren(): eine reine 4-stellige Zahl, hinter
+#   der keine weitere PLZ-Zeile folgt, ist selbst die PLZ (AT/CH ohne Laenderpraefix, "8020"/"Graz") und
+#   wird nicht mehr an die Ortszeile geklebt ("Graz 8020" -> "Keine Postleitzahl gefunden"). (2) RE_PLZ_ZEILE
+#   enthielt statt der Wortgrenze "\b" ein echtes Backspace-Zeichen (seit Commit 5e54fb5) und konnte nie
+#   passen - behoben; dadurch greift der PLZ-Zeilen-Schutz in (1) und in der Hausnummer-Zusammenfuehrung.
 # 2026-10-20b: Echte Zwei-EAN-Packliste (1710095, Set-Artikel Steinbach Dosierschwimmer) eingebaut: Amicron
 #   druckt die EANs hintereinander ("EAN1, EAN2"), die zweite laeuft in die Mengenspalte und die Menge
 #   "1,00" steht DARUEBER - pdfplumber vermischte die Ziffern zu einem Wort, die Menge wurde als
@@ -611,7 +616,7 @@ def _hausnr(street):
 
 
 RE_NUR_HAUSNR = re.compile(r"^\d{1,4}\s?[a-zA-Z]?(?:\s?[-/]\s?\d{1,4}\s?[a-zA-Z]?)?$")
-RE_PLZ_ZEILE = re.compile(r"\s*(?:[A-Z]{1,3}-?\s?)?\d{4,5}")
+RE_PLZ_ZEILE = re.compile(r"\s*(?:[A-Z]{1,3}-?\s?)?\d{4,5}\b")
 
 
 def _hausnr_zeile_zusammenfuehren(zeilen):
@@ -625,6 +630,12 @@ def _hausnr_zeile_zusammenfuehren(zeilen):
     i = 1
     while i < len(z) - 1:
         a, b = z[i].strip(), z[i + 1].strip()
+        # Eine reine 4-stellige Zahl, hinter der KEINE weitere PLZ-Zeile mehr folgt, ist selbst
+        # die PLZ (AT/CH ohne Laenderpraefix: "8020" / "Graz") - nicht verschmelzen, sonst
+        # entsteht "Graz 8020" und die PLZ geht verloren (Review 2026-10-20).
+        if re.fullmatch(r"\d{4}", a) and not any(RE_PLZ_ZEILE.match(x.strip()) for x in z[i + 2:]):
+            i += 1
+            continue
         if (RE_NUR_HAUSNR.match(a) and re.search(r"[A-Za-zÄÖÜäöüß]", b)
                 and not re.search(r"\d", b) and not RE_PLZ_ZEILE.match(b)
                 and not re.search(r"OESTERREICH|ÖSTERREICH|AUSTRIA", b.upper())):

@@ -101,7 +101,11 @@ from tkinter import messagebox, simpledialog, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-10-15a"
+VERSION = "2026-10-20a"
+# 2026-10-20a: Code-Review-Fix: die Statistik-Schreibvorgaenge (Kg/Artikel/Verkaeufe) in Schritt 2 sind
+#   doppelt abgesichert (_stat) - ein Fehler dort (z.B. kaputtes Byte in artikel_verkaeufe.csv) brach
+#   den Export bisher NACH Pickliste/Carrier-CSV, aber VOR dem Archivieren ab; ein Wiederholungslauf
+#   haette Pickliste und DHL-Label-Zeilen doppelt erzeugt. Zugehoerig: carrier_statistik 2026-10-20a.
 # 2026-10-15a: weniger Meldungen: keine Rueckfrage "Jetzt ausfuehren?" mehr bei sauberem Lauf (nur
 #   noch, wenn Rechnungen zurueckgestellt werden); der Fertig-Dialog erscheint nur noch bei
 #   Problemen (nicht archiviert, Bruecken-CSV/WC-Kopie fehlgeschlagen, Druck/Oeffnen fehlgeschlagen,
@@ -721,9 +725,19 @@ def exportiere_alles(rechnungen, ergebnisse, ausgabe_pfad, archiv_ordner, carrie
     # carrier-zugeordneten Rechnungen (dieselbe Basis wie die Carrier-CSVs),
     # Artikelanzahl fuer ALLE verarbeiteten Rechnungen (ein Adressfehler
     # aendert nichts an der bestellten Menge).
-    kg_geloggt = carrier_statistik.log_lauf(ergebnisse, gesperrt=gesperrt)
-    artikel_geloggt = carrier_statistik.log_artikel(rechnungen)
-    verkaeufe_geloggt = carrier_statistik.log_verkaeufe(rechnungen)
+    def _stat(fn, *a, **kw):
+        # Doppelte Absicherung (die log_*-Funktionen fangen selbst schon alles ab): eine
+        # Statistik darf den Export NIE zwischen Carrier-CSV und Archivierung abbrechen -
+        # sonst bleiben die Rechnungen im Pool und ein Wiederholungslauf wuerde Pickliste
+        # und DHL-Label-Zeilen doppelt erzeugen.
+        try:
+            return fn(*a, **kw)
+        except Exception:
+            return 0
+
+    kg_geloggt = _stat(carrier_statistik.log_lauf, ergebnisse, gesperrt=gesperrt)
+    artikel_geloggt = _stat(carrier_statistik.log_artikel, rechnungen)
+    verkaeufe_geloggt = _stat(carrier_statistik.log_verkaeufe, rechnungen)
     try:
         carrier_statistik.merke_stueckfaktoren(rechnungen)
     except Exception:                                  # Nice-to-have, darf den Export NIE stoeren

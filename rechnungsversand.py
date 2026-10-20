@@ -39,7 +39,7 @@ from datetime import datetime, timedelta
 from email.message import EmailMessage
 from email.utils import formatdate, make_msgid, formataddr
 
-VERSION = "2026-10-21a"
+VERSION = "2026-10-22a"
 
 RE_AMAZON_NR = re.compile(r"\b\d{3}-\d{7}-\d{7}\b")
 RE_MAIL = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
@@ -514,36 +514,89 @@ def schreibe_zusammenfassung(res, log=print):
             log("  %s: %s" % (z["rnr"], z["grund"]))
 
 
-def main(argv=None):
-    ap = argparse.ArgumentParser(description="Sicherer Rechnungsversand (nur Onlineshop und eBay, nie Amazon)")
-    ap.add_argument("--config", default=os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                                     "rechnungsversand_config.json"))
-    ap.add_argument("--trocken", action="store_true", help="nur Bericht, nichts senden (überschreibt modus)")
-    a = ap.parse_args(argv)
-    with open(a.config, encoding="utf-8") as f:
-        cfg = json.load(f)
-    os.makedirs(cfg["ausgabe_ordner"], exist_ok=True)
-    logpfad = os.path.join(cfg["ausgabe_ordner"], "rechnungsversand.log")
+STATUS_DATEI = "letzter_lauf.json"
 
-    def log(t):
+
+def lade_status(ausgabe_ordner):
+    """Letzter Lauf (vom Programm geschrieben) fuer die Anzeige im Carrier-Dashboard; None wenn keiner/unlesbar."""
+    try:
+        with open(os.path.join(ausgabe_ordner, STATUS_DATEI), encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def schreibe_status(ausgabe_ordner, status):
+    """Atomar schreiben (Temp-Datei + os.replace)."""
+    pfad = os.path.join(ausgabe_ordner, STATUS_DATEI)
+    tmp = pfad + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(status, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, pfad)
+
+
+def _status_aus_ergebnis(res, quelle, fehler=""):
+    erg = res["ergebnisse"] if res else []
+    n_unklar = sum(1 for z in erg if z["entscheidung"].startswith("NICHT gesendet") and "Amazon" not in z["entscheidung"]
+                   and "bereits" not in z["entscheidung"])
+    n_fehler = sum(1 for z in erg if z["entscheidung"].startswith("FEHLER"))
+    return {"zeit": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "quelle": quelle, "version": VERSION,
+            "modus": res["modus"] if res else "", "gesendet": res["gesendet"] if res else 0,
+            "entworfen": res["entworfen"] if res else 0, "zaehler": res["zaehler"] if res else {},
+            "unklar": n_unklar, "fehlerzahl": n_fehler, "fehler": fehler,
+            "bericht": res["bericht"] if res else "", "ergebnisse": erg}
+
+
+def fuehre_aus(cfg, modus=None, quelle="geplant", log=print):
+    """Kompletter Lauf MIT Einzelinstanz-Sperre und Statusdatei (fuer Aufgabenplanung UND Dashboard-Knopf).
+    Rueckgabe: Status-dict (siehe _status_aus_ergebnis); bei laufendem anderen Lauf {'laeuft_bereits': True}.
+    Jeder Fehler wird als Status mit 'fehler' festgehalten, damit er im Dashboard sichtbar wird."""
+    aus = cfg["ausgabe_ordner"]
+    os.makedirs(aus, exist_ok=True)
+    logpfad = os.path.join(aus, "rechnungsversand.log")
+
+    def schreib_log(t):
         z = "%s  %s" % (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), t)
-        print(z)
+        try:
+            log(z)
+        except Exception:
+            pass
         try:
             with open(logpfad, "a", encoding="utf-8") as f:
                 f.write(z + "\n")
         except OSError:
             pass
-    with EinzelInstanz(os.path.join(cfg["ausgabe_ordner"], "lauf.lock")) as lock:
+    with EinzelInstanz(os.path.join(aus, "lauf.lock")) as lock:
         if not lock.ok:
-            log("Abbruch: läuft bereits (lauf.lock vorhanden)")
-            return 2
+            schreib_log("Abbruch: läuft bereits (lauf.lock vorhanden)")
+            return {"laeuft_bereits": True}
         try:
-            res = lauf(cfg, "bericht" if a.trocken else None, log=log)
+            res = lauf(cfg, modus, log=schreib_log)
         except Exception as e:
-            log("ABBRUCH: %s" % e)
-            return 1
-        schreibe_zusammenfassung(res, log)
-    return 0
+            schreib_log("ABBRUCH: %s" % e)
+            st = _status_aus_ergebnis(None, quelle, fehler=str(e))
+            st["modus"] = modus or cfg.get("modus", "")
+            schreibe_status(aus, st)
+            return st
+        schreibe_zusammenfassung(res, schreib_log)
+        st = _status_aus_ergebnis(res, quelle)
+        schreibe_status(aus, st)
+        return st
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description="Sicherer Rechnungsversand (nur Onlineshop und eBay, nie Amazon)")
+    ap.add_argument("--config", default=os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                     "rechnungsversand_config.json"))
+    ap.add_argument("--trocken", action="store_true", help="nur Bericht, nichts senden (überschreibt modus)")
+    ap.add_argument("--quelle", default="geplant", help="geplant (Aufgabenplanung) oder manuell")
+    a = ap.parse_args(argv)
+    with open(a.config, encoding="utf-8") as f:
+        cfg = json.load(f)
+    st = fuehre_aus(cfg, "bericht" if a.trocken else None, a.quelle)
+    if st.get("laeuft_bereits"):
+        return 2
+    return 1 if st.get("fehler") else 0
 
 
 # ----------------------------------------------------------------------------------------------
@@ -725,6 +778,14 @@ def _selftest():
               ["1710010", "1710011", "1710016"])
         res = lauf(cfg, "senden")
         check("Zweiter Lauf: keine Doppelversendung", (len(gefangen), res["gesendet"]), (3, 0))
+        st = fuehre_aus(cfg, "bericht", "manuell", log=lambda t: None)
+        st2 = lade_status(aus)
+        check("Statusdatei: Quelle/Modus/Zaehler", (st2["quelle"], st2["modus"], st2["fehlerzahl"], st2["fehler"]),
+              ("manuell", "bericht", 0, ""))
+        check("Statusdatei: unklar-Zaehler (1710013, 1710014, 1710015, 1710020 ...)", st2["unklar"] >= 3, True)
+        check("Statusdatei: Ergebnisliste vorhanden", any(z["rnr"] == "1710012" for z in st2["ergebnisse"]), True)
+        st3 = fuehre_aus(dict(cfg, ab_rechnungsnummer=0), "bericht", "geplant", log=lambda t: None)
+        check("Fehler (fehlende Startnummer) landet im Status", "ab_rechnungsnummer" in (lade_status(aus) or {}).get("fehler", ""), True)
         # Versuch ohne Bestaetigung -> nie blind wiederholen
         protokolliere(os.path.join(aus, "gesendet.csv"), "1710099", "versuch", "SHOP", "x@y.de", "x.pdf", "senden")
         rechnung("1710099", "25623")

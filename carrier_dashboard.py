@@ -95,13 +95,19 @@ import sys
 import threading
 import time
 import tkinter as tk
-from datetime import datetime
+from datetime import datetime, timedelta
 from tkinter import font as tkfont
 from tkinter import messagebox, simpledialog, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-10-20a"
+VERSION = "2026-10-22a"
+# 2026-10-22a: Rechnungsversand (rechnungsversand.py) im Dashboard: Statuszeile "Rechnungsversand ..." (gruen/
+#   orange/rot, Klick oeffnet das Fenster), Fenster mit Ergebnisliste des letzten Laufs, Knoepfe "Pruefen",
+#   "Entwuerfe erstellen" und "Jetzt senden" (nur wenn "modus" in rechnungsversand_config.json = "senden";
+#   vorher Bericht + Rueckfrage, Standard Nein). Ein Lauf der Aufgabenplanung (15:00) mit Fehlern/unklaren
+#   Rechnungen meldet sich bei geoeffnetem Dashboard einmal kurz per Dialog. Nur aktiv, wenn
+#   rechnungsversand_config.json vorhanden ist (Konfig-Schluessel "rechnungsversand_config" fuer anderen Pfad).
 # 2026-10-20a: Code-Review-Fix: die Statistik-Schreibvorgaenge (Kg/Artikel/Verkaeufe) in Schritt 2 sind
 #   doppelt abgesichert (_stat) - ein Fehler dort (z.B. kaputtes Byte in artikel_verkaeufe.csv) brach
 #   den Export bisher NACH Pickliste/Carrier-CSV, aber VOR dem Archivieren ab; ein Wiederholungslauf
@@ -340,6 +346,8 @@ BRUECKEN_DATEIEN = ("post_zuordnung.csv", "sammel_zuordnung.csv", "mengen_zuordn
 CONFIG_PFAD = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            "carrier_dashboard_config.json")
 CONFIG_FEHLER = ""
+RECHNUNGSVERSAND_CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                       "rechnungsversand_config.json")
 
 
 def _lade_config(pfad=None):
@@ -367,7 +375,8 @@ def _lade_config(pfad=None):
     ziele = {"pool_ordner": "POOL_ORDNER", "ausgabe_ordner": "AUSGABE_ORDNER",
              "archiv_ordner": "ARCHIV_ORDNER", "carrier_export_ordner": "CARRIER_EXPORT_ORDNER",
              "wc_sync_ordner": "WC_SYNC_ORDNER", "bruecken_ziel": "BRUECKEN_ZIEL",
-             "pickliste_drucker": "PICKLISTE_DRUCKER"}
+             "pickliste_drucker": "PICKLISTE_DRUCKER",
+             "rechnungsversand_config": "RECHNUNGSVERSAND_CONFIG"}
     gesetzt = []
     for schluessel, name in ziele.items():
         wert = cfg.get(schluessel)
@@ -857,6 +866,220 @@ def _frage_gewicht(root, titel, prompt, minvalue, maxvalue, initialvalue=None):
 # GUI
 # ==========================================================================
 
+def _rv_lade_config():
+    """(rechnungsversand-Modul, cfg, fehlertext). Ohne Konfigurationsdatei: (None, None, "") = Funktion aus."""
+    import json
+    if not os.path.exists(RECHNUNGSVERSAND_CONFIG):
+        return None, None, ""
+    try:
+        import rechnungsversand as rv
+        with open(RECHNUNGSVERSAND_CONFIG, encoding="utf-8-sig") as f:
+            cfg = json.load(f)
+        if not isinstance(cfg, dict) or not cfg.get("ausgabe_ordner"):
+            raise ValueError("ausgabe_ordner fehlt")
+        return rv, cfg, ""
+    except Exception as e:
+        return None, None, "%s: %s" % (os.path.basename(RECHNUNGSVERSAND_CONFIG), e)
+
+
+def rv_status_text(st, cfg=None, jetzt=None):
+    """(Text, Art) fuer die Statuszeile; Art: ok | warn | fehler | neutral."""
+    jetzt = jetzt or datetime.now()
+    cfg = cfg or {}
+    if not st:
+        return "Rechnungsversand: noch kein Lauf", "neutral"
+    if st.get("laeuft_bereits"):
+        return "Rechnungsversand: läuft gerade", "neutral"
+    try:
+        z = datetime.strptime(st.get("zeit", ""), "%Y-%m-%d %H:%M:%S")
+        wann = (z.strftime("%H:%M") if z.date() == jetzt.date() else z.strftime("%d.%m. %H:%M"))
+    except ValueError:
+        z, wann = None, "?"
+    if st.get("fehler"):
+        return "Rechnungsversand %s: FEHLER - %s" % (wann, str(st["fehler"])[:80]), "fehler"
+    modus = st.get("modus", "")
+    n_ges, n_ent = st.get("gesendet", 0), st.get("entworfen", 0)
+    wuerde = st.get("zaehler", {}).get("würde senden", 0)
+    unklar, fehler = st.get("unklar", 0), st.get("fehlerzahl", 0)
+    if modus == "senden":
+        txt = "Rechnungsversand %s: %d gesendet" % (wann, n_ges)
+    elif modus == "entwurf":
+        txt = "Rechnungsversand %s (Entwürfe): %d" % (wann, n_ent)
+    else:
+        txt = "Rechnungsversand %s (Probelauf): %d würden gesendet" % (wann, wuerde)
+    art = "ok"
+    if unklar:
+        txt += ", %d unklar" % unklar
+        art = "warn"
+    if fehler:
+        txt += ", %d Fehler" % fehler
+        art = "fehler"
+    # Geplanter Lauf verpasst? (Werktag, 30 Min nach der Uhrzeit, noch kein Lauf heute)
+    uhr = str(cfg.get("lauf_uhrzeit", "15:00"))
+    try:
+        h, m = [int(x) for x in uhr.split(":")]
+        faellig = jetzt.replace(hour=h, minute=m, second=0, microsecond=0) + timedelta(minutes=30)
+        if jetzt.weekday() < 5 and jetzt > faellig and (z is None or z.date() < jetzt.date()):
+            return "Rechnungsversand: heute noch kein Lauf (geplant %s)" % uhr, "warn"
+    except ValueError:
+        pass
+    return txt, art
+
+
+def _rechnungsversand_dialog(root, rv, cfg, nach_lauf=None):
+    """Fenster 'Rechnungsversand': Ergebnisse des letzten Laufs, Knoepfe Pruefen / Entwuerfe / Jetzt senden."""
+    import queue as _queue
+    aus = cfg["ausgabe_ordner"]
+    dlg = tk.Toplevel(root)
+    dlg.title("Rechnungsversand (Onlineshop + eBay, nie Amazon)")
+    dlg.configure(bg=BG)
+    dlg.geometry("1020x640")
+    dlg.transient(root)
+    _dunkle_titelleiste(dlg)
+    farben = {"ok": GRUEN, "warn": GOLD, "fehler": ROT, "neutral": MUTED}
+    status_lbl = tk.Label(dlg, text="", bg=BG, fg=FG, font=("Segoe UI", 12, "bold"), anchor="w", justify="left")
+    status_lbl.pack(fill="x", padx=12, pady=(10, 2))
+    modus_lbl = tk.Label(dlg, bg=BG, fg=MUTED, font=("Segoe UI", 9), anchor="w")
+    modus_lbl.pack(fill="x", padx=12)
+    nur_var = tk.BooleanVar(value=False)
+    ttk.Checkbutton(dlg, text="Nur Unklares / Fehler anzeigen", variable=nur_var,
+                    command=lambda: fuelle()).pack(anchor="w", padx=12, pady=(4, 0))
+    spalten = ("rnr", "kanal", "entscheidung", "grund", "empfaenger")
+    tv = ttk.Treeview(dlg, columns=spalten, show="headings", selectmode="browse")
+    for sp, txt, br in (("rnr", "Rechnung", 90), ("kanal", "Kanal", 70), ("entscheidung", "Entscheidung", 170),
+                        ("grund", "Grund", 460), ("empfaenger", "Empfänger", 210)):
+        tv.heading(sp, text=txt)
+        tv.column(sp, width=br, anchor="w")
+    tv.tag_configure("gesendet", foreground=GRUEN)
+    tv.tag_configure("sendet", foreground="#64B5F6")
+    tv.tag_configure("amazon", foreground=MUTED)
+    tv.tag_configure("unklar", foreground=GOLD)
+    tv.tag_configure("fehler", foreground=ROT)
+    sb = ttk.Scrollbar(dlg, orient="vertical", command=tv.yview)
+    tv.configure(yscrollcommand=sb.set)
+    unten = ttk.Frame(dlg)
+    unten.pack(side="bottom", fill="x", padx=10, pady=8)
+    sb.pack(side="right", fill="y", pady=6)
+    tv.pack(fill="both", expand=True, padx=(12, 0), pady=6)
+    busy = {"an": False}
+    q = _queue.Queue()
+
+    def rang(z):
+        e = z["entscheidung"]
+        if e.startswith("FEHLER"):
+            return 0
+        if e.startswith("NICHT gesendet") and "Amazon" not in e and "bereits" not in e:
+            return 1
+        if e in ("gesendet", "würde senden", "Entwurf erstellt"):
+            return 2
+        return 3
+
+    def fuelle():
+        st = rv.lade_status(aus)
+        text, art = rv_status_text(st, cfg)
+        status_lbl.configure(text=text, fg=farben[art])
+        modus_lbl.configure(text="Eingestellter Modus: %s   |   Sendung wird nur im Modus \"senden\" freigegeben   |   "
+                                 "geplanter Lauf: täglich %s Uhr" % (cfg.get("modus", "bericht"),
+                                                                    cfg.get("lauf_uhrzeit", "15:00")))
+        tv.delete(*tv.get_children())
+        for z in sorted((st or {}).get("ergebnisse", []), key=lambda z: (rang(z), z["rnr"])):
+            if nur_var.get() and rang(z) > 1:
+                continue
+            e = z["entscheidung"]
+            tag = ("fehler" if e.startswith("FEHLER") else "gesendet" if e == "gesendet"
+                   else "sendet" if e in ("würde senden", "Entwurf erstellt")
+                   else "amazon" if "Amazon" in e or "bereits" in e else "unklar")
+            tv.insert("", "end", values=(z["rnr"], z["kanal"], e, z["grund"], z["empfaenger"]), tags=(tag,))
+        if st and st.get("fehler"):
+            tv.insert("", 0, values=("-", "-", "FEHLER", st["fehler"], ""), tags=("fehler",))
+
+    def lauf_async(modus, dann=None):
+        if busy["an"]:
+            return
+        busy["an"] = True
+        status_lbl.configure(text="Läuft ... (%s)" % modus, fg=MUTED)
+        for b in knoepfe:
+            b.configure(state="disabled")
+
+        def arbeit():
+            try:
+                q.put(("fertig", rv.fuehre_aus(cfg, modus, "manuell"), dann))
+            except Exception as e:
+                q.put(("fehler", str(e), dann))
+        threading.Thread(target=arbeit, daemon=True).start()
+        dlg.after(200, abfrage)
+
+    def abfrage():
+        try:
+            art, wert, dann = q.get_nowait()
+        except _queue.Empty:
+            dlg.after(200, abfrage)
+            return
+        busy["an"] = False
+        for b in knoepfe:
+            b.configure(state="normal")
+        if art == "fehler":
+            messagebox.showerror("Rechnungsversand", wert, parent=dlg)
+        elif wert.get("laeuft_bereits"):
+            messagebox.showinfo("Rechnungsversand", "Es läuft gerade ein anderer Lauf (z.B. die geplante Aufgabe). "
+                                                    "Bitte später erneut versuchen.", parent=dlg)
+        fuelle()
+        if nach_lauf:
+            nach_lauf()
+        if art == "fertig" and dann and not wert.get("laeuft_bereits") and not wert.get("fehler"):
+            dann(wert)
+
+    def pruefen():
+        lauf_async("bericht")
+
+    def entwuerfe():
+        lauf_async("entwurf")
+
+    def senden_nach_pruefung(st):
+        erg = st.get("ergebnisse", [])
+        wuerde = [z for z in erg if z["entscheidung"] == "würde senden"]
+        if not wuerde:
+            messagebox.showinfo("Rechnungsversand", "Nichts zu senden.", parent=dlg)
+            return
+        n_shop = sum(1 for z in wuerde if z["kanal"] == "SHOP")
+        n_ebay = sum(1 for z in wuerde if z["kanal"] == "EBAY")
+        n_amz = sum(1 for z in erg if "Amazon" in z["entscheidung"])
+        n_unklar = st.get("unklar", 0)
+        if messagebox.askyesno("Rechnungsversand - jetzt senden?",
+                               "%d Rechnung(en) werden JETZT per E-Mail versendet:\n   Onlineshop: %d\n   eBay: %d\n\n"
+                               "Nicht gesendet: Amazon %d, unklar %d.\n\nJetzt senden?"
+                               % (len(wuerde), n_shop, n_ebay, n_amz, n_unklar),
+                               icon="warning", default=messagebox.NO, parent=dlg):
+            lauf_async("senden")
+
+    def senden():
+        if cfg.get("modus") != "senden":
+            messagebox.showinfo("Rechnungsversand",
+                                "Der Versand ist noch nicht freigegeben.\nIn rechnungsversand_config.json steht "
+                                "modus = \"%s\" (Freigabe nur mit \"senden\")." % cfg.get("modus", "bericht"),
+                                parent=dlg)
+            return
+        lauf_async("bericht", dann=senden_nach_pruefung)
+
+    def bericht_oeffnen():
+        st = rv.lade_status(aus)
+        pfad = (st or {}).get("bericht") or ""
+        try:
+            os.startfile(pfad if pfad and os.path.exists(pfad) else aus)
+        except OSError as e:
+            messagebox.showwarning("Rechnungsversand", "Konnte nicht öffnen: %s" % e, parent=dlg)
+
+    knoepfe = [RundButton(unten, text="Prüfen (Bericht)", command=pruefen),
+               RundButton(unten, text="Entwürfe erstellen", command=entwuerfe),
+               RundButton(unten, text="Jetzt senden ...", command=senden, stil="primaer"),
+               RundButton(unten, text="Bericht öffnen", command=bericht_oeffnen)]
+    for b in knoepfe:
+        b.pack(side="left", padx=(0, 8))
+    RundButton(unten, text="Schließen", command=dlg.destroy).pack(side="right")
+    fuelle()
+    return dlg
+
+
 def _top_artikel_dialog(root, zeilen):
     """Fenster 'Top-Artikel': Bestseller-Liste aus den Artikel-Verkaeufen (zeilen = Ergebnis von
     carrier_statistik._lies_verkaeufe) - Zeitraum und Sortierung waehlbar, Export als CSV."""
@@ -1058,11 +1281,56 @@ def gui():
     def tick():
         if not laeuft["an"]:
             aktualisiere_zaehler()
+        rv_aktualisieren()
         root.after(REFRESH_MS, tick)
 
     # --- Buttons -------------------------------------------------------------
     schritte = ttk.Frame(root, padding=(8, 0))
     schritte.pack(fill="x")
+    # Rechnungsversand (optional, nur mit rechnungsversand_config.json): Statuszeile rechts
+    rv_mod, rv_cfg, rv_fehler = _rv_lade_config()
+    rv_state = {"sig": "-", "dlg": None}
+    rv_farben = {"ok": GRUEN, "warn": GOLD, "fehler": ROT, "neutral": MUTED}
+    rv_lbl = tk.Label(schritte, text="", bg=BG, fg=MUTED, cursor="hand2", font=("Segoe UI", 10, "bold"))
+
+    def rv_dialog_oeffnen(_e=None):
+        if rv_mod is None:
+            messagebox.showwarning("Rechnungsversand", "Konfiguration nicht lesbar:\n%s" % rv_fehler)
+            return
+        d = rv_state["dlg"]
+        if d is not None:
+            try:
+                if d.winfo_exists():
+                    d.lift()
+                    return
+            except tk.TclError:
+                pass
+        rv_state["dlg"] = _rechnungsversand_dialog(root, rv_mod, rv_cfg, nach_lauf=rv_aktualisieren)
+
+    def rv_aktualisieren():
+        if rv_mod is None:
+            if rv_fehler:
+                rv_lbl.configure(text="Rechnungsversand: Konfiguration fehlerhaft", fg=ROT)
+            return
+        st = rv_mod.lade_status(rv_cfg["ausgabe_ordner"])
+        text, art = rv_status_text(st, rv_cfg)
+        rv_lbl.configure(text=text, fg=rv_farben[art])
+        sig = (st or {}).get("zeit")
+        vorher, rv_state["sig"] = rv_state["sig"], sig
+        if vorher != "-" and sig and sig != vorher and (st.get("quelle") == "geplant"):
+            d = rv_state["dlg"]
+            offen = False
+            try:
+                offen = d is not None and d.winfo_exists()
+            except tk.TclError:
+                pass
+            if not offen and (st.get("fehler") or st.get("fehlerzahl") or st.get("unklar")):
+                messagebox.showwarning("Rechnungsversand",
+                                       "%s\n\nDetails: auf die Zeile oben rechts klicken." % text)
+
+    if rv_mod is not None or rv_fehler:
+        rv_lbl.pack(side="right", padx=8)
+        rv_lbl.bind("<Button-1>", rv_dialog_oeffnen)
     btn_zuordnen = RundButton(schritte, text="1. Bestellungen zuordnen", stil="primaer")
     btn_zuordnen.pack(side="left")
     btn_export = RundButton(schritte, text="2. Pickliste + CSV erstellen", state="disabled",
@@ -1150,6 +1418,8 @@ def gui():
         _top_artikel_dialog(root, zeilen)
 
     RundButton(knoepfe, text="Top-Artikel", command=zeige_top_artikel).pack(side="left", padx=(0, 8))
+    if rv_mod is not None or rv_fehler:
+        RundButton(knoepfe, text="Rechnungsversand", command=rv_dialog_oeffnen).pack(side="left", padx=(0, 8))
 
     def filter_zuruecksetzen():
         wende_filter(None)
@@ -1896,6 +2166,7 @@ def gui():
     btn_zuordnen.configure(command=starte)
     btn_export.configure(command=lambda: mit_busy(starte_export))
     aktualisiere_zaehler()
+    rv_aktualisieren()
     root.after(REFRESH_MS, tick)
     root.after(AUTO_MS, auto_scan)
 

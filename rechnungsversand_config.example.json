@@ -4,6 +4,7 @@
   "packlisten_ordner": ["C:\\Packlisten", "C:\\Packlisten\\Archiv"],
   "ausgabe_ordner": "C:\\Rechnungsversand\\Ausgabe",
   "ab_rechnungsnummer": 1710009,
+  "lauf_uhrzeit": "15:00",
   "max_alter_tage": 4,
   "max_mails_pro_lauf": 400,
   "pause_sekunden": 1.0,

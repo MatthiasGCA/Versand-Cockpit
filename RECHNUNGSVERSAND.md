@@ -21,24 +21,36 @@ Bestätigung wird **nie** blind wiederholt), Gutschriften/Storno/Duplikate/Auftr
 Rechnungs-PDF mit internen Angaben (Lagerort/Kennung) wird nicht gesendet, bei jedem Fehler wird nicht gesendet.
 
 ## Einrichten (Faktura-PC)
-1. Ordner `C:\Rechnungsversand` anlegen, diese Dateien hineinkopieren: `rechnungsversand.py`,
-   `Rechnungsversand_starten.bat`, `rechnungsversand_config.example.json`.
+1. Die Dateien `rechnungsversand.py`, `Rechnungsversand_starten.bat` und `rechnungsversand_config.example.json` in den
+   **Programmordner des Carrier-Dashboards** kopieren (dort, wo `carrier_dashboard.py` liegt) – dann erkennt das
+   Dashboard den Rechnungsversand automatisch. Zusätzlich die neue `carrier_dashboard.py` austauschen.
 2. `rechnungsversand_config.example.json` kopieren nach **`rechnungsversand_config.json`** und anpassen:
    Absender/SMTP, **`ab_rechnungsnummer`** (= erste Rechnung, die das Programm bearbeiten soll – die nächste noch nicht
-   per Amicron versendete), Betreff/Text. **Modus zuerst auf `"bericht"` lassen.**
+   per Amicron versendete), Betreff/Text. **Modus zuerst auf `"bericht"` lassen.** (`lauf_uhrzeit` ist nur die Anzeige-
+   Uhrzeit im Dashboard – die echte Startzeit steht in der Aufgabenplanung, Schritt 7.)
 3. SMTP-Passwort **nicht** in die Datei schreiben, sondern als Windows-Umgebungsvariable
    `RECHNUNGSVERSAND_SMTP_PASSWORT` setzen (Eingabeaufforderung: `setx RECHNUNGSVERSAND_SMTP_PASSWORT "…"`).
    Exchange Online: für das Postfach muss „Authentifizierter SMTP-Client“ erlaubt sein (ggf. App-Kennwort); Exchange vor
    Ort: Servername intern, Port 25/587, `sicherheit` = `none` oder `starttls`.
-4. Test ohne Versand: `py rechnungsversand.py --trocken` → `C:\Rechnungsversand\Ausgabe\Bericht_<Datum>.csv`.
-   Prüfen: Amazon-Rechnungen stehen als „NICHT gesendet (Amazon)“, Shop/eBay als „würde senden“.
-5. Mehrere Tage Modus `"entwurf"`: es entstehen fertige `.eml`-Dateien (`Ausgabe\Entwuerfe\<Datum>`), die du in Outlook
-   öffnen und ansehen kannst.
-6. Erst danach Modus `"senden"`. **Wichtig:** Ab dann die Rechnungen für Onlineshop/eBay **nicht mehr zusätzlich**
-   in Amicron per „Belege per Email versenden“ verschicken, sonst bekommen Kunden sie doppelt.
-7. Aufgabenplanung (täglich 15:00), Eingabeaufforderung als Administrator:
-   `schtasks /create /tn "Rechnungsversand" /tr "C:\Rechnungsversand\Rechnungsversand_starten.bat" /sc daily /st 15:00`
+4. Test ohne Versand: im Dashboard auf **„Rechnungsversand“ → „Prüfen (Bericht)“** klicken (oder
+   `py rechnungsversand.py --trocken`). Prüfen: Amazon-Rechnungen stehen als „NICHT gesendet (Amazon)“, Shop/eBay als
+   „würde senden“.
+5. Mehrere Tage Modus `"entwurf"` bzw. im Fenster **„Entwürfe erstellen“**: es entstehen fertige `.eml`-Dateien
+   (`Ausgabe\Entwuerfe\<Datum>`), die du in Outlook öffnen und ansehen kannst.
+6. Erst danach in der Konfiguration Modus `"senden"`. **Wichtig:** Ab dann die Rechnungen für Onlineshop/eBay **nicht mehr
+   zusätzlich** in Amicron per „Belege per Email versenden“ verschicken, sonst bekommen Kunden sie doppelt.
+7. Aufgabenplanung (täglich 15:00), Eingabeaufforderung als Administrator (Pfad anpassen):
+   `schtasks /create /tn "Rechnungsversand" /tr "C:\Packlisten\Rechnungsversand_starten.bat" /sc daily /st 15:00`
    Die Aufgabe muss unter dem Benutzer laufen, der Zugriff auf `Ausgangsrechnungen` hat und die Umgebungsvariable besitzt.
+
+## Im Carrier-Dashboard
+- **Statuszeile oben rechts** („Rechnungsversand 15:00: 38 gesendet, 2 unklar“): grün = alles gut, gelb = unklare
+  Rechnungen oder heute noch kein Lauf, rot = Fehler. Klick öffnet das Fenster.
+- **Fenster „Rechnungsversand“:** Liste des letzten Laufs (Fehler/Unklares oben), Knöpfe **Prüfen (Bericht)**,
+  **Entwürfe erstellen**, **Jetzt senden …** (nur wenn `modus` = `"senden"`; es folgt erst ein Bericht und eine Rückfrage,
+  Standard Nein), **Bericht öffnen**.
+- Hat der geplante Lauf Fehler oder unklare Rechnungen, meldet sich das Dashboard (falls geöffnet) einmal kurz per Dialog.
+- Läuft gerade ein anderer Lauf (z. B. die geplante Aufgabe), wird ein zweiter nicht gestartet (Sperre).
 
 ## Täglich
 Nach 15:00 kurz `Ausgabe\Bericht_*.csv` / `rechnungsversand.log` ansehen. Zeilen „NICHT gesendet (unklar)“ bitte prüfen

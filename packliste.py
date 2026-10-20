@@ -70,7 +70,14 @@ from reportlab.graphics.shapes import Drawing
 # KONFIGURATION
 # ----------------------------------------------------------------------------
 
-VERSION = "2026-10-20a"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+VERSION = "2026-10-20b"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+# 2026-10-20b: Echte Zwei-EAN-Packliste (1710095, Set-Artikel Steinbach Dosierschwimmer) eingebaut: Amicron
+#   druckt die EANs hintereinander ("EAN1, EAN2"), die zweite laeuft in die Mengenspalte und die Menge
+#   "1,00" steht DARUEBER - pdfplumber vermischte die Ziffern zu einem Wort, die Menge wurde als
+#   900874879012,2 gelesen. Neu: _extrahiere_woerter() schneidet nur Woerter mit ueberlappenden Zeichen
+#   nach der Content-Stream-Reihenfolge wieder auseinander (alle anderen unveraendert: 500 Rechnungen
+#   Wort fuer Wort identisch); EAN mit angehaengtem Komma wird erkannt und ist keine "Zahl" mehr
+#   (_preiszahlen). Ergebnis fuer 1710095: Menge 1, EANs 9002337790501 + 9008748790222, Pickliste "1 Set".
 # 2026-10-20a: Mehrere EANs je Artikel (zusammengesetzter Artikel, jeder Teil mit eigener EAN, z.B.
 #   Schlauch mit Druckminderer). parse_block() sammelt jetzt ALLE EANs der Position ("eans"; "ean" bleibt
 #   die erste), auch "EAN1/EAN2" in einem Feld und untereinander (eans_im_token). schreibe_ean_csv()
@@ -516,12 +523,64 @@ def eans_im_token(t):
     """EAN(s) in EINEM Wort der EAN-Spalte: eine reine EAN -> [t]; zwei oder mehr
     EANs im selben Feld, getrennt durch / ; , | -> alle (jeder Teil muss selbst
     eine EAN sein - "1,00" oder "12345678,90" liefern deshalb nichts). Sonst []."""
+    t = t.strip("/;,|")      # Amicron haengt bei mehreren EANs ein Komma an ("EAN1,")
     if EAN_RE.match(t):
         return [t]
     teile = [x for x in re.split(r"[/;,|]+", t) if x]
     if len(teile) >= 2 and all(EAN_RE.match(x) for x in teile):
         return teile
     return []
+
+
+def _extrahiere_woerter(page):
+    """page.extract_words(use_text_flow=False) + Reparatur von UEBERDRUCK.
+
+    Real beobachtet (Packliste 1710095, Set-Artikel mit ZWEI EANs): Amicron druckt
+    die EANs hintereinander in die EAN-Spalte ("9002337790501, 9008748790222"); die
+    zweite EAN ist laenger als der Platz und laeuft in die Mengenspalte - dort
+    steht "1,00" DARUEBER gedruckt (Zeichen liegen uebereinander). pdfplumber
+    sortiert die Zeichen nach Position und macht daraus EIN Wort mit vermischten
+    Ziffern ("900874879012,2020") - die Menge wurde dadurch als 900874879012,202
+    gelesen. Die Zeichen stehen im Content-Stream aber sauber nacheinander (erst die
+    ganze EAN, dann die Menge). Betroffen sind nur Woerter, in denen sich Zeichen
+    ueberlappen; diese werden nach der Stream-Reihenfolge in einzelne Woerter
+    zurueckgeschnitten (neuer Abschnitt, sobald ein Zeichen links vom vorigen
+    beginnt). Alle anderen Woerter bleiben unveraendert."""
+    try:
+        woerter = page.extract_words(use_text_flow=False, return_chars=True)
+    except TypeError:                       # aeltere pdfplumber-Version ohne return_chars
+        return page.extract_words(use_text_flow=False)
+    stream = {}
+    for k, c in enumerate(page.chars):
+        stream.setdefault((round(c["x0"], 2), round(c["top"], 1), c["text"]), k)
+    out = []
+    for w in woerter:
+        cs = w.pop("chars", None)
+        if cs and len(cs) >= 4:
+            nach_x = sorted(cs, key=lambda c: c["x0"])
+            if any(b["x0"] < a["x1"] - 1.5 for a, b in zip(nach_x, nach_x[1:])):
+                nach_stream = sorted(cs, key=lambda c: stream.get(
+                    (round(c["x0"], 2), round(c["top"], 1), c["text"]), 10**9))
+                laeufe, cur = [], [nach_stream[0]]
+                for c in nach_stream[1:]:
+                    if c["x0"] < cur[-1]["x0"] - 1.0:      # Sprung zurueck -> naechstes Feld
+                        laeufe.append(cur)
+                        cur = [c]
+                    else:
+                        cur.append(c)
+                laeufe.append(cur)
+                if len(laeufe) > 1:
+                    for lf in laeufe:
+                        nw = dict(w)
+                        nw["text"] = "".join(c["text"] for c in lf)
+                        nw["x0"] = min(c["x0"] for c in lf)
+                        nw["x1"] = max(c["x1"] for c in lf)
+                        nw["top"] = min(c["top"] for c in lf)
+                        nw["bottom"] = max(c["bottom"] for c in lf)
+                        out.append(nw)
+                    continue
+        out.append(w)
+    return out
 
 CENT = 0.005  # Toleranz fuer Betragsabgleich
 
@@ -942,7 +1001,7 @@ def _preiszahlen(line):
     out = []
     for w in sorted(line, key=lambda w: w["x0"]):
         t = w["text"]
-        if w["x0"] < NUM_MIN_X or EAN_RE.match(t) or num(t) is None:
+        if (w["x0"] < NUM_MIN_X or EAN_RE.match(t.strip("/;,|")) or num(t) is None):
             continue
         out.append(w)
     return out
@@ -1218,7 +1277,7 @@ def parse_pdf(path):
     """Eine Rechnung -> dict mit Kopf, Positionen, Adresse, Abgleich-Status."""
     with pdfplumber.open(path) as pdf:
         page = pdf.pages[0]
-        words = page.extract_words(use_text_flow=False)
+        words = _extrahiere_woerter(page)
 
     tops = sorted({round(w["top"]) for w in words})
     zeilen = [line_text([w for w in words if round(w["top"]) == t]) for t in tops]

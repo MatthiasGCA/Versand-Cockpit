@@ -70,7 +70,14 @@ from reportlab.graphics.shapes import Drawing
 # KONFIGURATION
 # ----------------------------------------------------------------------------
 
-VERSION = "2026-10-15c"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+VERSION = "2026-10-20a"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+# 2026-10-20a: Mehrere EANs je Artikel (zusammengesetzter Artikel, jeder Teil mit eigener EAN, z.B.
+#   Schlauch mit Druckminderer). parse_block() sammelt jetzt ALLE EANs der Position ("eans"; "ean" bleibt
+#   die erste), auch "EAN1/EAN2" in einem Feld und untereinander (eans_im_token). schreibe_ean_csv()
+#   schreibt je EAN eine Zeile (gleiche Anzahl, Bezeichnung "... (Teil i/n)") - der Packer muss jede
+#   EAN je Satz scannen. Solche Artikel werden NICHT zu Sammeldruck-Gruppen gebuendelt (der Sammeldruck
+#   prueft nur eine EAN). Positionen mit nur einer EAN: unveraendertes Verhalten. Das Layout der Zwei-
+#   EAN-Rechnung von Amicron war beim Einbau noch nicht bekannt (Annahme: nebeneinander/untereinander).
 # 2026-10-15c: (1) Rechnungen mit sehr vielen Positionen (Rahmen hoeher als eine Seite) fuehrten zu
 #   einem reportlab-LayoutError und damit zum Abbruch der Pickliste - der Rahmen wird jetzt auf mehrere
 #   Teile (Fortsetzung 2/3 ...) verteilt, jeder Teil passt auf eine Seite. (2) Fuss der Seiten mit
@@ -504,6 +511,18 @@ TABLE_TOP, TABLE_BOT = 26, 388   # Tabellenbereich (unter Kopf, ueber Rechnungsb
 # von Artikelnummern (die i.d.R. Buchstaben enthalten und ganz links stehen).
 EAN_RE = re.compile(r"^\d{8}$|^\d{12,14}$")
 
+
+def eans_im_token(t):
+    """EAN(s) in EINEM Wort der EAN-Spalte: eine reine EAN -> [t]; zwei oder mehr
+    EANs im selben Feld, getrennt durch / ; , | -> alle (jeder Teil muss selbst
+    eine EAN sein - "1,00" oder "12345678,90" liefern deshalb nichts). Sonst []."""
+    if EAN_RE.match(t):
+        return [t]
+    teile = [x for x in re.split(r"[/;,|]+", t) if x]
+    if len(teile) >= 2 and all(EAN_RE.match(x) for x in teile):
+        return teile
+    return []
+
 CENT = 0.005  # Toleranz fuer Betragsabgleich
 
 
@@ -799,6 +818,11 @@ def finde_sammelgruppen(rechnungen, min_anzahl=SAMMEL_MIN):
             continue
         if not p["art"]:
             continue
+        if len(p.get("eans") or []) >= 2:
+            # Zusammengesetzter Artikel mit mehreren EANs: der Sammeldruck prueft nur
+            # EINE EAN je Gruppe - die Bestellung bleibt deshalb Einzelbestellung, damit
+            # jeder Teil einzeln per EAN bestaetigt wird (siehe schreibe_ean_csv).
+            continue
         eff_menge, eff_einh, eff_bez, _ = effektive_menge(p)
         g = nach_artikel.setdefault(
             p["art"], {"art": p["art"], "bez": eff_bez, "einh": p["einh"],
@@ -946,6 +970,21 @@ def parse_block(words):
             main, best = ln, n
 
     art = einh = ean = ""
+    # ALLE EANs der Position sammeln (zusammengesetzter Artikel, jeder Teil mit eigener
+    # EAN, z.B. Schlauch + Druckminderer) - egal ob nebeneinander (auch "EAN1/EAN2" in
+    # einem Feld) oder untereinander. Vorab ueber ALLE Zeilen, damit eine EAN nicht
+    # verloren geht, wenn sie in einer Zeile steht, die unten von einem Marker-Zweig
+    # (Lagerort/Fach-Artikel/...) uebersprungen wird. Rechts von der Bezeichnung
+    # (x0 >= EINH_LO) stehen nur Einheit/EAN/Zahlen. "ean" bleibt die ERSTE
+    # (Sammelgruppen/Altverhalten).
+    eans = []
+    for ln0 in lines:
+        for w0 in sorted(ln0, key=lambda w: w["x0"]):
+            if w0["x0"] >= EINH_LO:
+                for e in eans_im_token(w0["text"]):
+                    if e not in eans:
+                        eans.append(e)
+    ean = eans[0] if eans else ""
     menge = ep = gp = None
     bez_parts, lagerorte = [], []
     fach = None
@@ -1054,8 +1093,6 @@ def parse_block(words):
                 continue
             if in_band(w, BEZ_LO, BEZ_HI):                  # Bezeichnungs-Spalte
                 bez_parts.append((round(w["top"]), w["x0"], t))
-            elif EAN_RE.match(t) and w["x0"] >= EINH_LO and not ean:  # reine EAN/GTIN
-                ean = t
         i += 1
 
     art = "".join(art_toks)
@@ -1066,6 +1103,7 @@ def parse_block(words):
         "bez": bez,
         "einh": einh,
         "ean": ean,
+        "eans": eans,
         "menge": menge,
         "ep": ep,
         "gp": gp,
@@ -2262,8 +2300,10 @@ def schreibe_ean_csv(rechnungen, csv_pfad):
             continue
         zeilen = []
         for p in r["positionen"]:
-            ean = (p.get("ean") or "").strip()
-            if not ean:
+            ean_liste = [e for e in (p.get("eans") or []) if e]
+            if not ean_liste and (p.get("ean") or "").strip():
+                ean_liste = [p["ean"].strip()]
+            if not ean_liste:
                 continue
             if ist_versand(p["art"], p["bez"]):
                 continue
@@ -2279,7 +2319,14 @@ def schreibe_ean_csv(rechnungen, csv_pfad):
             fach = p.get("fach")
             eff = fach * qty if fach is not None and fach > 1 else qty
             anzahl = scan_bedarf(eff)
-            zeilen.append([r["rnr"], ean, p["bez"], anzahl, _csv_datum(r)])
+            # Zusammengesetzter Artikel mit mehreren EANs (je Teil eine, z.B. Schlauch +
+            # Druckminderer): JEDE EAN wird je Satz einmal verlangt -> eine Zeile je EAN
+            # mit derselben Anzahl; die Bezeichnung bekommt "(Teil i/n)", damit der Packer
+            # am Cockpit sieht, welcher Teil gerade bestaetigt wurde.
+            n_ean = len(ean_liste)
+            for k, ean in enumerate(ean_liste, 1):
+                bez_ean = p["bez"] if n_ean == 1 else "%s (Teil %d/%d)" % (p["bez"], k, n_ean)
+                zeilen.append([r["rnr"], ean, bez_ean, anzahl, _csv_datum(r)])
         # Rechnung aus dem aktuellen Lauf ERSETZT ihre alten Zeilen komplett
         # (auch mit einer leeren Liste, falls inzwischen keine EAN-Position
         # mehr vorhanden waere).

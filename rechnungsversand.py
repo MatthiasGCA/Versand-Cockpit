@@ -39,11 +39,12 @@ from datetime import datetime, timedelta
 from email.message import EmailMessage
 from email.utils import formatdate, make_msgid, formataddr
 
-VERSION = "2026-10-22a"
+VERSION = "2026-10-22b"
 
 RE_AMAZON_NR = re.compile(r"\b\d{3}-\d{7}-\d{7}\b")
 RE_MAIL = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
-RE_RNR_KOPF = re.compile(r"^\s*Rechnung\s*Nr\.?\s*:?\s*(\d{6,8})\b", re.M)
+# "Rechnung Nr. : 1710008" - steht bei vierzeiligen Adressen teils HINTER dem Ortstext derselben Zeile
+RE_RNR_KOPF = re.compile(r"\bRechnung\s*Nr\.?\s*:\s*(\d{6,8})\b")
 FIRMEN_DOMAINS = ("gasecenter-augsburg.de", "gasecenter-onlineshop.de")
 GESPERRTE_PRAEFIXE = ("111", "444")                 # Gutschriften / Auftragsbestaetigungen
 # Belege, die KEINE Kundenrechnung sind (Textmarker im PDF)
@@ -99,7 +100,7 @@ def fremdbeleg_und_mails(text):
     Fremdbeleg = die erste Zeile NACH 'Rechnung Nr.', die weder Mail, Rechnungsnummer noch Feldname ist."""
     zeilen = (text or "").split("\n")
     fremd, mails = "", []
-    idx = next((i for i, z in enumerate(zeilen) if re.match(r"^\s*Rechnung\s*Nr\.?", z)), None)
+    idx = next((i for i, z in enumerate(zeilen) if re.search(r"\bRechnung\s*Nr\.?\s*:", z)), None)
     if idx is not None:
         for z in zeilen[idx + 1: idx + 7]:
             z = z.strip()
@@ -184,7 +185,10 @@ def klassifiziere(pack, rechnung_text):
         return KANAL_UNKLAR, "kein Fremdbeleg (Shop-Nummer/eBay-Name) erkannt", ""
     # Kundenrechnung darf ihren Fremdbeleg nur identisch zeigen
     r_fremd, _ = fremdbeleg_und_mails_rechnung(rtext)
-    if r_fremd and r_fremd != fremd:
+    # (sehr lange eBay-Namen kuerzt Amicron auf der Rechnung - Abkuerzung eines identischen Namens gilt als gleich)
+    kurz, lang = sorted((r_fremd, fremd), key=len)
+    gleich = r_fremd == fremd or (len(kurz) >= 20 and lang.startswith(kurz))
+    if r_fremd and not gleich:
         return KANAL_UNKLAR, "Fremdbeleg auf Rechnung (%s) weicht von Packliste (%s) ab" % (r_fremd, fremd), ""
     if dom in EBAY_DOMAINS:
         if re.fullmatch(r"\d+", fremd):
@@ -200,12 +204,12 @@ def klassifiziere(pack, rechnung_text):
 def fremdbeleg_und_mails_rechnung(text):
     """Fremdbeleg der KUNDENRECHNUNG (steht nach 'Rechnungsdatum:'); '' wenn nicht erkennbar."""
     zeilen = (text or "").split("\n")
-    j = next((i for i, z in enumerate(zeilen) if z.strip().startswith("Rechnungsdatum:")), None)
+    j = next((i for i, z in enumerate(zeilen) if "Rechnungsdatum:" in z), None)
     if j is None:
         return "", []
     for z in zeilen[j + 1: j + 4]:
         z = z.strip()
-        if z.startswith("Rechnungsdatum =") or z.lower() == "rechnung":
+        if "Rechnungsdatum =" in z or z.lower() == "rechnung":
             break                                   # Fremdbeleg-Zeile fehlt (Vorlagentext beginnt)
         if not z:
             continue
@@ -658,6 +662,16 @@ def _selftest():
           klassifiziere(pack("25623", ["a@b.de"], ex="Email@Gasecenter-Augsburg.de"), rechn % "25623")[0], KANAL_SHOP)
     # --- Rechnungsart ---
     check("Rechnung ok", ist_kundenrechnung("Gasecenter\nRechnung Nr. : 1710008\n")[0], True)
+    check("Rechnungsnummer hinter Ortstext derselben Zeile (vierzeilige Adresse, real 1706130)",
+          rechnungsnummer_aus_text("Herrn\nA B\n851309770\nPackstation 150\nDE-28719 Bremen Rechnung Nr. : 1706130\nKunden Nr. : 1\n"), "1706130")
+    check("Fremdbeleg-Block bei verschmolzener Kopfzeile",
+          fremdbeleg_und_mails("DE-28719 Bremen Rechnung Nr. : 1706130\n25623\nkunde@example.org\nSendungsgewicht : 1\n"),
+          ("25623", ["kunde@example.org"]))
+    check("gekuerzter langer eBay-Name auf der Rechnung gilt als gleich",
+          klassifiziere(pack("abenteuer--in--mecklenburg--vorpommern", ["x@members.ebay.com"]),
+                        rechn % "abenteuer--in--mecklenburg--vorpomm")[0], KANAL_EBAY)
+    check("kurzer Namensanfang gilt NICHT als gleich",
+          klassifiziere(pack("abenteuer", ["x@members.ebay.com"]), rechn % "abent")[0], KANAL_UNKLAR)
     check("Gutschrift (Nr 111...)", ist_kundenrechnung("Rechnung Nr. : 1110008")[0], False)
     check("Auftragsbestätigung (444)", ist_kundenrechnung("Rechnung Nr. : 4440008")[0], False)
     check("ohne Nummer", ist_kundenrechnung("Hallo")[0], False)

@@ -27,10 +27,17 @@ explizite Bestaetigung zu verlangen (siehe dortige starte_export()).
 """
 
 import os
+import time
+import hashlib
 from collections import Counter, defaultdict
 from datetime import datetime
 
-VERSION = "2026-10-20a"
+VERSION = "2026-10-26a"
+# 2026-10-26a: Schreiben in die Statistik-Dateien im Netzordner mit WIEDERHOLUNG (Datei z.B. gerade in Excel geoeffnet
+#   oder Netz kurz weg). Klappt es auch dann nicht, wird der Text LOKAL zwischengespeichert (statistik_nachtrag\)
+#   und beim naechsten Schreiben automatisch nachgetragen - vorher gingen die Zeilen still verloren, und damit auch
+#   der Doppel-Label-/Doppel-Verarbeitungsschutz (bereits_exportiert/bereits_verarbeitet lesen die Nachtraege mit).
+#   SCHREIB_WARNUNGEN nennt dem Dashboard die betroffenen Dateien.
 # 2026-10-09a: Stueckfaktor-Tabelle (artikel_stueckfaktor.csv): Verkaufseinheiten (VE) -> Stueck, z.B.
 #   BP-GF-24 (24er Packung) = 24 Stueck. Wird bei jedem Schritt 2 aus den Rechnungen (Feld "fach", explizite
 #   "N-Fach-Artikel"-Marker) fortgeschrieben - Grundlage fuer "Stueck" in der Online-Auswertung, auch fuer
@@ -56,6 +63,78 @@ _VERKAEUFE_HEADER = ("Datum;Rechnungsnummer;Artikelnummer;Bezeichnung;Menge;Einh
 
 _HEADER = "Datum;Carrier;Gewicht_kg;Land;Ausland;Rechnungsnummer\n"
 _ARTIKEL_HEADER = "Datum;Rechnungsnummer;Artikelanzahl\n"
+
+# Lokaler Zwischenspeicher, falls eine Statistik-Datei gerade nicht beschreibbar ist (siehe _haenge_an()).
+NACHTRAG_ORDNER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "statistik_nachtrag")
+SCHREIB_WARNUNGEN = []          # Dateinamen, die in diesem Programmlauf nur nachgetragen werden konnten
+
+
+def _nachtrag_pfad(pfad):
+    """Eigene Nachtragsdatei JE Zielpfad (Name + Kurz-Hash des vollen Pfads - Testdateien gleichen Namens in
+    anderen Ordnern vermischen sich nie mit den echten)."""
+    h = hashlib.md5(os.path.abspath(pfad).lower().encode("utf-8")).hexdigest()[:8]
+    return os.path.join(NACHTRAG_ORDNER, "%s.%s.nachtrag" % (os.path.basename(pfad), h))
+
+
+def _nachtrag_text(pfad):
+    try:
+        with open(_nachtrag_pfad(pfad), encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def _haenge_an(pfad, text, kopf="", kopf_encoding="utf-8", versuche=5, pause=0.5, schlafen=None):
+    """Haengt text an pfad an (neue Datei mit kopf). Liegengebliebene Nachtraege werden zuerst mitgeschrieben.
+    Scheitert das Schreiben auch nach Wiederholungen (Datei in Excel offen, Netz weg ...), wird text LOKAL im
+    Nachtrag gesichert und beim naechsten Aufruf automatisch nachgeholt. Wirft nie. Rueckgabe True = im Ziel."""
+    schlafen = schlafen or time.sleep
+    alt = _nachtrag_text(pfad)
+    for i in range(versuche):
+        try:
+            ordner = os.path.dirname(pfad)
+            if ordner:
+                os.makedirs(ordner, exist_ok=True)
+            neu = not os.path.exists(pfad)
+            with open(pfad, "a", encoding=(kopf_encoding if neu else "utf-8"), newline="") as f:
+                if neu and kopf:
+                    f.write(kopf)
+                f.write(alt + text)
+            if alt:
+                try:
+                    os.remove(_nachtrag_pfad(pfad))
+                except OSError:
+                    try:
+                        open(_nachtrag_pfad(pfad), "w").close()
+                    except OSError:
+                        pass
+            return True
+        except OSError:
+            if i < versuche - 1:
+                schlafen(pause * (i + 1))
+    try:
+        os.makedirs(NACHTRAG_ORDNER, exist_ok=True)
+        with open(_nachtrag_pfad(pfad), "a", encoding="utf-8", newline="") as f:
+            f.write(text)
+    except OSError:
+        pass
+    if os.path.basename(pfad) not in SCHREIB_WARNUNGEN:
+        SCHREIB_WARNUNGEN.append(os.path.basename(pfad))
+    return False
+
+
+def _rohzeilen(pfad, encoding="utf-8"):
+    """Alle Datenzeilen (ohne Kopfzeile) der Datei PLUS noch nicht nachgetragene Zeilen aus dem Nachtrag."""
+    out = []
+    if os.path.exists(pfad):
+        try:
+            with open(pfad, encoding=encoding, errors="replace") as f:
+                next(f, None)
+                out += [z.rstrip("\r\n") for z in f]
+        except OSError:
+            pass
+    out += [z.rstrip("\r") for z in _nachtrag_text(pfad).split("\n") if z.strip()]
+    return out
 
 
 def _de(x):
@@ -106,19 +185,14 @@ def log_lauf(ergebnisse, pfad=STATISTIK_DATEI, jetzt=None, gesperrt=()):
         for g in (b.get("pakete") or [b["gewicht"]]):
             zeilen.append((b, g))
     try:
-        ordner = os.path.dirname(pfad)
-        if ordner:
-            os.makedirs(ordner, exist_ok=True)
-        neu = not os.path.exists(pfad)
-        with open(pfad, "a", encoding="utf-8", newline="") as f:
-            if neu:
-                f.write(_HEADER)
-            for b, gewicht in zeilen:
-                gtxt = ("%.4f" % (gewicht or 0)).replace(".", ",")
-                f.write("%s;%s;%s;%s;%s;%s\n" % (
-                    jetzt.strftime("%Y-%m-%d"), b["carrier"], gtxt,
-                    b["adresse"]["land"] or "", "1" if b["ausland"] else "0",
-                    b["rnr"]))
+        text = ""
+        for b, gewicht in zeilen:
+            gtxt = ("%.4f" % (gewicht or 0)).replace(".", ",")
+            text += "%s;%s;%s;%s;%s;%s\n" % (
+                jetzt.strftime("%Y-%m-%d"), b["carrier"], gtxt,
+                b["adresse"]["land"] or "", "1" if b["ausland"] else "0",
+                b["rnr"])
+        _haenge_an(pfad, text, _HEADER)
     except Exception:        # best effort: JEDER Fehler (nicht nur OSError) - die Statistik darf nie den Export kippen
         return 0
     return len(zeilen)
@@ -151,17 +225,12 @@ def log_artikel(rechnungen, pfad=ARTIKEL_STATISTIK_DATEI, jetzt=None):
         return 0
     jetzt = jetzt or datetime.now()
     try:
-        ordner = os.path.dirname(pfad)
-        if ordner:
-            os.makedirs(ordner, exist_ok=True)
-        neu = not os.path.exists(pfad)
-        with open(pfad, "a", encoding="utf-8", newline="") as f:
-            if neu:
-                f.write(_ARTIKEL_HEADER)
-            for r in rechnungen:
-                n = _artikelanzahl(r)
-                ntxt = str(int(n)) if n == int(n) else ("%.2f" % n).replace(".", ",")
-                f.write("%s;%s;%s\n" % (jetzt.strftime("%Y-%m-%d"), r.get("rnr") or "", ntxt))
+        text = ""
+        for r in rechnungen:
+            n = _artikelanzahl(r)
+            ntxt = str(int(n)) if n == int(n) else ("%.2f" % n).replace(".", ",")
+            text += "%s;%s;%s\n" % (jetzt.strftime("%Y-%m-%d"), r.get("rnr") or "", ntxt)
+        _haenge_an(pfad, text, _ARTIKEL_HEADER)
     except Exception:        # best effort: JEDER Fehler (nicht nur OSError) - die Statistik darf nie den Export kippen
         return 0
     return len(rechnungen)
@@ -195,23 +264,16 @@ def _lies_verkaeufe(pfad):
     """Zeilen der Artikel-Verkaeufe-CSV als Tupel (datum, rnr, art, bez, menge, einheit, ep, gp);
     menge/ep/gp als float bzw. None. Leere Liste, wenn die Datei fehlt/nicht lesbar ist."""
     zeilen = []
-    if not os.path.exists(pfad):
-        return zeilen
 
     def f(x):
         try:
             return float(x.replace(",", "."))
         except ValueError:
             return None
-    try:
-        with open(pfad, encoding="utf-8", errors="replace") as fh:   # kaputtes Byte darf nicht abbrechen
-            next(fh, None)                      # Kopfzeile
-            for z in fh:
-                t = z.rstrip("\n").split(";")
-                if len(t) >= 8 and t[0]:
-                    zeilen.append((t[0], t[1], t[2], t[3], f(t[4]), t[5], f(t[6]), f(t[7])))
-    except OSError:
-        pass
+    for z in _rohzeilen(pfad):                  # inkl. noch nicht nachgetragener Zeilen
+        t = z.split(";")
+        if len(t) >= 8 and t[0]:
+            zeilen.append((t[0], t[1], t[2], t[3], f(t[4]), t[5], f(t[6]), f(t[7])))
     return zeilen
 
 
@@ -292,15 +354,9 @@ def merke_stueckfaktoren(rechnungen, pfad=ARTIKEL_STUECKFAKTOR_DATEI):
     if not neu:
         return 0
     try:
-        ordner = os.path.dirname(pfad)
-        if ordner:
-            os.makedirs(ordner, exist_ok=True)
-        anlegen = not os.path.exists(pfad)
-        with open(pfad, "a", encoding="utf-8-sig" if anlegen else "utf-8", newline="") as f:
-            if anlegen:
-                f.write(_FAKTOR_HEADER)
-            for art, bez, fach in sorted(neu.values()):
-                f.write("%s;%s;%s;%s;auto\n" % (art, bez, _faktor_txt(fach), gruppe_vorschlag(art, fach)))
+        text = "".join("%s;%s;%s;%s;auto\n" % (art, bez, _faktor_txt(fach), gruppe_vorschlag(art, fach))
+                       for art, bez, fach in sorted(neu.values()))
+        _haenge_an(pfad, text, _FAKTOR_HEADER, kopf_encoding="utf-8-sig")
     except Exception:        # best effort: JEDER Fehler (nicht nur OSError) - die Statistik darf nie den Export kippen
         return 0
     return len(neu)
@@ -325,17 +381,11 @@ def log_verkaeufe(rechnungen, pfad=ARTIKEL_VERKAEUFE_DATEI, jetzt=None):
             neu_zeilen += verkaeufe_zeilen(r, jetzt)
         if not neu_zeilen:
             return 0
-        ordner = os.path.dirname(pfad)
-        if ordner:
-            os.makedirs(ordner, exist_ok=True)
-        neu = not os.path.exists(pfad)
-        with open(pfad, "a", encoding="utf-8", newline="") as f:
-            if neu:
-                f.write(_VERKAEUFE_HEADER)
-            for datum, rnr, art, bez, menge, einh, ep, gp in neu_zeilen:
-                f.write("%s;%s;%s;%s;%s;%s;%s;%s\n" % (
-                    datum, rnr, _csv_text(art), _csv_text(bez), _zahl_txt(menge),
-                    _csv_text(einh), _preis_txt(ep), _preis_txt(gp)))
+        text = "".join("%s;%s;%s;%s;%s;%s;%s;%s\n" % (
+            datum, rnr, _csv_text(art), _csv_text(bez), _zahl_txt(menge),
+            _csv_text(einh), _preis_txt(ep), _preis_txt(gp))
+            for datum, rnr, art, bez, menge, einh, ep, gp in neu_zeilen)
+        _haenge_an(pfad, text, _VERKAEUFE_HEADER)
     except Exception:        # best effort: JEDER Fehler (nicht nur OSError) - die Statistik darf nie den Export kippen
         return 0
     return len(neu_zeilen)
@@ -437,17 +487,10 @@ def _lies(pfad):
     """Rohe Zeilen (je eine Liste von Feldern) der Statistik-CSV, Kopfzeile
     uebersprungen. Leere Liste wenn die Datei fehlt oder nicht lesbar ist."""
     zeilen = []
-    if not os.path.exists(pfad):
-        return zeilen
-    try:
-        with open(pfad, encoding="utf-8", errors="replace") as f:
-            next(f, None)                    # Kopfzeile
-            for zeile in f:
-                t = zeile.rstrip("\n").split(";")
-                if len(t) >= 6 and t[0]:
-                    zeilen.append(t)
-    except OSError:
-        pass
+    for zeile in _rohzeilen(pfad):
+        t = zeile.split(";")
+        if len(t) >= 6 and t[0]:
+            zeilen.append(t)
     return zeilen
 
 
@@ -455,17 +498,10 @@ def _lies_artikel(pfad):
     """Rohe Zeilen der Artikel-Statistik-CSV, Kopfzeile uebersprungen. Leere
     Liste wenn die Datei fehlt oder nicht lesbar ist."""
     zeilen = []
-    if not os.path.exists(pfad):
-        return zeilen
-    try:
-        with open(pfad, encoding="utf-8", errors="replace") as f:
-            next(f, None)                    # Kopfzeile
-            for zeile in f:
-                t = zeile.rstrip("\n").split(";")
-                if len(t) >= 3 and t[0]:
-                    zeilen.append(t)
-    except OSError:
-        pass
+    for zeile in _rohzeilen(pfad):
+        t = zeile.split(";")
+        if len(t) >= 3 and t[0]:
+            zeilen.append(t)
     return zeilen
 
 
@@ -590,6 +626,10 @@ def selftest():
         return d
 
     tmp = tempfile.mkdtemp(prefix="carrier_statistik_test_")
+    global NACHTRAG_ORDNER
+    nachtrag_echt = NACHTRAG_ORDNER
+    NACHTRAG_ORDNER = os.path.join(tmp, "nachtrag")          # Tests NIE in den echten Nachtrag schreiben
+    schlaf_echt = time.sleep
     try:
         pfad = os.path.join(tmp, "unterordner", "carrier_statistik.csv")
 
@@ -804,7 +844,43 @@ def selftest():
         with open(rpfad, encoding="utf-8-sig", newline="") as f:
             check("schreibe_ranking_csv(): Excel-CSV mit Kopfzeile + 3 Zeilen",
                   len(f.read().strip().split("\r\n")), 4)
+        # --- Nachtrag: Zieldatei nicht beschreibbar (hier: ein Ordner gleichen Namens) ---
+        time.sleep = lambda x: None
+        npfad = os.path.join(tmp, "gesperrt", "carrier_statistik.csv")
+        os.makedirs(npfad)                                   # open(..., "a") scheitert -> OSError
+        del SCHREIB_WARNUNGEN[:]
+        n = log_lauf([_b("DHL", 2.0, "1709001"), _b("DPD", 0.8, "1709002")], npfad)
+        check("Nachtrag: Zeilen gezaehlt, Warnung gesetzt", (n, SCHREIB_WARNUNGEN), (2, ["carrier_statistik.csv"]))
+        check("Nachtrag: bereits_exportiert sieht die zwischengespeicherten Zeilen",
+              sorted(bereits_exportiert(["1709001", "1709002", "1709003"], npfad)), ["1709001", "1709002"])
+        check("Nachtrag-Datei vorhanden", os.path.exists(_nachtrag_pfad(npfad)), True)
+        os.rmdir(npfad)                                      # Datei wieder beschreibbar
+        n = log_lauf([_b("DHL", 1.0, "1709003")], npfad)
+        with open(npfad, encoding="utf-8") as f:
+            rnrs = [z.rstrip("\n").split(";")[5] for z in f.readlines()[1:]]
+        check("Nachtrag beim naechsten Schreiben nachgeholt (Reihenfolge, keine Dublette)", rnrs,
+              ["1709001", "1709002", "1709003"])
+        check("Nachtrag danach geloescht", os.path.exists(_nachtrag_pfad(npfad)), False)
+        check("bereits_exportiert danach ohne Doppelte",
+              {k: len(v) for k, v in bereits_exportiert(["1709001", "1709003"], npfad).items()}, {"1709001": 1, "1709003": 1})
+        # gleicher Dateiname in anderem Ordner -> eigener Nachtrag
+        check("Nachtrag je vollem Pfad getrennt", _nachtrag_pfad(npfad) != _nachtrag_pfad(pfad), True)
+        # log_verkaeufe idempotent auch ueber den Nachtrag
+        vg = os.path.join(tmp, "vg", "artikel_verkaeufe.csv")
+        os.makedirs(vg)
+        rv1 = {"rnr": "1709100", "datum": "26.10.2026",
+               "positionen": [{"art": "A1", "bez": "x", "menge": 1.0, "ep": 2.0, "gp": 2.0}]}
+        log_verkaeufe([rv1], vg)
+        check("log_verkaeufe: Rechnung im Nachtrag wird nicht doppelt geschrieben", log_verkaeufe([rv1], vg), 0)
+        os.rmdir(vg)
+        rv2 = dict(rv1, rnr="1709101")
+        log_verkaeufe([rv2], vg)
+        check("log_verkaeufe: Nachtrag nach Freigabe genau einmal in der Datei",
+              [t[1] for t in _lies_verkaeufe(vg)], ["1709100", "1709101"])
     finally:
+        time.sleep = schlaf_echt
+        NACHTRAG_ORDNER = nachtrag_echt
+        del SCHREIB_WARNUNGEN[:]
         shutil.rmtree(tmp, ignore_errors=True)
 
     if n_fail:

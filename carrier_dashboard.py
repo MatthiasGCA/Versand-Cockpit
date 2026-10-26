@@ -107,6 +107,8 @@ VERSION = "2026-10-26a"
 #   Einlesen oder Virenscanner; os.replace geht dann nicht). Jetzt: bis zu 6 Wiederholungen mit wachsender Pause
 #   (zusammen ca. 10 s); klappt es dann immer noch nicht, wird der Inhalt direkt ueberschrieben (Leser halten die
 #   Datei mit Schreib-, aber ohne Loesch-Freigabe offen). Erst wenn auch das scheitert, kommt die Fehlermeldung.
+#   Ausserdem: konnte eine Statistik-Datei nicht geschrieben werden (z.B. in Excel geoeffnet), nennt der Fertig-
+#   Dialog sie - die Zeilen sind lokal gesichert und werden beim naechsten Lauf nachgetragen (carrier_statistik).
 # 2026-10-22a: Rechnungsversand (rechnungsversand.py) im Dashboard: Statuszeile "Rechnungsversand ..." (gruen/
 #   orange/rot, Klick oeffnet das Fenster), Fenster mit Ergebnisliste des letzten Laufs, Knoepfe "Pruefen",
 #   "Entwuerfe erstellen" und "Jetzt senden" (nur wenn "modus" in rechnungsversand_config.json = "senden";
@@ -770,6 +772,7 @@ def exportiere_alles(rechnungen, ergebnisse, ausgabe_pfad, archiv_ordner, carrie
         except Exception:
             return 0
 
+    del carrier_statistik.SCHREIB_WARNUNGEN[:]
     kg_geloggt = _stat(carrier_statistik.log_lauf, ergebnisse, gesperrt=gesperrt)
     artikel_geloggt = _stat(carrier_statistik.log_artikel, rechnungen)
     verkaeufe_geloggt = _stat(carrier_statistik.log_verkaeufe, rechnungen)
@@ -778,6 +781,7 @@ def exportiere_alles(rechnungen, ergebnisse, ausgabe_pfad, archiv_ordner, carrie
     except Exception:                                  # Nice-to-have, darf den Export NIE stoeren
         pass
 
+    statistik_nachtrag = list(carrier_statistik.SCHREIB_WARNUNGEN)
     verschoben, archiv_fehler, archiv_ziel = 0, [], None
     if archiv_ordner:
         verschoben, archiv_fehler, archiv_ziel = packliste.archiviere(rechnungen, archiv_ordner)
@@ -789,6 +793,7 @@ def exportiere_alles(rechnungen, ergebnisse, ausgabe_pfad, archiv_ordner, carrie
         "carrier_gesperrt": carrier_gesperrt, "bruecken": bruecken,
         "artikel_geloggt": artikel_geloggt, "verkaeufe_geloggt": verkaeufe_geloggt,
         "archiviert": verschoben, "archiv_fehler": archiv_fehler, "archiv_ziel": archiv_ziel,
+        "statistik_nachtrag": statistik_nachtrag,
     }
 
 
@@ -2162,6 +2167,11 @@ def gui():
                         probleme.append("Nicht erneut in eine Carrier-CSV geschrieben (laut Statistik "
                                         "schon früher exportiert): %s"
                                         % ", ".join(bericht["carrier_gesperrt"]))
+                    if bericht.get("statistik_nachtrag"):
+                        probleme.append("Statistik gerade nicht beschreibbar (%s - evtl. in Excel geöffnet?). "
+                                        "Die Daten sind lokal gesichert und werden beim nächsten Lauf automatisch "
+                                        "nachgetragen - bitte die Datei schließen."
+                                        % ", ".join(bericht["statistik_nachtrag"]))
                     if bericht["anzahl"] and not bericht["carrier_dateien"]:
                         probleme.append("Keine Carrier-CSV geschrieben.")
                     je_carrier = collections.OrderedDict()

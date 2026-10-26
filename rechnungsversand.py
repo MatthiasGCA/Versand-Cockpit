@@ -39,7 +39,7 @@ from datetime import datetime, timedelta
 from email.message import EmailMessage
 from email.utils import formatdate, make_msgid, formataddr
 
-VERSION = "2026-10-22b"
+VERSION = "2026-10-26a"
 
 RE_AMAZON_NR = re.compile(r"\b\d{3}-\d{7}-\d{7}\b")
 RE_MAIL = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
@@ -256,6 +256,18 @@ def lade_protokoll(pfad):
 
 
 def protokolliere(pfad, rnr, status, kanal, empfaenger, pdf, modus):
+    """Eine Zeile ins Sendeprotokoll. Mehrere Versuche (Datei evtl. kurz in Excel offen); scheitert es ganz, wird
+    die Ausnahme weitergereicht - VOR dem Senden heisst das: es wird nicht gesendet (fail-closed)."""
+    for i in range(5):
+        try:
+            return _protokolliere_einmal(pfad, rnr, status, kanal, empfaenger, pdf, modus)
+        except OSError:
+            if i == 4:
+                raise
+            time.sleep(0.5 * (i + 1))
+
+
+def _protokolliere_einmal(pfad, rnr, status, kanal, empfaenger, pdf, modus):
     neu = not os.path.exists(pfad)
     with open(pfad, "a", encoding="utf-8-sig", newline="") as f:
         w = csv.writer(f, delimiter=";", lineterminator="\n")
@@ -536,7 +548,19 @@ def schreibe_status(ausgabe_ordner, status):
     tmp = pfad + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(status, f, ensure_ascii=False, indent=1)
-    os.replace(tmp, pfad)
+    # Das Dashboard liest die Datei alle paar Sekunden - beim Ersetzen kann sie kurz offen sein (WinError 5/32)
+    for i in range(6):
+        try:
+            os.replace(tmp, pfad)
+            return
+        except OSError:
+            time.sleep(0.3 * (i + 1))
+    try:
+        with open(tmp, encoding="utf-8") as q, open(pfad, "w", encoding="utf-8") as z:
+            z.write(q.read())
+        os.remove(tmp)
+    except OSError:
+        pass                                  # Status ist nur Anzeige - der Versand selbst ist protokolliert
 
 
 def _status_aus_ergebnis(res, quelle, fehler=""):

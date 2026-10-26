@@ -51,7 +51,12 @@ try:
 except Exception:
     _HAS_REPORTLAB = False
 # ============================ KONFIGURATION ============================
-VERSION = "2026-10-20b"          # im Fenstertitel sichtbar -> Deployment pruefbar
+VERSION = "2026-10-26a"          # im Fenstertitel sichtbar -> Deployment pruefbar
+# 2026-10-26a: Druck-Protokoll (gedruckt.log) und Statistik (statistik.csv) im Netzordner werden mit WIEDERHOLUNG
+#   geschrieben; ist die Datei gesperrt (z.B. statistik.csv in Excel geoeffnet) oder das Netz kurz weg, wird der
+#   Eintrag LOKAL zwischengespeichert (Ordner "nachtrag" neben dem Programm) und automatisch nachgetragen, sobald
+#   es wieder geht. Vorher brach die Scan-Verarbeitung mit einem Fehler ab und der Eintrag fehlte im Log - nach
+#   einem Neustart war der Doppeldruck-Schutz fuer diese Rechnung weg. Das Laden des Logs liest Nachtraege mit.
 # 2026-10-20b: Sammeldruck (drucke_sammel): Deckblatt + Druckauftrag je DRUCKER statt je Versender.
 #   Laufen zwei Versender auf denselben Drucker (z.B. DHL + DPD auf VerpackungsraumZ) und eine
 #   Sammelgruppe enthaelt Bestellungen mit abweichendem Versender (z.B. Oesterreich), kamen bisher
@@ -1113,6 +1118,9 @@ def aktualisiere_index(z, ordner):
         wieder_da = z.offline
         z.offline = False
         z.offline_seit = None
+        for _p in (DRUCK_LOG, STATISTIK_DATEI):
+            if _nachtrag_text(_p):
+                haenge_an_sicher(_p, "")                # liegengebliebene Eintraege nachtragen
         post_geaendert = lade_post_zuordnung(POST_ZUORDNUNG_CSV)
         lade_sammel_zuordnung(SAMMEL_ZUORDNUNG_CSV)
         lade_mengen_zuordnung(MENGEN_ZUORDNUNG_CSV)
@@ -1306,14 +1314,73 @@ def uebernehme_notbetrieb_daten(notfall_ordner, druck_log, statistik_datei):
     except OSError:
         pass
     return n_log, n_stat
+# ----------------- sicheres Anhaengen an Dateien im Netzordner (mit lokalem Nachtrag) -----------------
+NACHTRAG_ORDNER = os.path.join(_BASIS_ORDNER, "nachtrag")
+_SCHREIB_LOCK = threading.Lock()
+def _nachtrag_pfad(pfad):
+    h = hashlib.md5(os.path.abspath(pfad).lower().encode("utf-8")).hexdigest()[:8]
+    return os.path.join(NACHTRAG_ORDNER, "%s.%s.nachtrag" % (os.path.basename(pfad), h))
+def _nachtrag_text(pfad):
+    try:
+        with open(_nachtrag_pfad(pfad), encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        return ""
+def nachtrag_offen(*pfade):
+    """Basisnamen der Dateien, fuer die noch Eintraege lokal auf das Nachtragen warten."""
+    return [os.path.basename(p) for p in pfade if p and _nachtrag_text(p)]
+def haenge_an_sicher(pfad, text, kopf="", versuche=3, pause=0.2):
+    """Haengt text an pfad an (neue Datei mit kopf). Vorher liegengebliebene Nachtraege werden mitgeschrieben.
+    Kurze Wiederholungen (laeuft im Scan-Ablauf!); scheitert es, wird text lokal gesichert. Wirft nie.
+    Rueckgabe True = im Ziel."""
+    with _SCHREIB_LOCK:
+        alt = _nachtrag_text(pfad)
+        if not alt and not text:
+            return True
+        for i in range(versuche):
+            try:
+                neu = not os.path.exists(pfad)
+                with open(pfad, "a", encoding="utf-8") as f:
+                    if neu and kopf:
+                        f.write(kopf)
+                    f.write(alt + text)
+                if alt:
+                    try:
+                        os.remove(_nachtrag_pfad(pfad))
+                    except OSError:
+                        try:
+                            open(_nachtrag_pfad(pfad), "w").close()
+                        except OSError:
+                            pass
+                return True
+            except OSError:
+                if i < versuche - 1:
+                    time.sleep(pause * (i + 1))
+        if text:
+            try:
+                os.makedirs(NACHTRAG_ORDNER, exist_ok=True)
+                with open(_nachtrag_pfad(pfad), "a", encoding="utf-8") as f:
+                    f.write(text)
+            except OSError:
+                pass
+        return False
 def lade_gedruckt(pfad):
     gedruckt = {}
+    zeilen = []
     if os.path.exists(pfad):
-        with open(pfad, encoding="utf-8") as f:
-            for zeile in f:
-                teile = zeile.strip().split("\t")
-                if teile and teile[0]:
-                    gedruckt[teile[0]] = teile[1] if len(teile) > 1 else "?"
+        for versuch in range(4):                         # kurz gesperrt? (Doppeldruck-Schutz braucht das Log!)
+            try:
+                with open(pfad, encoding="utf-8") as f:
+                    zeilen = f.readlines()
+                break
+            except OSError:
+                zeilen = []
+                time.sleep(0.5 * (versuch + 1))
+    zeilen += _nachtrag_text(pfad).splitlines()          # noch nicht nachgetragene Drucke zaehlen mit
+    for zeile in zeilen:
+        teile = zeile.strip().split("\t")
+        if teile and teile[0]:
+            gedruckt[teile[0]] = teile[1] if len(teile) > 1 else "?"
     return gedruckt
 def lade_gedruckt_heute(pfad):
     """Summe der HEUTE gedruckten Labels (Pakete/Seiten) je Versender aus der
@@ -1321,24 +1388,26 @@ def lade_gedruckt_heute(pfad):
     dem Archivieren erhalten bleibt."""
     heute = datetime.now().strftime("%Y-%m-%d")
     pv = Counter()
+    zeilen = []
     if os.path.exists(pfad):
         try:
             with open(pfad, encoding="utf-8") as f:
                 next(f, None)  # Kopfzeile
-                for zeile in f:
-                    t = zeile.strip().split(";")
-                    if len(t) >= 4 and t[0] == heute:
-                        try:
-                            pakete = int(t[3])
-                        except ValueError:
-                            pakete = 1
-                        pv[t[1]] += pakete
+                zeilen = f.readlines()
         except OSError:
-            pass
+            zeilen = []
+    zeilen += _nachtrag_text(pfad).splitlines()
+    for zeile in zeilen:
+        t = zeile.strip().split(";")
+        if len(t) >= 4 and t[0] == heute:
+            try:
+                pakete = int(t[3])
+            except ValueError:
+                pakete = 1
+            pv[t[1]] += pakete
     return pv
 def merke_gedruckt(pfad, nr):
-    with open(pfad, "a", encoding="utf-8") as f:
-        f.write(f"{nr}\t{datetime.now():%Y-%m-%d %H:%M:%S}\n")
+    haenge_an_sicher(pfad, f"{nr}\t{datetime.now():%Y-%m-%d %H:%M:%S}\n")
 def schreibe_live_status(pfad, daten):
     """Schreibt den Live-Stand atomar (Temp-Datei + os.replace). Jeder Fehler
     (Netzlaufwerk weg, Datei gesperrt) wird verschluckt - der Live-Spiegel darf
@@ -1395,12 +1464,9 @@ def bereinige_druck_log(pfad, tage=DRUCK_LOG_AUFBEWAHRUNG_TAGE):
     except OSError:
         return 0
 def log_statistik(pfad, versender, nr, pakete):
-    neu = not os.path.exists(pfad)
-    with open(pfad, "a", encoding="utf-8") as f:
-        if neu:
-            f.write("Datum;Versender;Rechnungsnummer;Pakete;Uhrzeit\n")
-        jetzt = datetime.now()
-        f.write(f"{jetzt:%Y-%m-%d};{versender};{nr};{pakete};{jetzt:%H:%M:%S}\n")
+    jetzt = datetime.now()
+    haenge_an_sicher(pfad, f"{jetzt:%Y-%m-%d};{versender};{nr};{pakete};{jetzt:%H:%M:%S}\n",
+                     kopf="Datum;Versender;Rechnungsnummer;Pakete;Uhrzeit\n")
 def highscore_tag(pfad):
     """(datum_iso, anzahl) des Tages mit den meisten versendeten Bestellungen.
     Zaehlt EINDEUTIGE Rechnungsnummern je Datum aus der Statistik-CSV (nicht die
@@ -2567,6 +2633,10 @@ def starte_cockpit():
             menge_status_lbl.configure(text="⚠ " + mtxt, fg=ROT)
         # Duplikat-/Verdaechtig-Warnungen (Datei-Handling-Absicherung)
         warn_texte = warnungen_liste(z)
+        _offen = nachtrag_offen(DRUCK_LOG, STATISTIK_DATEI)
+        if _offen:
+            warn_texte = ["%s gerade nicht beschreibbar (Datei geöffnet/Netz?) - Einträge sind lokal gesichert "
+                          "und werden automatisch nachgetragen" % " / ".join(_offen)] + warn_texte
         if NOTBETRIEB:
             warn_texte = ["NOTBETRIEB - lokaler Ordner " + LABEL_ORDNER] + warn_texte
         if not z.offline and str(meld_lbl.cget("text")).startswith("NETZWERK NICHT ERREICHBAR"):

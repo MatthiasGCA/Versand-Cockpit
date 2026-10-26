@@ -101,7 +101,12 @@ from tkinter import messagebox, simpledialog, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-10-22a"
+VERSION = "2026-10-26a"
+# 2026-10-26a: Bruecken-CSVs: "[WinError 5] Zugriff verweigert" beim Ersetzen von mengen_zuordnung.csv im Netzordner
+#   (real 26.10.2026 08:23 - die Datei war in dem Moment von einem anderen Programm geoeffnet, z.B. scan_druck beim
+#   Einlesen oder Virenscanner; os.replace geht dann nicht). Jetzt: bis zu 6 Wiederholungen mit wachsender Pause
+#   (zusammen ca. 10 s); klappt es dann immer noch nicht, wird der Inhalt direkt ueberschrieben (Leser halten die
+#   Datei mit Schreib-, aber ohne Loesch-Freigabe offen). Erst wenn auch das scheitert, kommt die Fehlermeldung.
 # 2026-10-22a: Rechnungsversand (rechnungsversand.py) im Dashboard: Statuszeile "Rechnungsversand ..." (gruen/
 #   orange/rot, Klick oeffnet das Fenster), Fenster mit Ergebnisliste des letzten Laufs, Knoepfe "Pruefen",
 #   "Entwuerfe erstellen" und "Jetzt senden" (nur wenn "modus" in rechnungsversand_config.json = "senden";
@@ -628,6 +633,27 @@ def zeige_pickliste(pfad, oeffnen=None, drucken=None):
     return erg
 
 
+def _ersetze_mit_wiederholung(tmp, ziel, versuche=6, pause=0.5, schlafen=None):
+    """os.replace(tmp, ziel) mit Wiederholungen (Ziel kurz von einem Leser geoeffnet -> WinError 5/32).
+    Rueckfall: Inhalt direkt ueberschreiben und tmp loeschen. Rueckgabe "ersetzt" | "ueberschrieben";
+    wirft OSError, wenn beides scheitert."""
+    import shutil
+    schlafen = schlafen or time.sleep
+    for i in range(versuche):
+        try:
+            os.replace(tmp, ziel)
+            return "ersetzt"
+        except OSError:
+            if i < versuche - 1:
+                schlafen(pause * (i + 1))
+    shutil.copyfile(tmp, ziel)
+    try:
+        os.remove(tmp)
+    except OSError:
+        pass
+    return "ueberschrieben"
+
+
 def kopiere_bruecken(quell_ordner, ziel_ordner):
     """Kopiert die vier Bruecken-CSVs (BRUECKEN_DATEIEN) aus quell_ordner in ziel_ordner (den
     Netzordner, den scan_druck.py ueberwacht) - wie bisher Pickliste_erstellen.bat. Jede Datei
@@ -648,7 +674,7 @@ def kopiere_bruecken(quell_ordner, ziel_ordner):
         tmp = ziel + ".tmp"
         try:
             shutil.copyfile(quelle, tmp)
-            os.replace(tmp, ziel)
+            _ersetze_mit_wiederholung(tmp, ziel)
             erg["kopiert"].append(name)
         except OSError as e:
             erg["fehler"].append("%s: %s" % (name, e))

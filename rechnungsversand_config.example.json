@@ -16,6 +16,7 @@
   "absender_name": "Gasecenter Augsburg",
   "antwort_an": "",
   "bcc": "Dokumente@Gasecenter.info",
+  "test_empfaenger": "",
   "betreff": "Ihre Rechnung {rnr} - Gasecenter Augsburg",
   "html_vorlage": "rechnungsmail_vorlage.html",
   "text": "Sehr geehrte Damen und Herren,\n\nvielen Dank für {bestellung}. Im Anhang dieser E-Mail erhalten Sie Ihre Rechnung Nr. {rnr} vom {rechnungsdatum} als PDF-Datei.\n\nBei Fragen zu Ihrer Rechnung oder Bestellung antworten Sie einfach auf diese E-Mail - wir helfen Ihnen gerne weiter.\n\nMit freundlichen Grüßen\n\nIhr Team vom Gasecenter Augsburg\n\nAugsburger Gase- und Handelsgesellschaft mbH\nKarlsruher Straße 3\n86156 Augsburg\nTel.: 0821/ 21 86 56 7\nwww.Gasecenter-Augsburg.de\nwww.Gasecenter-Onlineshop.de\n\nSitz der Gesellschaft: Augsburg\nRegistergericht: Amtsgericht Augsburg, HRB 23761\nGeschäftsführer: Matthias Maden\n",

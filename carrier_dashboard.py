@@ -932,7 +932,9 @@ def rv_status_text(st, cfg=None, jetzt=None):
     n_ges, n_ent = st.get("gesendet", 0), st.get("entworfen", 0)
     wuerde = st.get("zaehler", {}).get("würde senden", 0)
     unklar, fehler = st.get("unklar", 0), st.get("fehlerzahl", 0)
-    if modus == "senden":
+    if modus == "senden" and str(st.get("zaehler", {})).find("TEST gesendet") >= 0:
+        txt = "Rechnungsversand %s (TEST): %d an Testadresse" % (wann, n_ges)
+    elif modus == "senden":
         txt = "Rechnungsversand %s: %d gesendet" % (wann, n_ges)
     elif modus == "entwurf":
         txt = "Rechnungsversand %s (Entwürfe): %d" % (wann, n_ent)
@@ -1017,7 +1019,7 @@ def _rechnungsversand_dialog(root, rv, cfg, nach_lauf=None):
             if nur_var.get() and rang(z) > 1:
                 continue
             e = z["entscheidung"]
-            tag = ("fehler" if e.startswith("FEHLER") else "gesendet" if e == "gesendet"
+            tag = ("fehler" if e.startswith("FEHLER") else "gesendet" if e == "gesendet" or e.startswith("TEST")
                    else "sendet" if e in ("würde senden", "Entwurf erstellt")
                    else "amazon" if "Amazon" in e or "bereits" in e else "unklar")
             tv.insert("", "end", values=(z["rnr"], z["kanal"], e, z["grund"], z["empfaenger"]), tags=(tag,))
@@ -1076,10 +1078,12 @@ def _rechnungsversand_dialog(root, rv, cfg, nach_lauf=None):
         n_ebay = sum(1 for z in wuerde if z["kanal"] == "EBAY")
         n_amz = sum(1 for z in erg if "Amazon" in z["entscheidung"])
         n_unklar = st.get("unklar", 0)
+        test_an = (cfg.get("test_empfaenger") or "").strip()
+        wohin = ("als TEST an %s (NICHT an die Kunden)" % test_an) if test_an else "an die Kunden"
         if messagebox.askyesno("Rechnungsversand - jetzt senden?",
-                               "%d Rechnung(en) werden JETZT per E-Mail versendet:\n   Onlineshop: %d\n   eBay: %d\n\n"
-                               "Nicht gesendet: Amazon %d, unklar %d.\n\nJetzt senden?"
-                               % (len(wuerde), n_shop, n_ebay, n_amz, n_unklar),
+                               "%d Rechnung(en) werden JETZT per E-Mail %s versendet:\n   Onlineshop: %d\n   "
+                               "eBay: %d\n\nNicht gesendet: Amazon %d, unklar %d.\n\nJetzt senden?"
+                               % (len(wuerde), wohin, n_shop, n_ebay, n_amz, n_unklar),
                                icon="warning", default=messagebox.NO, parent=dlg):
             lauf_async("senden")
 

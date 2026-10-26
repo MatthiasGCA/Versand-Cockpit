@@ -37,6 +37,9 @@ Rechnungs-PDF mit internen Angaben (Lagerort/Kennung) wird nicht gesendet, bei j
    „würde senden“.
 5. Mehrere Tage Modus `"entwurf"` bzw. im Fenster **„Entwürfe erstellen“**: es entstehen fertige `.eml`-Dateien
    (`Ausgabe\Entwuerfe\<Datum>`), die du in Outlook öffnen und ansehen kannst.
+5b. **Testversand über den echten Mailserver:** `"test_empfaenger": "Dokumente@Gasecenter.info"` und Modus `"senden"` –
+   dann gehen ALLE Mails an diese Adresse (Betreff „[TEST für kunde@…] …“), kein Kunde bekommt etwas; das blockiert den
+   späteren echten Versand nicht. Danach `"test_empfaenger": ""`.
 6. Erst danach in der Konfiguration Modus `"senden"`. **Wichtig:** Ab dann die Rechnungen für Onlineshop/eBay **nicht mehr
    zusätzlich** in Amicron per „Belege per Email versenden“ verschicken, sonst bekommen Kunden sie doppelt.
 7. Aufgabenplanung (täglich 15:00), Eingabeaufforderung als Administrator (Pfad anpassen):

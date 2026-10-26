@@ -41,7 +41,9 @@ from datetime import datetime, timedelta
 from email.message import EmailMessage
 from email.utils import formatdate, make_msgid, formataddr
 
-VERSION = "2026-10-27a"
+VERSION = "2026-10-27b"
+# 2026-10-27b: Testversand: ist "test_empfaenger" gesetzt, gehen im Modus "senden" ALLE Mails an diese Adresse statt an
+#   die Kunden (Betreff "[TEST] ..."). Protokoll-Status "testversuch"/"test" - blockiert den spaeteren echten Versand nicht.
 # 2026-10-27a: HTML-Mail mit Firmensignatur (Vorlage rechnungsmail_vorlage.html, Konfig "html_vorlage") plus
 #   Klartext-Teil; data:-Bilder der Vorlage (Logo) werden als eingebettete Bilder (CID) verschickt. Platzhalter
 #   {rnr} {rechnungsdatum} {bestellung} in Betreff, Text und Vorlage ({bestellung} je Kanal: "Ihre Bestellung
@@ -496,7 +498,7 @@ def lauf(cfg, modus=None, jetzt=None, log=print):
         if protokoll.get(rnr) == "gesendet":
             zeile.update(entscheidung="bereits gesendet", grund="laut Protokoll schon versendet")
             continue
-        if protokoll.get(rnr) == "versuch":
+        if protokoll.get(rnr) in ("versuch",):
             zeile.update(entscheidung="NICHT gesendet", grund="früherer Versuch ohne Bestätigung - bitte von Hand prüfen "
                                                               "(wurde die Mail evtl. schon verschickt?)")
             continue
@@ -536,8 +538,11 @@ def lauf(cfg, modus=None, jetzt=None, log=print):
             continue
         # --- Versand / Entwurf ---
         try:
-            msg = baue_mail(cfg, rnr, empf, pdf, kanal, (pack or {}).get("fremdbeleg", ""),
+            test_an = (cfg.get("test_empfaenger") or "").strip()
+            msg = baue_mail(cfg, rnr, test_an or empf, pdf, kanal, (pack or {}).get("fremdbeleg", ""),
                             rechnungsdatum_aus_text(rtext))
+            if test_an:
+                msg.replace_header("Subject", "[TEST für %s] %s" % (empf, msg["Subject"]))
         except Exception as e:
             zeile.update(entscheidung="NICHT gesendet", grund="Mail konnte nicht gebaut werden: %s" % e)
             continue
@@ -551,7 +556,8 @@ def lauf(cfg, modus=None, jetzt=None, log=print):
             zeile["entscheidung"] = "Entwurf erstellt"
             entworfen += 1
         else:
-            protokolliere(prot_pfad, rnr, "versuch", kanal, empf, pdf, modus)     # VOR dem Senden (fail-closed)
+            st_v, st_ok = ("testversuch", "test") if test_an else ("versuch", "gesendet")
+            protokolliere(prot_pfad, rnr, st_v, kanal, test_an or empf, pdf, modus)   # VOR dem Senden (fail-closed)
             try:
                 sende_smtp(cfg, msg)
             except Exception as e:
@@ -561,8 +567,8 @@ def lauf(cfg, modus=None, jetzt=None, log=print):
                 if cfg.get("bei_fehler_abbrechen", True):
                     break
                 continue
-            protokolliere(prot_pfad, rnr, "gesendet", kanal, empf, pdf, modus)
-            zeile["entscheidung"] = "gesendet"
+            protokolliere(prot_pfad, rnr, st_ok, kanal, test_an or empf, pdf, modus)
+            zeile["entscheidung"] = ("TEST gesendet an %s" % test_an) if test_an else "gesendet"
             gesendet += 1
             time.sleep(float(cfg.get("pause_sekunden", 1.0)))
     # Bericht schreiben
@@ -894,6 +900,13 @@ def _selftest():
         res = lauf(cfg, "entwurf")
         check("Entwurf: 3 .eml", sorted(os.path.basename(p) for p in glob.glob(os.path.join(aus, "Entwuerfe", "*", "*.eml"))),
               ["Rechnung_1710010_SHOP.eml", "Rechnung_1710011_EBAY.eml", "Rechnung_1710016_SHOP.eml"])
+        res = lauf(dict(cfg, test_empfaenger="pruef@example.org"), "senden")
+        check("Testversand: 3 Mails, alle an die Testadresse, Betreff [TEST",
+              (len(gefangen), all("To: pruef@example.org" in g for g in gefangen),
+               all("[TEST" in g for g in gefangen)), (3, True, True))
+        check("Testversand blockiert den echten Versand nicht",
+              sorted(set(lade_protokoll(os.path.join(aus, "gesendet.csv")).values())), ["test"])
+        del gefangen[:]
         res = lauf(cfg, "senden")
         check("Senden: 3 Mails", len(gefangen), 3)
         check("Senden: Zaehler", res["gesendet"], 3)

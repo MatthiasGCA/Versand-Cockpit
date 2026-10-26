@@ -44,6 +44,8 @@ Rechnungs-PDF mit internen Angaben (Lagerort/Kennung) wird nicht gesendet, bei j
    Die Aufgabe muss unter dem Benutzer laufen, der Zugriff auf `Ausgangsrechnungen` hat und die Umgebungsvariable besitzt.
 
 ## E-Mail-Text und Signatur
+- **Kontrollkopie:** In der Anfangszeit geht jede Rechnungsmail zusätzlich als Blindkopie (BCC) an
+  `Dokumente@Gasecenter.info` (`"bcc"` in der Konfiguration; der Kunde sieht das nicht). Später einfach leeren: `"bcc": ""`.
 - Die Mail geht als **HTML mit Firmensignatur und Logo** raus (Vorlage `rechnungsmail_vorlage.html`, liegt neben dem
   Programm) plus einem Klartext-Teil (`text` in der Konfiguration) für Mailprogramme ohne HTML.
 - Platzhalter in Betreff, Text und Vorlage: `{rnr}` (Rechnungsnummer), `{rechnungsdatum}`, `{bestellung}` – wird je nach

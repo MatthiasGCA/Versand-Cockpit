@@ -30,8 +30,8 @@ Rechnungs-PDF mit internen Angaben (Lagerort/Kennung) wird nicht gesendet, bei j
    Uhrzeit im Dashboard – die echte Startzeit steht in der Aufgabenplanung, Schritt 7.)
 3. SMTP-Passwort **nicht** in die Datei schreiben, sondern als Windows-Umgebungsvariable
    `RECHNUNGSVERSAND_SMTP_PASSWORT` setzen (Eingabeaufforderung: `setx RECHNUNGSVERSAND_SMTP_PASSWORT "…"`).
-   Exchange Online: für das Postfach muss „Authentifizierter SMTP-Client“ erlaubt sein (ggf. App-Kennwort); Exchange vor
-   Ort: Servername intern, Port 25/587, `sicherheit` = `none` oder `starttls`.
+   Postfach (DomainFactory): `onlinerechnung@gasecenter-onlineshop.de`, SMTP `sslout.de`, Port 465, `sicherheit` = `ssl`
+   (in der Vorlage schon eingetragen; Verbindung am 26.10.2026 geprüft: Server erreichbar, Anmeldung per PLAIN/LOGIN).
 4. Test ohne Versand: im Dashboard auf **„Rechnungsversand“ → „Prüfen (Bericht)“** klicken (oder
    `py rechnungsversand.py --trocken`). Prüfen: Amazon-Rechnungen stehen als „NICHT gesendet (Amazon)“, Shop/eBay als
    „würde senden“.

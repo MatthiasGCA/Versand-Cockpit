@@ -21,7 +21,7 @@ Bestätigung wird **nie** blind wiederholt), Gutschriften/Storno/Duplikate/Auftr
 Rechnungs-PDF mit internen Angaben (Lagerort/Kennung) wird nicht gesendet, bei jedem Fehler wird nicht gesendet.
 
 ## Einrichten (Faktura-PC)
-1. Die Dateien `rechnungsversand.py`, `Rechnungsversand_starten.bat` und `rechnungsversand_config.example.json` in den
+1. Die Dateien `rechnungsversand.py`, `rechnungsmail_vorlage.html`, `Rechnungsversand_starten.bat` und `rechnungsversand_config.example.json` in den
    **Programmordner des Carrier-Dashboards** kopieren (dort, wo `carrier_dashboard.py` liegt) – dann erkennt das
    Dashboard den Rechnungsversand automatisch. Zusätzlich die neue `carrier_dashboard.py` austauschen.
 2. `rechnungsversand_config.example.json` kopieren nach **`rechnungsversand_config.json`** und anpassen:
@@ -42,6 +42,15 @@ Rechnungs-PDF mit internen Angaben (Lagerort/Kennung) wird nicht gesendet, bei j
 7. Aufgabenplanung (täglich 15:00), Eingabeaufforderung als Administrator (Pfad anpassen):
    `schtasks /create /tn "Rechnungsversand" /tr "C:\Packlisten\Rechnungsversand_starten.bat" /sc daily /st 15:00`
    Die Aufgabe muss unter dem Benutzer laufen, der Zugriff auf `Ausgangsrechnungen` hat und die Umgebungsvariable besitzt.
+
+## E-Mail-Text und Signatur
+- Die Mail geht als **HTML mit Firmensignatur und Logo** raus (Vorlage `rechnungsmail_vorlage.html`, liegt neben dem
+  Programm) plus einem Klartext-Teil (`text` in der Konfiguration) für Mailprogramme ohne HTML.
+- Platzhalter in Betreff, Text und Vorlage: `{rnr}` (Rechnungsnummer), `{rechnungsdatum}`, `{bestellung}` – wird je nach
+  Kanal zu „Ihre Bestellung Nr. 25623 in unserem Onlineshop“ bzw. „Ihre Bestellung bei eBay“.
+- Text ändern: `rechnungsmail_vorlage.html` mit einem Editor öffnen (nicht Word), nur die Sätze oben anpassen, Platzhalter
+  stehen lassen. Fehlt die Vorlage, wird **keine** Mail gebaut (Meldung im Bericht).
+- Ansicht: `Beispiel_Rechnungsmail_Shop.html` im Browser bzw. `Beispiel_Rechnungsmail_eBay.eml` in Outlook öffnen.
 
 ## Im Carrier-Dashboard
 - **Statuszeile oben rechts** („Rechnungsversand 15:00: 38 gesendet, 2 unklar“): grün = alles gut, gelb = unklare

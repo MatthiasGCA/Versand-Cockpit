@@ -35,11 +35,17 @@ import time
 import smtplib
 import argparse
 import hashlib
+import base64
+import html as _html
 from datetime import datetime, timedelta
 from email.message import EmailMessage
 from email.utils import formatdate, make_msgid, formataddr
 
-VERSION = "2026-10-26a"
+VERSION = "2026-10-27a"
+# 2026-10-27a: HTML-Mail mit Firmensignatur (Vorlage rechnungsmail_vorlage.html, Konfig "html_vorlage") plus
+#   Klartext-Teil; data:-Bilder der Vorlage (Logo) werden als eingebettete Bilder (CID) verschickt. Platzhalter
+#   {rnr} {rechnungsdatum} {bestellung} in Betreff, Text und Vorlage ({bestellung} je Kanal: "Ihre Bestellung
+#   Nr. 25623 in unserem Onlineshop" / "Ihre Bestellung bei eBay"). Fehlt die Vorlage -> Mail wird NICHT gebaut.
 
 RE_AMAZON_NR = re.compile(r"\b\d{3}-\d{7}-\d{7}\b")
 RE_MAIL = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
@@ -293,7 +299,52 @@ def lade_sperre(pfad):
 # ----------------------------------------------------------------------------------------------
 # Mail bauen / senden
 # ----------------------------------------------------------------------------------------------
-def baue_mail(cfg, rnr, empfaenger, pdf_pfad):
+RE_RECHNUNGSDATUM = re.compile(r"Rechnungsdatum:\s*(\d{2}\.\d{2}\.\d{4})")
+RE_DATA_BILD = re.compile(r'src="data:image/([A-Za-z0-9.+-]+);base64,([A-Za-z0-9+/=\s]+)"')
+
+
+def rechnungsdatum_aus_text(text):
+    m = RE_RECHNUNGSDATUM.search(text or "")
+    return m.group(1) if m else ""
+
+
+def platzhalter(rnr, kanal="", fremdbeleg="", rechnungsdatum=""):
+    if kanal == KANAL_SHOP and fremdbeleg:
+        best = "Ihre Bestellung Nr. %s in unserem Onlineshop" % fremdbeleg
+    elif kanal == KANAL_EBAY:
+        best = "Ihre Bestellung bei eBay"
+    else:
+        best = "Ihre Bestellung"
+    return {"{rnr}": rnr, "{rechnungsdatum}": rechnungsdatum or datetime.now().strftime("%d.%m.%Y"),
+            "{bestellung}": best}
+
+
+def ersetze(text, werte, html_esc=False):
+    for k, v in werte.items():
+        text = text.replace(k, _html.escape(v) if html_esc else v)
+    return text
+
+
+def vorlage_pfad(cfg):
+    p = cfg.get("html_vorlage") or ""
+    if p and not os.path.isabs(p):
+        p = os.path.join(os.path.dirname(os.path.abspath(__file__)), p)
+    return p
+
+
+def html_mit_cid(html_text, domain="gasecenter-augsburg.de"):
+    """data:-Bilder -> cid:-Verweise. Rueckgabe (html, [(bytes, subtype, cid_mit_klammern)])."""
+    bilder = []
+
+    def ers(m):
+        cid = make_msgid(domain=domain)
+        bilder.append((base64.b64decode(re.sub(r"\s+", "", m.group(2))), m.group(1).lower(), cid))
+        return 'src="cid:%s"' % cid[1:-1]
+    return RE_DATA_BILD.sub(ers, html_text), bilder
+
+
+def baue_mail(cfg, rnr, empfaenger, pdf_pfad, kanal="", fremdbeleg="", rechnungsdatum=""):
+    werte = platzhalter(rnr, kanal, fremdbeleg, rechnungsdatum)
     msg = EmailMessage()
     absender = cfg["absender"]
     msg["From"] = formataddr((cfg.get("absender_name", ""), absender)) if cfg.get("absender_name") else absender
@@ -302,10 +353,19 @@ def baue_mail(cfg, rnr, empfaenger, pdf_pfad):
         msg["Bcc"] = cfg["bcc"]
     if cfg.get("antwort_an"):
         msg["Reply-To"] = cfg["antwort_an"]
-    msg["Subject"] = cfg.get("betreff", "Ihre Rechnung Nr. {rnr}").format(rnr=rnr)
+    msg["Subject"] = ersetze(cfg.get("betreff", "Ihre Rechnung Nr. {rnr}"), werte)
     msg["Date"] = formatdate(localtime=True)
     msg["Message-ID"] = make_msgid(domain=absender.split("@", 1)[-1])
-    msg.set_content(cfg.get("text", "Guten Tag,\n\nanbei erhalten Sie Ihre Rechnung Nr. {rnr}.\n").format(rnr=rnr))
+    msg.set_content(ersetze(cfg.get("text", "Guten Tag,\n\nanbei erhalten Sie Ihre Rechnung Nr. {rnr}.\n"), werte))
+    vp = vorlage_pfad(cfg)
+    if vp:
+        with open(vp, encoding="utf-8") as f:            # fehlt die Vorlage -> Fehler -> keine Mail (fail-closed)
+            h = ersetze(f.read(), werte, html_esc=True)
+        h, bilder = html_mit_cid(h, absender.split("@", 1)[-1] or "gasecenter-augsburg.de")
+        msg.add_alternative(h, subtype="html")
+        html_teil = msg.get_payload()[1]
+        for daten, subtyp, cid in bilder:
+            html_teil.add_related(daten, maintype="image", subtype=subtyp, cid=cid)
     with open(pdf_pfad, "rb") as f:
         msg.add_attachment(f.read(), maintype="application", subtype="pdf", filename="Rechnung_%s.pdf" % rnr)
     return msg
@@ -476,7 +536,8 @@ def lauf(cfg, modus=None, jetzt=None, log=print):
             continue
         # --- Versand / Entwurf ---
         try:
-            msg = baue_mail(cfg, rnr, empf, pdf)
+            msg = baue_mail(cfg, rnr, empf, pdf, kanal, (pack or {}).get("fremdbeleg", ""),
+                            rechnungsdatum_aus_text(rtext))
         except Exception as e:
             zeile.update(entscheidung="NICHT gesendet", grund="Mail konnte nicht gebaut werden: %s" % e)
             continue
@@ -684,6 +745,33 @@ def _selftest():
           klassifiziere(pack("svestei_0", ["x@gmail.com"], ex="25662"), rechn % "svestei_0")[0], KANAL_UNKLAR)
     check("eigene Firmenadresse zaehlt nicht als Kunde",
           klassifiziere(pack("25623", ["a@b.de"], ex="Email@Gasecenter-Augsburg.de"), rechn % "25623")[0], KANAL_SHOP)
+    # --- HTML-Mail mit Vorlage ---
+    import tempfile as _tf
+    _d = _tf.mkdtemp()
+    _pdf = os.path.join(_d, "r.pdf")
+    open(_pdf, "wb").write(b"%PDF-1.4 test")
+    _vor = os.path.join(_d, "v.html")
+    open(_vor, "w", encoding="utf-8").write('<p>Danke f&uuml;r {bestellung}, Rechnung {rnr} vom {rechnungsdatum}</p>'
+                                            '<img src="data:image/png;base64,iVBORw0KGgo=">')
+    _cfg = {"absender": "r@example.org", "betreff": "Rechnung {rnr}", "text": "Rechnung {rnr} / {bestellung}",
+            "html_vorlage": _vor}
+    _m = baue_mail(_cfg, "1710010", "k@example.org", _pdf, KANAL_SHOP, "25623", "26.10.2026")
+    _roh = _m.as_string()
+    check("HTML-Mail: Betreff", _m["Subject"], "Rechnung 1710010")
+    check("HTML-Mail: Teile (Text, HTML, Logo, PDF)",
+          [t.get_content_type() for t in _m.walk() if not t.is_multipart()],
+          ["text/plain", "text/html", "image/png", "application/pdf"])
+    _htm = next(t for t in _m.walk() if t.get_content_type() == "text/html").get_content()
+    check("HTML-Mail: Platzhalter ersetzt, Logo als cid",
+          ("Bestellung Nr. 25623 in unserem Onlineshop" in _htm, "1710010" in _htm, "26.10.2026" in _htm,
+           "cid:" in _htm, "data:image" in _htm, "{" in _htm), (True, True, True, True, False, False))
+    check("HTML-Mail: eBay-Text", "Ihre Bestellung bei eBay" in
+          baue_mail(_cfg, "1", "k@members.ebay.com", _pdf, KANAL_EBAY, "name_x").get_body(("plain",)).get_content(), True)
+    try:
+        baue_mail(dict(_cfg, html_vorlage=os.path.join(_d, "fehlt.html")), "1", "k@x.de", _pdf, KANAL_SHOP, "1")
+        check("Fehlende Vorlage -> keine Mail", "gebaut", "Fehler")
+    except OSError:
+        check("Fehlende Vorlage -> keine Mail", "Fehler", "Fehler")
     # --- Rechnungsart ---
     check("Rechnung ok", ist_kundenrechnung("Gasecenter\nRechnung Nr. : 1710008\n")[0], True)
     check("Rechnungsnummer hinter Ortstext derselben Zeile (vierzeilige Adresse, real 1706130)",

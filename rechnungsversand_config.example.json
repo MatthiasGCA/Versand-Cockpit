@@ -1,7 +1,10 @@
 {
   "modus": "bericht",
   "rechnungen_ordner": "\\\\DESKTOP-N2H75H\\Netzwerk\\Ausgangsrechnungen",
-  "packlisten_ordner": ["C:\\Packlisten", "C:\\Packlisten\\Archiv"],
+  "packlisten_ordner": [
+    "C:\\Packlisten",
+    "C:\\Packlisten\\Archiv"
+  ],
   "ausgabe_ordner": "C:\\Rechnungsversand\\Ausgabe",
   "ab_rechnungsnummer": 1710009,
   "lauf_uhrzeit": "15:00",
@@ -13,8 +16,9 @@
   "absender_name": "Gasecenter Augsburg",
   "antwort_an": "",
   "bcc": "",
-  "betreff": "Ihre Rechnung Nr. {rnr} - Gasecenter Augsburg",
-  "text": "Guten Tag,\n\nanbei erhalten Sie Ihre Rechnung Nr. {rnr} als PDF.\n\nVielen Dank für Ihre Bestellung!\n\nMit freundlichen Grüßen\nGasecenter Augsburg\n",
+  "betreff": "Ihre Rechnung {rnr} - Gasecenter Augsburg",
+  "html_vorlage": "rechnungsmail_vorlage.html",
+  "text": "Sehr geehrte Damen und Herren,\n\nvielen Dank für {bestellung}. Im Anhang dieser E-Mail erhalten Sie Ihre Rechnung Nr. {rnr} vom {rechnungsdatum} als PDF-Datei.\n\nBei Fragen zu Ihrer Rechnung oder Bestellung antworten Sie einfach auf diese E-Mail - wir helfen Ihnen gerne weiter.\n\nMit freundlichen Grüßen\n\nMatthias Maden\n\nAugsburger Gase- und Handelsgesellschaft mbH\nKarlsruher Straße 3\n86156 Augsburg\nTel.: 0821/ 21 86 56 7\nwww.Gasecenter-Augsburg.de\nwww.Gasecenter-Onlineshop.de\n\nSitz der Gesellschaft: Augsburg\nRegistergericht: Amtsgericht Augsburg, HRB 23761\nGeschäftsführer: Matthias Maden\n",
   "smtp": {
     "host": "smtp.office365.com",
     "port": 587,

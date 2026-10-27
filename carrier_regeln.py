@@ -58,7 +58,7 @@ Siehe ist_auslands_kleinpaket() und die Konstanten KLEINPAKET_*.
 import html
 import re
 
-VERSION = "2026-10-27a"
+VERSION = "2026-10-27b"
 # 2026-10-20a: Ort in eigener Zeile nach "DE 92237" (neues Lieferadress-Format, Rg 1709625/1709769) wird als Ort erkannt.
 # 2026-10-19a: Deutsche Inseln sind fuer DPD zuschlagspflichtig (hoher Inselzuschlag): Sendungen, die sonst
 #   DPD waeren, gehen per DHL, bis 1 kg als Kleinpaket (siehe DPD_INSEL_PLZ / ist_dpd_insel()).
@@ -219,6 +219,18 @@ _PLZ_IN_ZEILE = re.compile(r"^(?P<vor>.*\S)\s+(?P<plz>\d{5})\s+(?P<ort>\S.*)$")
 # folgt (sonst waere "/" bereits der SPANNEN-Trenner zur naechsten Zahl,
 # siehe "36/6" oder "9-15 /3/12"). Auch ein PUNKT vor dem Buchstaben kommt vor
 # ("unterm bodenberg 2.a", Rechnung 1707529) - wird unten zu "2a" normalisiert.
+# Zieladressen, an die DPD NICHT zustellt (Matthias 2026-10-27, real 1710104 "Postfiliale 511"):
+# Packstation (auch "Pack Station"/"Paketstation"), Postfach, Postnummer, Postfiliale/Post-Filiale,
+# DHL-Filiale/-Paketshop/-Service Point (alle Schreibweisen). Treffer -> DPD wird zu DHL.
+_RE_NICHT_DPD = re.compile(
+    r"pack[\s-]?station|paketstation|postfach|postnummer|\bpost[\s-]?filiale\b"
+    r"|\bdhl[\s-]?(?:filiale|paket[\s-]?shop|service[\s-]?point)", re.I)
+# Abholstellen, bei denen DPD NUR mit DPD-Paketshop geht, DHL-/Hermes-Shops aber nicht: bleibt DPD,
+# bekommt aber einen HINWEIS zur Pruefung (Matthias: "ein DPD Paketshop waere kein Problem, DHL
+# schon oder Hermes").
+_RE_ABHOLSTELLE = re.compile(
+    r"pakets?[\s-]?hop|parcel[\s-]?shop|\bhermes\b|abhol[\s-]?(?:station|stelle|punkt)"
+    r"|post[\s-]?agentur|pick[\s-]?up[\s-]?(?:point|station|shop)", re.I)
 _NR_EINHEIT = r"\d+(?:\s*[/.]?\s*[A-Za-z])?"
 # Auch "+"/"&" verbindet zwei Hausnummern ("Poststrasse 6 + 8", real 1707722 - sonst wurde
 # "Poststrasse 6 +" zur Strasse und nur "8" zur Hausnummer); die Nummer bleibt wie
@@ -318,7 +330,7 @@ def analysiere_adresse(zeilen):
     zl = [z for z in zl if z and re.search(r"\w", z)]
     out = {"name": "", "zusatz": [], "strasse": "", "hausnr": "", "plz": "",
            "ort": "", "ortsteil": "", "land": "", "fehler": [], "hinweise": [],
-           "packstation": False}
+           "packstation": False, "abholstelle": []}
     if not zl:
         out["fehler"].append("Keine Adresse auf der Rechnung erkannt")
         return out
@@ -521,9 +533,13 @@ def analysiere_adresse(zeilen):
                                    "prüfen" % out["strasse"])
         # Postfiliale (DHL "Postfiliale Direkt", real 1710104 "Postfiliale 511") wird wie eine Packstation
         # behandelt: DPD liefert dort nicht (am 2026-10-21 ging fuer 1710104 faelschlich ein DPD-Label raus).
-        if re.search(r"packstation|postfach|postnummer|\bpost[\s-]?filiale\b", strasse_roh, re.I):
+        # Gesucht wird in Strasse UND Zusatzzeilen (Kunden schreiben "DHL Filiale"/"Paketshop 123"
+        # oft in die Zusatzzeile); der NAME wird bewusst nicht durchsucht (Nachname "Hermes").
+        such_text = " ".join([strasse_roh] + list(out["zusatz"]))
+        if _RE_NICHT_DPD.search(such_text):
             out["packstation"] = True
-            out["hinweise"].append("Packstation/Postfach/Postfiliale - bitte manuell prüfen")
+            out["hinweise"].append("Packstation/Postfach/Postfiliale/DHL-Filiale - bitte manuell prüfen")
+        out["abholstelle"] = sorted({m.group(0).lower() for m in _RE_ABHOLSTELLE.finditer(such_text)})
 
     # ">2 Zusatzzeilen"-Hinweis ERST HIER (nicht vor der Strasse/Hausnr-Erkennung
     # oben) pruefen - _HNR_MIT_TEXT haengt bei einer Hausnummer MITTEN in der
@@ -581,7 +597,8 @@ def klasse_nach_gewicht(gewicht):
     return DHL
 
 
-def bestimme_carrier(kennungen, gewicht, land, packstation=False, dhl_zustellung=False, plz=None):
+def bestimme_carrier(kennungen, gewicht, land, packstation=False, dhl_zustellung=False, plz=None,
+                     abholstelle=None):
     """(carrier|None, grund, fehler, hinweise). carrier ist einer aus KLASSEN.
     plz (optional): Zielort-PLZ - eine DPD-Sendung auf eine zuschlagspflichtige Insel geht per DHL."""
     kenn = sorted({k.lower() for k in (kennungen or []) if k and k.lower() in KENNUNG_KLASSE})
@@ -625,6 +642,11 @@ def bestimme_carrier(kennungen, gewicht, land, packstation=False, dhl_zustellung
     if klasse == DPD and land != "DE":
         klasse = DHL
         grund += ", DPD nur Deutschland → DHL"
+    if klasse == DPD and abholstelle:
+        # Bleibt DPD, aber Abholstelle in der Adresse (Paketshop/Hermes/Postagentur/...): nur ein
+        # DPD-Paketshop waere zustellbar, DHL-/Hermes-Shops nicht -> Rueckfrage/Pruefung (Matthias).
+        hinweise.append("Abholstelle in der Adresse (%s) - bei DPD nur ein DPD-Paketshop möglich "
+                        "(DHL-Filiale/Hermes/Postfiliale nicht) - bitte prüfen" % ", ".join(abholstelle))
     if klasse == DHL and packstation and gewicht <= KLEINPAKET_MAX_KG and "pax1" not in kenn:
         # Gilt unabhaengig davon, WARUM es DHL wurde (DPD->DHL-Umschreibung oben
         # oder Gewicht) - bei DHL-Packstationszustellung muss das Produkt im
@@ -859,10 +881,14 @@ def bewerte_rechnung(r):
     hinweise += adr["hinweise"]
     kenn = kennungen_der_rechnung(r)
     gewicht = r.get("sendungsgewicht")
-    dhl_zustellung = bool(re.search(r"packstation|postfiliale|postnummer|postnr",
-                                    " ".join([adr["strasse"]] + list(adr["zusatz"])), re.I))
+    # Briefe/Grossbriefe gehen nicht an Packstation/Postfiliale/DHL-Filiale (ein reines Postfach
+    # ist fuer Briefe dagegen in Ordnung) - dieselben Schreibweisen wie _RE_NICHT_DPD, ohne Postfach.
+    dhl_zustellung = bool(re.search(
+        r"pack[\s-]?station|paketstation|\bpost[\s-]?filiale\b|postnummer|postnr"
+        r"|\bdhl[\s-]?(?:filiale|paket[\s-]?shop|service[\s-]?point)",
+        " ".join([adr["strasse"]] + list(adr["zusatz"])), re.I))
     carrier, grund, f2, h2 = bestimme_carrier(kenn, gewicht, adr["land"], adr["packstation"],
-                                              dhl_zustellung, adr["plz"])
+                                              dhl_zustellung, adr["plz"], adr["abholstelle"])
     # Insel: war es OHNE Inselregel DPD? (dann bis 1 kg DHL-Kleinpaket, siehe unten)
     insel_war_dpd = (carrier == DHL and adr["land"] == "DE" and ist_dpd_insel(adr["plz"])
                      and bestimme_carrier(kenn, gewicht, adr["land"], adr["packstation"],
@@ -1085,6 +1111,37 @@ def selftest():
             "positionen": [{"kennungen": ["pox1"], "lagerorte": ["F5"]}]}
     b_ps = bewerte_rechnung(r_ps)
     check("Rechnung Pox1 an Packstation -> DHL", b_ps["carrier"], DHL)
+
+    def _ab(kenn_, g_, zeilen_):
+        return bewerte_rechnung({"rnr": "1799990", "datei": "x.pdf", "sendungsgewicht": g_,
+                                 "adresse_zeilen": zeilen_,
+                                 "positionen": [{"kennungen": [kenn_], "lagerorte": []}]})
+    # Abholstellen bei DPD: Hinweis (nur DPD-Paketshop moeglich), DHL-Filiale/Packstation -> DHL
+    b_ps1 = _ab("wapo", 0.5, ["A B", "Paketshop 4711", "Hauptstr. 5", "12345 Ort"])
+    check("Wapo + Paketshop in der Zusatzzeile: bleibt DPD, Hinweis, Status warn",
+          (b_ps1["carrier"], any("Abholstelle" in h for h in b_ps1["hinweise"]), b_ps1["status"]),
+          (DPD, True, "warn"))
+    b_he = _ab("wapo", 0.5, ["A B", "Hermes PaketShop", "Hauptstr. 5", "12345 Ort"])
+    check("Hermes PaketShop -> bleibt DPD mit Pruefhinweis",
+          (b_he["carrier"], any("hermes" in h.lower() for h in b_he["hinweise"])), (DPD, True))
+    for z_, n_ in ((["A B", "DHL Filiale 12", "Hauptstr. 5", "12345 Ort"], "DHL Filiale"),
+                   (["A B", "DHL-Filiale", "Hauptstr. 5", "12345 Ort"], "DHL-Filiale"),
+                   (["A B", "DHLFiliale 7", "Hauptstr. 5", "12345 Ort"], "DHLFiliale"),
+                   (["A B", "DHL Paketshop 9", "Hauptstr. 5", "12345 Ort"], "DHL Paketshop"),
+                   (["A B", "Paketstation 133", "12345 Ort"], "Paketstation"),
+                   (["A B", "Pack Station 133", "12345 Ort"], "Pack Station")):
+        b_x = _ab("wapo", 0.5, z_)
+        check("%s -> DPD nicht moeglich, DHL (mit Hinweis)" % n_,
+              (b_x["carrier"], b_x["status"], any("bitte manuell prüfen" in h for h in b_x["hinweise"])),
+              (DHL, "warn", True))
+    b_nm = _ab("wapo", 0.5, ["Peter Hermes", "Hauptstr. 5", "12345 Ort"])
+    check("Nachname Hermes in der Namenszeile: KEIN Abholstellen-Hinweis, bleibt DPD",
+          (b_nm["carrier"], any("Abholstelle" in h for h in b_nm["hinweise"])), (DPD, False))
+    b_pk = _ab("pox1", 0.3, ["A B", "Paketshop 4711", "Hauptstr. 5", "12345 Ort"])
+    check("Abholstellen-Hinweis nur bei DPD (Grossbrief mit Paketshop: kein Hinweis)",
+          (b_pk["carrier"], any("Abholstelle" in h for h in b_pk["hinweise"])), (GROSSBRIEF, False))
+    b_bd = _ab("pox1", 0.3, ["A B", "DHL Filiale 12", "Hauptstr. 5", "12345 Ort"])
+    check("Grossbrief an DHL-Filiale -> DHL (Brief nicht moeglich)", b_bd["carrier"], DHL)
     # Postfiliale (real 1710104, 2026-10-21 faelschlich als DPD-Label raus): wie Packstation -> DHL
     r_pf = {"rnr": "1710104", "datei": "x.pdf", "sendungsgewicht": 0.2512,
             "adresse_zeilen": ["Michal Wolek", "Postfiliale 511", "DE-26188 Edewecht"],

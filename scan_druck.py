@@ -51,7 +51,11 @@ try:
 except Exception:
     _HAS_REPORTLAB = False
 # ============================ KONFIGURATION ============================
-VERSION = "2026-10-26a"          # im Fenstertitel sichtbar -> Deployment pruefbar
+VERSION = "2026-10-27a"          # im Fenstertitel sichtbar -> Deployment pruefbar
+# 2026-10-27a: DHL-Label wurde als DPD erkannt, weil in der EMPFAENGERADRESSE "Im DPD Paketshop" stand (real Re 1710967,
+#   SHIPMENT_LABEL.pdf S. 105/106) - das DPD-Erkennungswort passte, der DPD-Anker "Referenz 1" fehlte -> Seite ohne
+#   Rechnungsnummer, Scan meldete "nicht gefunden". erkenne_profil() nimmt jetzt das Profil, dessen ANKER (Rechnungs-
+#   nummer) tatsaechlich auf der Seite steht; ohne Anker-Treffer hat die Deutsche Post Vorrang, sonst wie bisher.
 # 2026-10-26a: Druck-Protokoll (gedruckt.log) und Statistik (statistik.csv) im Netzordner werden mit WIEDERHOLUNG
 #   geschrieben; ist die Datei gesperrt (z.B. statistik.csv in Excel geoeffnet) oder das Netz kurz weg, wird der
 #   Eintrag LOKAL zwischengespeichert (Ordner "nachtrag" neben dem Programm) und automatisch nachgetragen, sobald
@@ -945,11 +949,19 @@ def _ist_internetmarke(text):
     return bool(re.search(r"\bIM\b", rev)) and \
            bool(re.search(r"\d{2}\.\d{2}\.\d{2}", rev))
 def erkenne_profil(text):
-    """Erstes Profil, dessen 'erkennung' auf den Seitentext passt (oder None).
+    """Profil fuer den Seitentext (oder None). Passen mehrere Erkennungswoerter (z.B. ein DHL-Label mit der
+    Empfaengeradresse "Im DPD Paketshop"), gewinnt das Profil, dessen ANKER (Rechnungsnummer) auf der Seite steht;
+    ohne Anker-Treffer die Deutsche Post (Adressabgleich), sonst das erste passende Profil (bisheriges Verhalten).
     Zusaetzlich: Deutsche-Post-Internetmarke ueber die gespiegelte IM-Zeile."""
-    for prof in VERSENDER_PROFILE:
-        if re.search(prof["erkennung"], text):
+    treffer = [prof for prof in VERSENDER_PROFILE if re.search(prof["erkennung"], text)]
+    for prof in treffer:
+        if prof.get("anker") and re.search(prof["anker"], text):
             return prof
+    for prof in treffer:
+        if prof.get("post_adresse"):
+            return prof
+    if treffer:
+        return treffer[0]
     # Internetmarke/Briefmarke: kein Text-Token vorhanden -> ueber die gespiegelte
     # IM-Zeile erkennen und dem Deutsche-Post-Profil (Adressabgleich) zuordnen.
     # Bewusst NACH den regulaeren Profilen, damit DHL/DPD immer Vorrang haben.

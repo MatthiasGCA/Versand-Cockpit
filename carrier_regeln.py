@@ -58,7 +58,7 @@ Siehe ist_auslands_kleinpaket() und die Konstanten KLEINPAKET_*.
 import html
 import re
 
-VERSION = "2026-10-20a"
+VERSION = "2026-10-27a"
 # 2026-10-20a: Ort in eigener Zeile nach "DE 92237" (neues Lieferadress-Format, Rg 1709625/1709769) wird als Ort erkannt.
 # 2026-10-19a: Deutsche Inseln sind fuer DPD zuschlagspflichtig (hoher Inselzuschlag): Sendungen, die sonst
 #   DPD waeren, gehen per DHL, bis 1 kg als Kleinpaket (siehe DPD_INSEL_PLZ / ist_dpd_insel()).
@@ -519,9 +519,11 @@ def analysiere_adresse(zeilen):
             # Adressen), aber hier liegt die Hausnummer-Erkennung leicht falsch.
             out["hinweise"].append("Straße enthält eine Ziffer (%s) - Hausnummer bitte "
                                    "prüfen" % out["strasse"])
-        if re.search(r"packstation|postfach|postnummer", strasse_roh, re.I):
+        # Postfiliale (DHL "Postfiliale Direkt", real 1710104 "Postfiliale 511") wird wie eine Packstation
+        # behandelt: DPD liefert dort nicht (am 2026-10-21 ging fuer 1710104 faelschlich ein DPD-Label raus).
+        if re.search(r"packstation|postfach|postnummer|\bpost[\s-]?filiale\b", strasse_roh, re.I):
             out["packstation"] = True
-            out["hinweise"].append("Packstation/Postfach - bitte manuell prüfen")
+            out["hinweise"].append("Packstation/Postfach/Postfiliale - bitte manuell prüfen")
 
     # ">2 Zusatzzeilen"-Hinweis ERST HIER (nicht vor der Strasse/Hausnr-Erkennung
     # oben) pruefen - _HNR_MIT_TEXT haengt bei einer Hausnummer MITTEN in der
@@ -609,7 +611,7 @@ def bestimme_carrier(kennungen, gewicht, land, packstation=False, dhl_zustellung
         # DPD liefert nicht an Packstationen/Postfaecher - Matthias bestaetigt
         # (Rechnung 1705540, Wapo -> waere DPD, Packstation -> auf DHL um).
         klasse = DHL
-        grund += ", Packstation/Postfach - DPD nicht möglich → DHL"
+        grund += ", Packstation/Postfach/Postfiliale - DPD nicht möglich → DHL"
     if klasse in (BRIEF, GROSSBRIEF) and dhl_zustellung:
         # Briefe/Grossbriefe koennen NICHT an eine Packstation/Postfiliale (Postnummer)
         # zugestellt werden - nur DHL-Paket/Kleinpaket (real 1707360: Pox1, 0,25 kg,
@@ -1083,6 +1085,25 @@ def selftest():
             "positionen": [{"kennungen": ["pox1"], "lagerorte": ["F5"]}]}
     b_ps = bewerte_rechnung(r_ps)
     check("Rechnung Pox1 an Packstation -> DHL", b_ps["carrier"], DHL)
+    # Postfiliale (real 1710104, 2026-10-21 faelschlich als DPD-Label raus): wie Packstation -> DHL
+    r_pf = {"rnr": "1710104", "datei": "x.pdf", "sendungsgewicht": 0.2512,
+            "adresse_zeilen": ["Michal Wolek", "Postfiliale 511", "DE-26188 Edewecht"],
+            "positionen": [{"kennungen": ["wapo"], "lagerorte": ["Regal 8, E0", "Wapo"]}]}
+    b_pf = bewerte_rechnung(r_pf)
+    check("Postfiliale (1710104): Wapo 0,25 kg -> DHL statt DPD",
+          (b_pf["carrier"], b_pf["adresse"]["packstation"], b_pf["status"]), (DHL, True, "warn"))
+    check("Postfiliale: Hinweise Postfiliale + Kleinpaket, Grund nennt Postfiliale",
+          (any("Postfiliale" in h for h in b_pf["hinweise"]),
+           "Achtung bei DHL auf Kleinpaket abändern" in b_pf["hinweise"], "Postfiliale" in b_pf["grund"]),
+          (True, True, True))
+    for zeilen_, name_ in ((["A B", "Post-Filiale 12", "12345 Ort"], "Post-Filiale"),
+                           (["A B", "Post Filiale 12", "12345 Ort"], "Post Filiale"),
+                           (["A B", "Postfiliale Direkt 511", "12345 Ort"], "Postfiliale Direkt")):
+        check("Erkennung %s -> packstation" % name_, analysiere_adresse(zeilen_)["packstation"], True)
+    check("normale Strassen mit 'Post' bleiben DPD-faehig (kein Fehlalarm)",
+          [analysiere_adresse(["A B", s_, "12345 Ort"])["packstation"]
+           for s_ in ("Postplatz 5", "Poststrasse 12", "Postfilialenweg 3", "Am Postamt 7")],
+          [False, False, False, False])
     a = analysiere_adresse(["Egzona Bllacaku", "12 tür 4", "Rechte Mürzzeile", "AT-8605 Kapfenberg"])
     check("adr real 1708130 (Tuer vor Strasse vertauscht -> Pruefhinweis 'Ziffer in Strasse')",
           any("enthält eine Ziffer" in h for h in a["hinweise"]), True)

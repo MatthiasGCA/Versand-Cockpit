@@ -38,7 +38,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime
 
-VERSION = "2026-10-20a"
+VERSION = "2026-11-04a"
 BASIS = os.path.dirname(os.path.abspath(__file__))
 STANDARD = {
     "url": "https://www.gasecenter-onlineshop.de/vs-ingest.php",
@@ -48,6 +48,7 @@ STANDARD = {
 # Wo nach statistik_upload.py (Token) gesucht wird: zuerst neben diesem Skript,
 # dann die ueblichen Ordner auf dem Lager-PC.
 TOKEN_SUCHORTE = [BASIS, r"C:\VersandStatistik", r"C:\Packlisten"]
+ARTIKEL_ALLE_MIN = 30         # Top-Artikel-Daten (artikel_upload.py) so oft mit hochladen; 0 = aus
 POLL_S = 5                    # so oft nach einer geaenderten Datei sehen
 MAX_ALTER_S = 120             # aelter als das wird NICHT hochgeladen (Cockpit tot -> Seite zeigt das selbst)
 LOG_MAX_BYTES = 300_000       # Log wird bei Ueberschreitung auf die jungen Haelfte gekuerzt
@@ -60,7 +61,10 @@ def lade_config():
     pfad = os.path.join(BASIS, "live_upload_config.json")
     if os.path.exists(pfad):
         with open(pfad, encoding="utf-8-sig") as f:
-            cfg.update({k: v for k, v in json.load(f).items() if isinstance(v, str) and v.strip()})
+            roh = json.load(f)
+            cfg.update({k: v for k, v in roh.items() if isinstance(v, str) and v.strip()})
+            if isinstance(roh.get("artikel_alle_min"), (int, float)):      # 0 = Artikel-Upload aus
+                cfg["artikel_alle_min"] = roh["artikel_alle_min"]
     if not cfg.get("token"):
         for ordner in TOKEN_SUCHORTE:
             kand = os.path.join(ordner, "statistik_upload.py")
@@ -140,6 +144,40 @@ def einmal(cfg, state):
     return "Upload OK (HTTP %s: %s)" % (status, antwort)
 
 
+def artikel_nachlauf(cfg, st, lg):
+    """Laedt alle ARTIKEL_ALLE_MIN Minuten die Top-Artikel-Daten hoch, indem artikel_upload.py (liegt
+    im selben Ordner) einmal ausgefuehrt wird - der Upload der Top-Artikel stand bisher nur als
+    manuell einzurichtende Aufgabe da und blieb deshalb auf dem Stand der ersten Ausfuehrung stehen
+    (Versandstatistik zeigte nach dem 14.10. keine neuen Artikel mehr). artikel_upload ueberspringt
+    selbst, wenn sich nichts geaendert hat. Jeder Fehler wird nur protokolliert (nie den Live-Upload
+    stoeren); Wiederholung der gleichen Meldung hoechstens alle FEHLER_LOG_ABSTAND_S."""
+    try:
+        minuten = float(cfg.get("artikel_alle_min", ARTIKEL_ALLE_MIN))
+    except (TypeError, ValueError):
+        minuten = ARTIKEL_ALLE_MIN
+    if minuten <= 0 or time.time() - st["ts"] < minuten * 60:
+        return
+    st["ts"] = time.time()
+    if not os.path.exists(os.path.join(BASIS, "artikel_upload.py")):
+        return                                         # nicht installiert -> still ueberspringen
+    try:
+        import io
+        import contextlib
+        import artikel_upload
+        puffer = io.StringIO()
+        with contextlib.redirect_stdout(puffer):
+            rc = artikel_upload.main([])
+        zeilen = [z for z in puffer.getvalue().splitlines() if z.strip()]
+        text = ("Artikel-Upload: " + (zeilen[-1] if zeilen else "ok")) if rc == 0 else \
+               "Artikel-Upload FEHLER (Code %s): %s" % (rc, zeilen[-1] if zeilen else "?")
+    except BaseException as e:                         # auch SystemExit/ImportError abfangen
+        text = "Artikel-Upload FEHLER: %s: %s" % (type(e).__name__, e)
+    if text != st.get("letzt") or "FEHLER" in text and time.time() - st.get("log_ts", 0) > FEHLER_LOG_ABSTAND_S:
+        log(text, lg)
+        st["letzt"] = text
+        st["log_ts"] = time.time()
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     nur_einmal = "--once" in argv
@@ -161,7 +199,10 @@ def main(argv=None):
     log("live_upload %s gestartet%s, Quelle: %s" % (VERSION, " (einmalig)" if nur_einmal else "",
                                                      cfg["quelle"]), lg)
     state, letzter_fehler = {}, {}
+    artikel = {"ts": 0.0, "letzt": None}
     while True:
+        if not nur_einmal:
+            artikel_nachlauf(cfg, artikel, lg)       # Top-Artikel-Daten regelmaessig mit hochladen
         try:
             text = einmal(cfg, state)
             if text.startswith("Upload OK") and not letzter_fehler.get("lief_ok"):

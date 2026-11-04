@@ -340,6 +340,18 @@
     if(!prevOk) notes.push('Für den Vorjahreszeitraum ('+dmy(prevVon)+' – '+dmy(prevBis)+') liegen keine Daten vor.');
     if(cur.hasMonth&&!cur.bestOk) notes.push('Bestellungen sind für die monatsgenauen Altdaten nicht verfügbar.');
     if(selKey) notes.push('Der laufende Monat im Verlaufsdiagramm ist noch nicht abgeschlossen.');
+    // Frische der Artikel-Daten sichtbar machen: der "Stand" oben rechts gehoert zur Versandstatistik
+    // (data.json), NICHT zu artikel.json - bleibt der Artikel-Upload stehen, faellt das sonst nicht auf.
+    var gm=/^(\d\d)\.(\d\d)\.(\d{4})/.exec(ART.generated||''), dr=dataRange();
+    if(gm){
+      var genIso=gm[3]+'-'+gm[2]+'-'+gm[1], now=new Date(),
+          heuteIso=now.getFullYear()+'-'+pad(now.getMonth()+1)+'-'+pad(now.getDate()),
+          alterTage=Math.round((parseD(heuteIso)-parseD(genIso))/86400000);
+      var txt='Artikel-Daten: hochgeladen '+esc(ART.generated)+' Uhr'+(dr.last?', Daten bis '+dmy(dr.last):'');
+      notes.unshift(alterTage>=2
+        ? '<span class="warn"><b>'+txt+' &ndash; seit '+alterTage+' Tagen nicht aktualisiert</b> (läuft <code>artikel_upload.py</code> regelmäßig?)</span>'
+        : txt);
+    }
     document.getElementById('anote').innerHTML=notes.join(' &middot; ');
   }
 

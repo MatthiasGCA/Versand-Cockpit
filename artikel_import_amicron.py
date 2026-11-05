@@ -12,6 +12,9 @@ WAS GEZAEHLT WIRD (Regel von Matthias, 2026-10-09):
   * Zusammengesetzter Artikel (Set aus verschiedenen Teilen, z.B. Paella-Schlauch Pr1509mm, Bunsenbrenner + Kartuschen):
     es zaehlt der Artikel selbst, seine Bestandteile fallen weg.
   * normale Artikel: wie auf der Rechnung. Es muss nichts mit Faktoren umgerechnet werden.
+  * Rechnungen mit 0,00 EUR Gesamtumsatz (Rueckblaeufer/Bestandskorrekturen, Gutschriften ohne Mengenverfaelschung,
+    Matthias 2026-11-05) werden nicht gezaehlt; alte Zeilen solcher Rechnungen in artikel_amicron.csv werden beim
+    erneuten Import entfernt.
 
 Eingabe: CSV-Export(e) der Ausgangsrechnungen aus Amicron (Semikolon, Windows-1252 oder UTF-8), erzeugt mit
 amicron/Exportdefinition_Artikelverkaeufe.XML (oder _v2). Die Spalten werden am Namen erkannt:
@@ -61,11 +64,12 @@ import sys
 from collections import Counter, defaultdict
 from datetime import datetime
 
-VERSION = "2026-10-09e"
+VERSION = "2026-11-05d"
 PAKET = r"\\DESKTOP-N2H75H\Netzwerk\Paketscheine"
 STANDARD_ZIEL = PAKET + r"\artikel_amicron.csv"
 TAGE_HEADER = "Datum;Rechnungsnummer;Artikelnummer;Bezeichnung;Menge;Umsatz\n"
 STANDARD_KOMPONENTEN = PAKET + r"\artikel_komponenten.csv"
+STANDARD_ZUSATZ = PAKET + r"\artikel_komponenten_zusatz.csv"
 STANDARD_VERKAEUFE = PAKET + r"\artikel_verkaeufe.csv"
 STANDARD_FAKTOREN = PAKET + r"\artikel_stueckfaktor.csv"
 HEADER = "Monat;Artikelnummer;Bezeichnung;Bestellungen;Menge;Umsatz\n"
@@ -154,6 +158,8 @@ def beleg_gesperrt(rnr):
 
 
 def ist_versand(art, bez):
+    # "VERSANDKOSTENFREI" im Artikeltitel (z.B. Petroleum 20 l) ist KEINE Versandzeile
+    bez = re.sub(r"versandkostenfrei", " ", bez or "", flags=re.I)
     try:
         import packliste
         return packliste.ist_versand(art, bez)
@@ -355,6 +361,17 @@ def vereinige(akt, zusatz):
     return out
 
 
+def lade_komponenten(komp_pfad, faktor_pfad=None, zusatz_pfad=None):
+    """Aktive Set->Bestandteil-Beziehungen: gelernte Tabelle (Vorrang), dann von Hand/abgeleitete Zusatz-Tabelle
+    (artikel_komponenten_zusatz.csv, siehe artikel_sets_ableiten.py), dann Packungen aus der Stueckfaktor-Tabelle."""
+    komp = aktive_komponenten(lies_tabelle(komp_pfad))
+    if zusatz_pfad:
+        komp = vereinige(komp, aktive_komponenten(lies_tabelle(zusatz_pfad)))
+    if faktor_pfad:
+        komp = vereinige(komp, faktor_komponenten(faktor_pfad))
+    return komp
+
+
 def merge_tabellen(alt, neu):
     """Addiert die Zaehler (Rechnungen) beider Tabellen."""
     out = {s: {"n": e["n"], "komp": {x: list(v) for x, v in e["komp"].items()}} for s, e in alt.items()}
@@ -428,7 +445,9 @@ def wende_stueckliste_an(zeilen, akt):
                     erwartet[x] += rt * ms
         for ix, l in enumerate(ls):
             k = nrm(l["art"])
-            if erwartet[k] > 1e-9 and k not in sets:
+            # auch ein Bestandteil, der selbst ein Set ist (verschachtelt: 1176 -> BS-1.7 -> GT-1046), faellt weg;
+            # nur ein Set derselben Rechnung, das nicht erwartet wird, bleibt (erwartet[k] == 0)
+            if erwartet[k] > 1e-9:
                 rest = l["menge"] - erwartet[k]
                 erwartet[k] = max(0.0, erwartet[k] - l["menge"])
                 gewicht = l["menge"] - max(rest, 0.0)
@@ -537,6 +556,18 @@ def lies_export(text, monat=None, komponenten=None, filter_an=True):
     if filter_an:                                   # Stuecklisten-Regel (auch ohne Tabelle: Rueckfall-Regeln)
         (zeilen, info["komp_zeilen"], info["komp_stueck"], info["komp_umsatz"],
          info["pack"]) = wende_stueckliste_an(zeilen, komponenten or {})
+    # Rechnungen mit 0,00 EUR Gesamtumsatz sind Rueckblaeufer/Bestandskorrekturen bzw. Gutschriften ohne Verkauf
+    # (Matthias 2026-11-05): zaehlen weder als Bestellung noch als Stueck.
+    summe = defaultdict(float)
+    for l in zeilen:
+        if l["rnr"]:
+            summe[l["rnr"]] += l["betrag"]
+    null = {r for r, s in summe.items() if abs(s) < 0.005}
+    info["null_rnr"] = null
+    info["null_zeilen"] = sum(1 for l in zeilen if l["rnr"] in null)
+    info["null_stueck"] = sum(l["menge"] for l in zeilen if l["rnr"] in null)
+    if null:
+        zeilen = [l for l in zeilen if l["rnr"] not in null]
     info["zeilen_final"] = zeilen
     # Verdaechtige Reste: Nullpreis-Zeilen und "Master"-Artikel, die nicht als Komponente erkannt wurden
     verd = [l for l in zeilen if not l.get("fest") and (l["betrag"] == 0 or re.search(r"\bmaster\b", l["titel"], re.I))]
@@ -545,9 +576,10 @@ def lies_export(text, monat=None, komponenten=None, filter_an=True):
     return aggregiere(zeilen), info
 
 
-def schreibe_tage(ziel, zeilen, trocken=False):
+def schreibe_tage(ziel, zeilen, trocken=False, entferne=()):
     """Schreibt die Positionen TAGESGENAU nach artikel_amicron.csv (je Rechnung+Artikel eine Zeile). Zeilen bereits
-    vorhandener Rechnungen werden ersetzt. Rueckgabe (neue_rechnungen, geschriebene_zeilen)."""
+    vorhandener Rechnungen werden ersetzt; `entferne` = Rechnungsnummern (z.B. Umsatz 0,00), deren alte Zeilen ohne
+    Ersatz verschwinden. Rueckgabe (neue_rechnungen, geschriebene_zeilen)."""
     agg = {}
     for l in zeilen:
         if not l["rnr"]:
@@ -558,11 +590,12 @@ def schreibe_tage(ziel, zeilen, trocken=False):
         a["menge"] += l["menge"]
         a["umsatz"] += l["betrag"]
     rnrs = {k[0] for k in agg}
+    ersetzen = rnrs | set(entferne)
     behalten = []
     if os.path.exists(ziel):
         with open(ziel, encoding="utf-8-sig") as f:
             next(f, None)
-            behalten = [z for z in f if z.strip() and z.split(";", 2)[1] not in rnrs]
+            behalten = [z for z in f if z.strip() and z.split(";", 2)[1] not in ersetzen]
 
     def zt(x):
         return str(int(x)) if x == int(x) else ("%.2f" % x).replace(".", ",")
@@ -763,6 +796,27 @@ def selftest():
                               "8002;20250105;X-5;Anderes 5er;1;9,00\n8002;20250105;X;Einzel;4;0,00\n")
         check("Rueckfall Prefix-Regel: 50er-Packung -> TS-G125x1 mit 50 Stueck und 16,99 EUR; falsche Menge (X-5 braucht 5) bleibt unveraendert, Nullpreis X faellt weg",
               sorted((k[1], a_["menge"], round(a_["umsatz"], 2)) for k, a_ in rf.items()), [("ts-g125x1", 50.0, 16.99), ("x-5", 1.0, 9.0)])
+        # Rechnungen mit 0,00 EUR Gesamtumsatz (Rueckblaeufer/Gutschrift) zaehlen nicht
+        nz, nzi = lies_export(kopf + "5001;20250105;N1;Normal;2;5,00\n5002;20250105;N1;Ruecklaeufer;3;0,00\n5002;20250105;N2;Ruecklaeufer;1;0,00\n"
+                              "5003;20250106;N3;Verkauf plus Gratis;1;4,00\n5003;20250106;N4;Gratis;1;0,00\n")
+        check("Umsatz-0-Rechnung 5002 faellt komplett weg, 5003 (Umsatz 4) bleibt",
+              (sorted(k[1] for k in nz), nzi["null_rnr"], nzi["null_stueck"]), (["n1", "n3"], {"5002"}, 4.0))
+        nzf = os.path.join(tmp, "nz.csv")
+        schreibe_tage(nzf, parse_export(kopf + "5002;20250105;N1;Ruecklaeufer;3;1,00\n5001;20250105;N1;Normal;2;5,00\n")[0])
+        schreibe_tage(nzf, nzi["zeilen_final"], entferne=nzi["null_rnr"])
+        check("erneuter Import entfernt alte Zeilen der Umsatz-0-Rechnung", [z.split(";")[1] for z in open(nzf, encoding="utf-8").read().strip().split("\n")[1:]], ["5001", "5003"])
+        vf, vfi = lies_export(kopf + "3001;20250105;P1;Petroleum VERSANDKOSTENFREI innerhalb DE;10;7,50\n3001;20250105;;Versandkosten;1;4,90\n")
+        check("VERSANDKOSTENFREI im Titel ist keine Versandzeile, echte Versandkosten schon", (sorted(k[1] for k in vf), vfi["versand"]), (["p1"], 1))
+        # verschachtelte Sets (Kit -> Teil, das selbst Set ist -> Unterteile): nur das oberste Set zaehlt
+        vk = {"k1": {"b1": 1.0, "c1": 1.0}, "b1": {"d1": 2.0, "e1": 1.0}}
+        va, _ = lies_export(kopf + "4001;20250105;K1;Kit;1;19,99\n4001;20250105;B1;Teil B;1;7,50\n4001;20250105;C1;Teil C;1;9,50\n"
+                            "4001;20250105;D1;Unterteil;2;0,00\n4001;20250105;E1;Unterteil;1;0,00\n", komponenten=vk)
+        check("verschachteltes Set: nur K1 bleibt", sorted((k[1], a_["menge"], round(a_["umsatz"], 2)) for k, a_ in va.items()), [("k1", 1.0, 19.99)])
+        vb, _ = lies_export(kopf + "4002;20250105;B1;Teil B einzeln;2;17,98\n4002;20250105;D1;Unterteil;4;0,00\n4002;20250105;E1;Unterteil;2;0,00\n", komponenten=vk)
+        check("ohne Kit-Zeile bleibt B1 als echter Verkauf stehen", sorted((k[1], a_["menge"]) for k, a_ in vb.items()), [("b1", 2.0)])
+        vc, _ = lies_export(kopf + "4003;20250105;K1;Kit;1;19,99\n4003;20250105;B1;Teil B;3;8,99\n4003;20250105;C1;Teil C;1;9,50\n", komponenten=vk)
+        check("Kit + zusaetzlich einzeln gekaufte B1: nur der erwartete Anteil faellt weg",
+              sorted((k[1], a_["menge"], round(a_["umsatz"], 2)) for k, a_ in vc.items()), [("b1", 2.0, 17.98), ("k1", 1.0, 19.99)])
         # Zaehler mehrerer Laeufe addieren
         gem = merge_tabellen(tab, tab)
         check("merge: Rechnungszahlen addiert", (gem["s1"]["n"], gem["s1"]["komp"]["k1"][0]), (tab["s1"]["n"] * 2, tab["s1"]["komp"]["k1"][0] * 2))
@@ -798,6 +852,7 @@ def main(argv=None):
     ap.add_argument("--monat", default=None, help="JJJJ-MM")
     ap.add_argument("--ziel", default=STANDARD_ZIEL, help="artikel_amicron.csv (tagesgenau)")
     ap.add_argument("--komponenten", default=STANDARD_KOMPONENTEN)
+    ap.add_argument("--zusatz", default=STANDARD_ZUSATZ, help="Zusatz-Beziehungen (artikel_sets_ableiten.py / von Hand)")
     ap.add_argument("--verkaeufe", default=STANDARD_VERKAEUFE)
     ap.add_argument("--faktoren", default=STANDARD_FAKTOREN)
     ap.add_argument("--ohne-komponentenfilter", action="store_true")
@@ -845,12 +900,12 @@ def main(argv=None):
 
     komp = None
     if not arg.ohne_komponentenfilter and not arg.zeige_spalten:
-        tab = lies_tabelle(arg.komponenten)
-        komp = aktive_komponenten(tab)
+        komp = lade_komponenten(arg.komponenten, arg.faktoren, arg.zusatz)
         zus = faktor_komponenten(arg.faktoren)
         if zus:
-            komp = vereinige(komp, zus)
             print("Zusaetzlich %d Packungsartikel aus der Stueckfaktor-Tabelle (%s)" % (len(zus), arg.faktoren))
+        if arg.zusatz and os.path.exists(arg.zusatz):
+            print("Zusatz-Beziehungen: %d Sets (%s)" % (len(aktive_komponenten(lies_tabelle(arg.zusatz))), arg.zusatz))
         if komp:
             print("Komponenten-Tabelle: %d Sets, %d Beziehungen (%s)" % (len(komp), sum(len(v) for v in komp.values()), arg.komponenten))
         else:
@@ -859,6 +914,7 @@ def main(argv=None):
 
     gesamt = {}
     alle_zeilen = []
+    null_rnr = set()
     for pfad in arg.dateien:
         text, enc = lies_text(pfad)
         if arg.zeige_spalten:
@@ -884,6 +940,10 @@ def main(argv=None):
         if info["pack"]["sets"]:
             print("    Mehrfachpackungen aufgeloest: %d Packungen -> %.0f Stück Einzelartikel (%.0f EUR Umsatz zugeschlagen)" % (
                 info["pack"]["sets"], info["pack"]["stueck"], info["pack"]["umsatz"]))
+        if info["null_rnr"]:
+            print("    Rechnungen mit 0,00 EUR Umsatz (Rückläufer/Gutschriften) nicht gezählt: %d Rechnungen, %d Zeilen, %.0f Stück" % (
+                len(info["null_rnr"]), info["null_zeilen"], info["null_stueck"]))
+        null_rnr |= info["null_rnr"]
         if info["verdaechtig"]:
             print("    Verbleibend verdächtig (Preis 0 oder 'Master' im Titel, nicht als Komponente gelernt): "
                   "%d Zeilen, %.0f Stück" % (info["verdaechtig"], info["verdaechtig_stueck"]))
@@ -907,7 +967,7 @@ def main(argv=None):
     if not any(a["umsatz"] for a in gesamt.values()):
         print("\nHINWEIS: Der Betrag ist ueberall 0 bzw. fehlt - die Auswertung zeigt dann keinen Umsatz "
               "(Zubehoer-Listen fuer den Amicron-Import haben absichtlich Betrag 0,00).")
-    n_rg, n_z = schreibe_tage(arg.ziel, alle_zeilen, arg.trocken)
+    n_rg, n_z = schreibe_tage(arg.ziel, alle_zeilen, arg.trocken, entferne=null_rnr)
     print("\n%s %d Rechnungen, %d Zeilen -> %s" % ("Trockenlauf:" if arg.trocken else "Geschrieben:", n_rg, n_z, arg.ziel))
     return 0
 

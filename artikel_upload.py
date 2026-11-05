@@ -19,7 +19,19 @@ artikel_historie.csv und werden fuer alle Monate VOR dem ersten Tag mit Tagesdat
 Nur Standardbibliothek. Konfiguration (alles optional) in artikel_upload_config.json neben diesem Skript:
   { "url": "https://www.gasecenter-onlineshop.de/vs-ingest.php",
     "token": "...",                      (sonst wird UPLOAD_TOKEN aus statistik_upload.py gelesen)
-    "verkaeufe_csv": "...", "historie_csv": "...", "log": "..." }
+    "verkaeufe_csv": "...", "historie_csv": "...", "log": "...",
+    "komponenten_csv": "...", "zusatz_csv": "...",
+    "kopie_ordner": "G:\\Mein Drive\\Versandstatistik" }
+
+Ist "kopie_ordner" gesetzt (alter Name "onedrive_ordner" gilt weiter), wird artikel.json zusaetzlich dort abgelegt
+(bei jeder Aenderung bzw. wenn die Kopie fehlt, unabhaengig vom Upload) - gedacht fuer einen synchronisierten Ordner
+(Google Drive fuer Desktop). Daraus liest das woechentliche Briefing (Top-10 Vorwoche / Prognose 4 Wochen) ueber
+Google Drive - ohne Zugangsdaten zum passwortgeschuetzten Webspace.
+
+Umrechnung der Dashboard-Zeilen (fuer Rechnungen, die im Amicron-Export noch fehlen): Mehrfachpackungen und
+Slave-Artikel werden mit den Tabellen artikel_komponenten.csv (gelernt) und artikel_komponenten_zusatz.csv (abgeleitet,
+siehe artikel_sets_ableiten.py) auf den Einzelartikel/Master umgerechnet; Sets aus verschiedenen Teilen (Doppelschlauch,
+Set 396) bleiben als Set stehen. Ohne die Tabellen gilt nur die kleine Stueckfaktor-Tabelle wie bisher.
 
 Aufruf (Aufgabenplanung, z.B. alle 30 Minuten oder taeglich):
     py artikel_upload.py                 (verdichten + hochladen, nur wenn sich etwas geaendert hat)
@@ -39,7 +51,7 @@ import urllib.request
 from collections import defaultdict
 from datetime import datetime, timedelta
 
-VERSION = "2026-10-09b"
+VERSION = "2026-11-05a"
 BASIS = os.path.dirname(os.path.abspath(__file__))
 STANDARD = {
     "url": "https://www.gasecenter-onlineshop.de/vs-ingest.php",
@@ -47,6 +59,8 @@ STANDARD = {
     "amicron_csv": r"\\DESKTOP-N2H75H\Netzwerk\Paketscheine\artikel_amicron.csv",
     "historie_csv": r"\\DESKTOP-N2H75H\Netzwerk\Paketscheine\artikel_historie.csv",
     "stueckfaktor_csv": r"\\DESKTOP-N2H75H\Netzwerk\Paketscheine\artikel_stueckfaktor.csv",
+    "komponenten_csv": r"\\DESKTOP-N2H75H\Netzwerk\Paketscheine\artikel_komponenten.csv",
+    "zusatz_csv": r"\\DESKTOP-N2H75H\Netzwerk\Paketscheine\artikel_komponenten_zusatz.csv",
     "log": r"C:\Packlisten\artikel_upload.log",
 }
 STATE = os.path.join(BASIS, "artikel_upload_state.json")
@@ -124,11 +138,76 @@ def lies_faktor_tabelle(pfad):
     return out
 
 
-def kombiniere(amicron, dashboard, faktoren):
+def nrm(a):
+    return re.sub(r"[^a-z0-9]", "", (a or "").lower())
+
+
+# Schwellen wie in artikel_import_amicron.py (gelernte Tabelle): mindestens so viele Rechnungen mit Set UND
+# Bestandteil, und mindestens dieser Anteil der Rechnungen mit dem Set
+MIN_STUETZE = 2
+MIN_ANTEIL = 0.6
+
+
+def lies_komponenten_tabelle(pfad):
+    """{set: {bestandteil: faktor}} aus artikel_komponenten.csv bzw. artikel_komponenten_zusatz.csv
+    (Set;Komponente;RechnungenKomponente;RechnungenSet;Verhaeltnis), nur Beziehungen, die die Schwellen erreichen."""
+    n_set, zeilen = {}, []
+    if not pfad or not os.path.exists(pfad):
+        return {}
+    with open(pfad, encoding="utf-8-sig") as f:
+        next(f, None)
+        for z in f:
+            t = z.rstrip("\r\n").split(";")
+            if len(t) < 5 or not t[0] or t[0] == "*":
+                continue
+            try:
+                rx, ns, vh = int(t[2]), int(t[3]), float(t[4].replace(",", "."))
+            except ValueError:
+                continue
+            n_set[t[0]] = max(n_set.get(t[0], 0), ns)
+            zeilen.append((t[0], t[1], rx, vh))
+    akt = {}
+    for s, x, rx, vh in zeilen:
+        if rx >= MIN_STUETZE and n_set[s] and rx / n_set[s] >= MIN_ANTEIL:
+            akt.setdefault(s, {})[x] = vh
+    return akt
+
+
+def lade_einzel(komp_pfad, zusatz_pfad, faktoren):
+    """{set: (einzelartikel, faktor)} fuer Sets mit genau EINEM Bestandteil = Mehrfachpackung bzw. Slave -> Master
+    (Matthias: der Einzelartikel/Master zaehlt, z.B. BP-GF-24 = 24 x BP-GF). Sets mit mehreren verschiedenen
+    Bestandteilen (Doppelschlauch, Set 396 ...) bleiben als Set stehen. Reihenfolge: gelernte Tabelle, Zusatz-Tabelle,
+    Stueckfaktor-Tabelle (nur ergaenzend, gelernte Beziehungen haben Vorrang)."""
+    komp = lies_komponenten_tabelle(komp_pfad)
+    for s, v in lies_komponenten_tabelle(zusatz_pfad).items():
+        for x, f in v.items():
+            komp.setdefault(s, {}).setdefault(x, f)
+    basis = {}
+    for art, (fk, gr, bez, orig) in faktoren.items():
+        if gr and fk == 1 and gr.lower() not in basis:
+            basis[gr.lower()] = orig
+    for art, (fk, gr, bez, orig) in faktoren.items():
+        if fk > 1 and gr and gr.lower() in basis and nrm(basis[gr.lower()]) != nrm(orig):
+            komp.setdefault(nrm(orig), {}).setdefault(nrm(basis[gr.lower()]), fk)
+    return {s: next(iter(v.items())) for s, v in komp.items() if len(v) == 1}
+
+
+def kombiniere(amicron, dashboard, faktoren, einzel=None):
     """Amicron-Zeilen (Stueck laut Stueckliste) plus Dashboard-Zeilen NUR fuer Rechnungen, die in amicron fehlen.
-    Dashboard-Packungen werden mit der Stueckfaktor-Tabelle auf den Einzelartikel der Gruppe umgerechnet
-    (Faktor > 1 und Einzelartikel mit Faktor 1 in derselben Gruppe vorhanden); sonst bleibt die Zeile wie sie ist."""
+    Dashboard-Zeilen zeigen den Artikel, wie er auf der Rechnung steht (z.B. die Packung BP-GF-24). Sie werden
+    - mit der Tabelle `einzel` (lade_einzel) auf den Einzelartikel/Master umgerechnet, soweit dessen Schreibweise aus
+      den Daten bekannt ist (hoechstens zwei Stufen), danach
+    - mit der Stueckfaktor-Tabelle (Faktor > 1 und Einzelartikel mit Faktor 1 in derselben Gruppe);
+    sonst bleibt die Zeile wie sie ist."""
+    einzel = einzel or {}
     bekannt = {z[1] for z in amicron}
+    namen = {}                                           # normierte Nr. -> (Schreibweise, Bezeichnung)
+    for z in amicron:
+        namen.setdefault(nrm(z[2]), (z[2], z[3]))
+    for z in dashboard:
+        namen.setdefault(nrm(z[2]), (z[2], z[3]))
+    for art, (fk, gr, bez, orig) in faktoren.items():
+        namen.setdefault(nrm(orig), (orig, bez))
     basis = {}
     for art, (fk, gr, bez, orig) in faktoren.items():
         if gr and fk == 1 and gr.lower() not in basis:
@@ -137,6 +216,16 @@ def kombiniere(amicron, dashboard, faktoren):
     umgerechnet = 0
     for datum, rnr, art, bez, menge, umsatz in dashboard:
         if rnr in bekannt:
+            continue
+        s, m, ziel = nrm(art), menge, None
+        for _ in range(2):
+            e = einzel.get(s)
+            if not e or e[0] == s or e[0] not in namen:
+                break
+            s, m, ziel = e[0], m * e[1], e[0]
+        if ziel:
+            out.append((datum, rnr, namen[ziel][0], namen[ziel][1] or bez, m, umsatz))
+            umgerechnet += 1
             continue
         fk, gr = faktoren.get(art.lower(), (1, "", "", ""))[:2]
         if fk > 1 and gr and gr.lower() in basis and basis[gr.lower()][0].lower() != art.lower():
@@ -271,6 +360,21 @@ def log(msg, pfad):
         pass
 
 
+def kopie_ablegen(roh, ordner, lg):
+    """artikel.json atomar in den Kopie-Ordner (z.B. Google-Drive-Ordner) schreiben (tmp + replace).
+    Fehler stoeren den Upload nie."""
+    try:
+        os.makedirs(ordner, exist_ok=True)
+        ziel = os.path.join(ordner, "artikel.json")
+        tmp = ziel + ".tmp"
+        with open(tmp, "wb") as f:
+            f.write(roh)
+        os.replace(tmp, ziel)
+        log("Kopie OK -> %s" % ziel, lg)
+    except OSError as e:
+        log("FEHLER Kopie (%s): %s" % (ordner, e), lg)
+
+
 def hochladen(roh, url, token):
     req = urllib.request.Request(url + ("&" if "?" in url else "?") + "ziel=artikel", data=roh, method="POST",
                                  headers={"Content-Type": "application/json; charset=utf-8",
@@ -279,19 +383,75 @@ def hochladen(roh, url, token):
         return r.status, r.read().decode("utf-8", "replace")[:200]
 
 
+def selftest():
+    import tempfile
+    ok, fehler = 0, []
+
+    def check(name, ist, soll):
+        nonlocal ok
+        if ist == soll:
+            ok += 1
+        else:
+            fehler.append("%s: erwartet %r, war %r" % (name, soll, ist))
+    tmp = tempfile.mkdtemp()
+    try:
+        kopf = "Set;Komponente;RechnungenKomponente;RechnungenSet;Verhaeltnis\n"
+        gel = os.path.join(tmp, "k.csv")
+        zus = os.path.join(tmp, "z.csv")
+        with open(gel, "w", encoding="utf-8") as f:
+            f.write(kopf + "bpgf24;bpgf;10;10;24,0000\nset396;t244;10;10;1,0000\nset396;s245;10;10;1,0000\n"
+                    "selten;bpgf;1;10;5,0000\n*;rein;9;0;0\nab2;a;10;10;1,0000\n")
+        with open(zus, "w", encoding="utf-8") as f:
+            f.write(kopf + "slave1;master1;6;6;1,0000\nab2;b;5;5;1,0000\n")
+        einzel = lade_einzel(gel, zus, {})
+        check("Packung -> Einzelartikel (gelernte Tabelle)", einzel.get("bpgf24"), ("bpgf", 24.0))
+        check("Slave -> Master aus der Zusatz-Tabelle", einzel.get("slave1"), ("master1", 1.0))
+        check("Set aus 2 Bestandteilen bleibt Set", "set396" in einzel, False)
+        check("zu wenig Stuetze (1 von 10) zaehlt nicht", "selten" in einzel, False)
+        check("Zusatz ergaenzt einen zweiten Bestandteil -> wird Set", "ab2" in einzel, False)
+        dash = [("2026-11-02", "R1", "BP-GF-24", "GermanFire 24", 2, 30.0), ("2026-11-02", "R2", "SET396", "Set", 1, 33.99),
+                ("2026-11-02", "R3", "SLAVE1", "Slave", 3, 9.0), ("2026-11-02", "R4", "NEU-99", "Neu", 1, 5.0)]
+        amic = [("2026-10-01", "A1", "BP-GF", "Sicherheitsbrennpaste", 24, 12.0),
+                ("2026-10-01", "A2", "Master1", "Master Artikel", 1, 3.0)]
+        out, n = kombiniere(amic, dash, {}, einzel)
+        zeilen = {z[1]: z for z in out}
+        check("BP-GF-24 x2 -> 48 x BP-GF, Umsatz bleibt", (zeilen["R1"][2], zeilen["R1"][4], zeilen["R1"][5]), ("BP-GF", 48, 30.0))
+        check("Set 396 bleibt Set", zeilen["R2"][2], "SET396")
+        check("Slave -> Master in der Schreibweise des Bestands", (zeilen["R3"][2], zeilen["R3"][4]), ("Master1", 3))
+        check("unbekannter Artikel bleibt", zeilen["R4"][2], "NEU-99")
+        check("Anzahl umgerechnet", n, 2)
+        out2, _ = kombiniere([], dash, {}, {"bpgf24": ("bpgf", 24.0)})
+        check("Schreibweise des Einzelartikels unbekannt -> keine Umrechnung", [z for z in out2 if z[1] == "R1"][0][2], "BP-GF-24")
+    finally:
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
+    if fehler:
+        print("SELBSTTEST FEHLGESCHLAGEN (%d von %d):" % (len(fehler), ok + len(fehler)))
+        for f in fehler:
+            print("  - " + f)
+        return 1
+    print("Selbsttest OK (%d Pruefungen)" % ok)
+    return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Artikel-Statistik hochladen")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--out", default=None)
     ap.add_argument("--force", action="store_true")
+    ap.add_argument("--selftest", action="store_true")
     arg = ap.parse_args(argv)
+    if arg.selftest:
+        return selftest()
     cfg = lade_config()
     lg = cfg["log"]
     try:
         dash = lies_verkaeufe(cfg["verkaeufe_csv"])
         amic = lies_amicron(cfg["amicron_csv"])
         hist = lies_historie(cfg["historie_csv"])
-        verk, n_umgerechnet = kombiniere(amic, dash, lies_faktor_tabelle(cfg["stueckfaktor_csv"]))
+        fak = lies_faktor_tabelle(cfg["stueckfaktor_csv"])
+        einzel = lade_einzel(cfg["komponenten_csv"], cfg["zusatz_csv"], fak)
+        verk, n_umgerechnet = kombiniere(amic, dash, fak, einzel)
     except OSError as e:
         log("FEHLER beim Lesen: %s" % e, lg)
         return 1
@@ -315,6 +475,9 @@ def main(argv=None):
         alt = json.load(open(STATE, encoding="utf-8")).get("hash")
     except (OSError, ValueError):
         alt = None
+    od = cfg.get("kopie_ordner") or cfg.get("onedrive_ordner")       # alter Name bleibt als Alias
+    if od and (alt != pruef or arg.force or not os.path.exists(os.path.join(od, "artikel.json"))):
+        kopie_ablegen(roh, od, lg)
     if alt == pruef and not arg.force:
         print("unveraendert - kein Upload (%s)" % info)
         return 0

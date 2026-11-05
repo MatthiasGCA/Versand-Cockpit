@@ -17,7 +17,12 @@ Hand ergaenzt/bereinigt werden und ueberlebt ein neues Lernen.
 Aufruf:
     py artikel_sets_ableiten.py export1.csv export2.csv ...            (Vorschau, nichts schreiben)
     py artikel_sets_ableiten.py export1.csv ... --schreibe             (artikel_komponenten_zusatz.csv schreiben)
+    py artikel_sets_ableiten.py export1.csv ... --slave-master         (zusaetzlich 1:1 Slave -> Master: Master zaehlt)
 Optionen: --zusatz DATEI, --min-anteil 0.8, --min-stuetze 3
+
+Master/Slave (Matthias 2026-11-05): Mehrere Artikelnummern derselben Ware; nur der Master hat Bestandsfuehrung und
+Bestelldetails, ein verkaufter Slave leitet den Umsatz per Stueckliste auf den Master. In der Statistik zaehlt der
+MASTER (Variante A). Zusammengesetzte Produkte (Doppelschlauch, Set 396 ...) zaehlen dagegen als Set.
 """
 
 import argparse
@@ -68,6 +73,29 @@ def ist_vielfachpackung(r):
     """Ganzzahliges Vielfaches ab 2 (5er-, 10er-, 24er-Packung ...). Faktor 1 und krumme Faktoren sind unsicher:
     dort kann es sich auch um zwei oft zusammen gekaufte Artikel handeln -> nur zur Pruefung anzeigen."""
     return r >= 2 - 1e-9 and abs(r - round(r)) < 1e-6
+
+
+def titel_aehnlichkeit(a, b):
+    """0..1: wie aehnlich sind zwei Artikeltitel (ohne 'Master', Gross-/Kleinschreibung egal)."""
+    import difflib
+
+    def norm(t):
+        return " ".join(re.sub(r"\bmaster\b", " ", t.lower()).split())
+
+    def woerter(t):
+        return set(re.findall(r"[a-zäöüß0-9]{3,}", norm(t)))
+    wa, wb = woerter(a), woerter(b)
+    # Wortmengen-Anteil (Reihenfolge egal: "1 kg WSG2 Schweissstaebe" ~ "Schweissstaebe WSG2 ... kg") oder Zeichenfolge
+    wort = len(wa & wb) / min(len(wa), len(wb)) if wa and wb else 0.0
+    return max(wort, difflib.SequenceMatcher(None, norm(a), norm(b)).ratio())
+
+
+def ist_slave_master(t, anzahl_je_x, min_stuetze=5, min_anteil=0.95, min_aehnlich=0.45):
+    """1:1-Beziehung Slave X -> Master Y (dieselbe Ware, andere Artikelnummer): Faktor 1, fast immer zusammen,
+    X hat nur diesen einen Bestandteil und die Titel sind aehnlich (sonst ist es ein Set aus verschiedenen Produkten)."""
+    _s, x, _y, r, n_paar, n_x, tx, ty = t
+    return (abs(r - 1.0) < 1e-6 and n_paar >= min_stuetze and n_paar / n_x >= min_anteil
+            and anzahl_je_x[x] == 1 and titel_aehnlichkeit(tx, ty) >= min_aehnlich)
 
 
 def leite_ab(rg, verd, min_stuetze=MIN_STUETZE, min_anteil=MIN_ANTEIL, bekannt=None):
@@ -133,6 +161,8 @@ def main(argv=None):
     ap.add_argument("--zusatz", default=imp.STANDARD_ZUSATZ)
     ap.add_argument("--min-anteil", type=float, default=MIN_ANTEIL)
     ap.add_argument("--min-stuetze", type=int, default=MIN_STUETZE)
+    ap.add_argument("--slave-master", action="store_true",
+                    help="auch 1:1-Beziehungen Slave -> Master uebernehmen (Master zaehlt in der Statistik)")
     ap.add_argument("--schreibe", action="store_true")
     arg = ap.parse_args(argv)
     komp = imp.lade_komponenten(imp.STANDARD_KOMPONENTEN, imp.STANDARD_FAKTOREN, arg.zusatz)
@@ -140,15 +170,23 @@ def main(argv=None):
     verd = verdaechtige(arg.dateien, komp)
     treffer = leite_ab(rg, verd, arg.min_stuetze, arg.min_anteil, komp)
     sicher = [t for t in treffer if ist_vielfachpackung(t[3])]
-    unsicher = [t for t in treffer if not ist_vielfachpackung(t[3])]
-    print("%d Rechnungen, %d verdaechtige Artikel, %d Beziehungen abgeleitet (%d Vielfachpackungen, %d zur Pruefung)\n" % (
-        len(rg), len(verd), len(treffer), len(sicher), len(unsicher)))
+    slaves = []
+    if arg.slave_master:
+        je_x = collections.Counter(t[1] for t in treffer)
+        slaves = [t for t in treffer if not ist_vielfachpackung(t[3]) and ist_slave_master(t, je_x)]
+        sicher = sicher + slaves
+    unsicher = [t for t in treffer if t not in sicher]
+    print("%d Rechnungen, %d verdaechtige Artikel, %d Beziehungen abgeleitet (%d Vielfachpackungen, %d Slave->Master 1:1, %d zur Pruefung)\n" % (
+        len(rg), len(verd), len(treffer), len(sicher) - len(slaves), len(slaves), len(unsicher)))
 
     def zeige(liste):
         for s, x, y, r, n_paar, n_x, tx, ty in liste:
             print("%7.0f Stk  %-16s -> %-14s x%-7s (%d von %d Rechnungen)  %s | %s" % (s, x, y, r, n_paar, n_x, tx[:30], ty[:30]))
     print("VIELFACHPACKUNGEN (werden uebernommen):")
-    zeige(sicher)
+    zeige([t for t in sicher if t not in slaves])
+    if arg.slave_master:
+        print("\nSLAVE -> MASTER 1:1 (Master zaehlt, Slave-Zeile faellt weg; werden uebernommen):")
+        zeige(slaves)
     print("\nZUR PRUEFUNG (Faktor 1 / krumm - NICHT uebernommen; bei Bedarf von Hand in die Zusatz-Datei):")
     zeige(unsicher)
     if arg.schreibe:

@@ -101,7 +101,9 @@ from tkinter import messagebox, simpledialog, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-10-26a"
+VERSION = "2026-11-06a"
+# 2026-11-06a: Rechnungsversand-Rueckfrage zeigt zusaetzlich "Sonstige" (neuer Kanal im Rechnungsversand: jede einzelne echte
+#   Kundenadresse ausser Amazon-Adressen).
 # 2026-10-26a: Bruecken-CSVs: "[WinError 5] Zugriff verweigert" beim Ersetzen von mengen_zuordnung.csv im Netzordner
 #   (real 26.10.2026 08:23 - die Datei war in dem Moment von einem anderen Programm geoeffnet, z.B. scan_druck beim
 #   Einlesen oder Virenscanner; os.replace geht dann nicht). Jetzt: bis zu 6 Wiederholungen mit wachsender Pause
@@ -1076,14 +1078,15 @@ def _rechnungsversand_dialog(root, rv, cfg, nach_lauf=None):
             return
         n_shop = sum(1 for z in wuerde if z["kanal"] == "SHOP")
         n_ebay = sum(1 for z in wuerde if z["kanal"] == "EBAY")
+        n_sonst = len(wuerde) - n_shop - n_ebay
         n_amz = sum(1 for z in erg if "Amazon" in z["entscheidung"])
         n_unklar = st.get("unklar", 0)
         test_an = (cfg.get("test_empfaenger") or "").strip()
         wohin = ("als TEST an %s (NICHT an die Kunden)" % test_an) if test_an else "an die Kunden"
         if messagebox.askyesno("Rechnungsversand - jetzt senden?",
                                "%d Rechnung(en) werden JETZT per E-Mail %s versendet:\n   Onlineshop: %d\n   "
-                               "eBay: %d\n\nNicht gesendet: Amazon %d, unklar %d.\n\nJetzt senden?"
-                               % (len(wuerde), wohin, n_shop, n_ebay, n_amz, n_unklar),
+                               "eBay: %d\n   Sonstige: %d\n\nNicht gesendet: Amazon %d, unklar %d.\n\nJetzt senden?"
+                               % (len(wuerde), wohin, n_shop, n_ebay, n_sonst, n_amz, n_unklar),
                                icon="warning", default=messagebox.NO, parent=dlg):
             lauf_async("senden")
 

@@ -5,15 +5,18 @@ liest die Rechnungs-PDFs aus `Ausgangsrechnungen` und verschickt sie gesammelt p
 Onlineshop- und eBay-Kunden.
 
 ## Wie Amazon sicher ausgeschlossen wird
-Die E-Mail-Adresse und der Fremdbeleg stehen auf der **Packliste** (Rechnungsnummer = Verbindung). Es wird nur
-**positiv** erkannt (Prüfung an 1.741 echten Packlisten: Amazon 1.298 / eBay 366 / Shop 77, keine Mischfälle):
+**Regel (seit 2026-11-06a): Es entscheidet die E-Mail-Adresse.** Gesendet wird an jede einzelne echte Kundenadresse –
+nur **nie an eine Amazon-Adresse** (`…@marketplace.amazon.de` o. Ä.), weil die über das Amazon-Nachrichtensystem läuft.
+Hat eine Amazon-Bestellung ausnahmsweise eine echte Kundenadresse, darf die Rechnung gesendet werden.
+Die Adresse und der Fremdbeleg stehen auf der **Packliste** (Rechnungsnummer = Verbindung):
 
-| Kanal | Erkennung (alles muss stimmen) | Aktion |
+| Kanal | Erkennung | Aktion |
 |---|---|---|
-| **Onlineshop** | Fremdbeleg = genau 4–6 Ziffern **und** genau eine Kunden-Adresse (kein Marktplatz) | senden |
-| **eBay** | genau eine Adresse `@members.ebay.com` **und** Fremdbeleg ist ein Name | senden |
-| **Amazon** | irgendwo Amazon-Bestellnummer (`123-1234567-1234567`), das Wort „Amazon“ oder eine Marketplace-Adresse – in Packliste **oder** Rechnung | **nie senden** |
-| alles andere | keine Packliste, keine/mehrere Adressen, Fremdbeleg weicht ab, … | **nicht senden**, im Bericht melden |
+| **Onlineshop** | genau eine Kunden-Adresse **und** Fremdbeleg = genau 4–6 Ziffern | senden |
+| **eBay** | genau eine Adresse `@members.ebay.com` | senden |
+| **Sonstige** | genau eine andere echte Kunden-Adresse (kein Amazon) | senden |
+| **Amazon** | eine Adresse mit „amazon“/„marketplace“ in Packliste oder Rechnung – **oder** ein Amazon-Merkmal (Bestellnummer/Wort) und keine einzelne echte Adresse | **nie senden** (ruhig, kein Hinweis) |
+| **unklar** | keine Packliste, keine oder mehrere Adressen, Fremdbeleg der Rechnung weicht von der Packliste ab | **nicht senden**, im Bericht melden |
 
 Weitere Sicherungen: Pflicht-Startnummer `ab_rechnungsnummer` (keine alten Rechnungen), Höchstzahl Mails je Lauf,
 `nie_senden.txt` (eine Rechnungsnummer pro Zeile), Sendeprotokoll `gesendet.csv` (nie doppelt; ein Versuch ohne

@@ -11,10 +11,10 @@ Ablauf (taeglich, z.B. 15:00 per Windows-Aufgabenplanung):
      - irrefuehrenden - Dateinamen). Gutschriften, Storno, Duplikate, Auftragsbestaetigungen u.a. werden ignoriert.
   2. Zu jeder Rechnungsnummer die zugehoerige PACKLISTE suchen (dort stehen Fremdbeleg und E-Mail-Adresse des
      Kunden; auf der Kundenrechnung steht keine Adresse).
-  3. Klassifizieren (siehe klassifiziere()) - NUR POSITIV: gesendet wird ausschliesslich, wenn die Rechnung
-     eindeutig als Onlineshop (4-6-stellige Shop-Nummer + normale Kundenadresse) oder eBay (eBay-Relay-Adresse
-     @members.ebay.com + eBay-Name) erkannt wird UND nirgends ein Amazon-Merkmal vorkommt. Alles andere
-     (unklar, keine Packliste, Zweifel) wird NICHT gesendet und im Bericht aufgelistet.
+  3. Klassifizieren (siehe klassifiziere()): es entscheidet die E-Mail-Adresse. Gesendet wird, wenn genau EINE echte
+     Kundenadresse vorliegt (Onlineshop, eBay-Relay @members.ebay.com oder sonstige) - nie an eine Amazon-Adresse
+     (marketplace.amazon.de usw.). Alles andere (keine Packliste, keine/mehrere Adressen, Fremdbeleg weicht ab)
+     wird NICHT gesendet und im Bericht aufgelistet.
   4. Modus "bericht": nur Bericht schreiben. "entwurf": zusaetzlich fertige .eml-Dateien ablegen (in Outlook
      zu oeffnen). "senden": per SMTP versenden und protokollieren.
 
@@ -41,7 +41,12 @@ from datetime import datetime, timedelta
 from email.message import EmailMessage
 from email.utils import formatdate, make_msgid, formataddr
 
-VERSION = "2026-10-27b"
+VERSION = "2026-11-06a"
+# 2026-11-06a: Regel (Matthias): Es entscheidet die E-MAIL-ADRESSE. Gesendet wird an jede einzelne echte Kundenadresse,
+#   nur nie an eine Amazon-Adresse (amazon/marketplace), weil die ueber das Amazon-Nachrichtensystem laeuft. Amazon-
+#   Bestellnummer/Wort 'Amazon' im Text blockieren nicht mehr, wenn eine echte Adresse da ist. Neuer Kanal SONSTIGE
+#   (echte Adresse, weder eBay-Relay noch Shop-Nummer). Weiter UNKLAR (nie gesendet): keine Packliste, keine/mehrere
+#   Adressen, Fremdbeleg Rechnung <> Packliste.
 # 2026-10-27b: Testversand: ist "test_empfaenger" gesetzt, gehen im Modus "senden" ALLE Mails an diese Adresse statt an
 #   die Kunden (Betreff "[TEST] ..."). Protokoll-Status "testversuch"/"test" - blockiert den spaeteren echten Versand nicht.
 # 2026-10-27a: HTML-Mail mit Firmensignatur (Vorlage rechnungsmail_vorlage.html, Konfig "html_vorlage") plus
@@ -63,7 +68,7 @@ INTERN_MARKER = re.compile(r"Lagerort\s*:|Sendungsgewicht\s*:|^\s*(pax1|pox1|brx
 EBAY_DOMAINS = ("members.ebay.com",)
 MARKTPLATZ_WOERTER = ("amazon", "ebay", "marketplace", "members.")
 
-KANAL_SHOP, KANAL_EBAY, KANAL_AMAZON, KANAL_UNKLAR = "SHOP", "EBAY", "AMAZON", "UNKLAR"
+KANAL_SHOP, KANAL_EBAY, KANAL_AMAZON, KANAL_UNKLAR, KANAL_SONST = "SHOP", "EBAY", "AMAZON", "UNKLAR", "SONSTIGE"
 
 
 # ----------------------------------------------------------------------------------------------
@@ -163,34 +168,43 @@ def amazon_signale(*texte):
     return sorted(set(gef))
 
 
-def klassifiziere(pack, rechnung_text):
-    """(kanal, grund, empfaenger). kanal: SHOP | EBAY | AMAZON | UNKLAR. Nur SHOP und EBAY duerfen gesendet werden.
+def ist_amazon_adresse(m):
+    """Amazon-Kaeuferadressen (marketplace.amazon.de u.a.): ueber sie laeuft das Amazon-Nachrichtensystem - dorthin
+    darf NIE eine Rechnungsmail gehen."""
+    m = (m or "").lower()
+    return "amazon" in m or "marketplace" in m
 
-    Regeln (alle muessen erfuellt sein):
-      Hart AMAZON:  irgendwo (Packliste, Rechnung, Adresse) Amazon-Bestellnummer, das Wort 'amazon' oder eine
-                    Marketplace-Adresse -> AMAZON, nie senden.
-      SHOP:  Fremdbeleg ist genau eine 4-6-stellige Zahl UND genau eine Kundenadresse UND die Adresse ist weder
-             Marktplatz- noch Firmenadresse.
-      EBAY:  genau eine Adresse @members.ebay.com UND Fremdbeleg ist ein Name (kein reiner Zahlen-/Amazon-Wert).
-      Sonst: UNKLAR (Mehrdeutigkeit, fehlende/mehrere Adressen, fehlende Packliste, ...).
+
+def klassifiziere(pack, rechnung_text):
+    """(kanal, grund, empfaenger). kanal: SHOP | EBAY | SONSTIGE | AMAZON | UNKLAR. AMAZON und UNKLAR werden nie gesendet.
+
+    Regel (seit 2026-11-06a, Matthias): ENTSCHEIDEND IST DIE E-MAIL-ADRESSE. Gesendet wird an jede einzelne echte
+    Kundenadresse - nur nicht an eine Amazon-Adresse (marketplace.amazon.de usw.), denn die laeuft ueber das
+    Amazon-Nachrichtensystem. Hat eine Amazon-Bestellung ausnahmsweise eine echte Kundenadresse, ist das erlaubt.
+      AMAZON:   eine Adresse mit 'amazon'/'marketplace' kommt in Packliste oder Rechnung vor - ODER es gibt ein
+                Amazon-Merkmal (Bestellnummer/Wort) und keine einzelne echte Kundenadresse -> nie senden.
+      UNKLAR:   keine Packliste, keine oder mehrere Kundenadressen, oder der Fremdbeleg der Rechnung weicht von
+                dem der Packliste ab (dann passt die Packliste evtl. nicht zur Rechnung) -> nie senden.
+      EBAY:     Adresse @members.ebay.com.
+      SHOP:     Fremdbeleg ist genau eine 4-6-stellige Zahl (Onlineshop-Bestellnummer).
+      SONSTIGE: jede andere echte Kundenadresse.
     """
     if not pack:
         return KANAL_UNKLAR, "keine zugehörige Packliste gefunden (E-Mail-Adresse unbekannt)", ""
     ptext, rtext = pack.get("text", ""), rechnung_text or ""
     sig = amazon_signale(ptext, rtext)
-    if sig:
-        return KANAL_AMAZON, "Amazon-Merkmal: " + ", ".join(sig), ""
     alle = pack.get("alle_mails") or []
-    if any(any(w in m for w in ("amazon", "marketplace")) for m in alle):
+    # Adressen auch aus dem Rechnungstext pruefen (dort steht normalerweise keine, aber sicher ist sicher)
+    if any(ist_amazon_adresse(m) for m in list(alle) + alle_kundenmails(rtext)):
         return KANAL_AMAZON, "Amazon-/Marketplace-Adresse", ""
     fremd = (pack.get("fremdbeleg") or "").strip()
     mails = pack.get("mails") or []
     if len(alle) != 1 or len(set(mails)) != 1 or mails[0] != alle[0]:
+        if sig:                        # Amazon-Merkmal und keine einzelne echte Adresse -> Amazon (nie senden, ruhig)
+            return KANAL_AMAZON, "Amazon-Merkmal: " + ", ".join(sig), ""
         return KANAL_UNKLAR, "keine eindeutige einzelne Kunden-E-Mail-Adresse (%d gefunden)" % len(alle), ""
     mail = alle[0]
     dom = mail.split("@", 1)[1]
-    if not fremd:
-        return KANAL_UNKLAR, "kein Fremdbeleg (Shop-Nummer/eBay-Name) erkannt", ""
     # Kundenrechnung darf ihren Fremdbeleg nur identisch zeigen
     r_fremd, _ = fremdbeleg_und_mails_rechnung(rtext)
     # (sehr lange eBay-Namen kuerzt Amicron auf der Rechnung - Abkuerzung eines identischen Namens gilt als gleich)
@@ -198,15 +212,12 @@ def klassifiziere(pack, rechnung_text):
     gleich = r_fremd == fremd or (len(kurz) >= 20 and lang.startswith(kurz))
     if r_fremd and not gleich:
         return KANAL_UNKLAR, "Fremdbeleg auf Rechnung (%s) weicht von Packliste (%s) ab" % (r_fremd, fremd), ""
+    zusatz = (" [Amazon-Merkmal: %s, aber echte Kundenadresse]" % ", ".join(sig)) if sig else ""
     if dom in EBAY_DOMAINS:
-        if re.fullmatch(r"\d+", fremd):
-            return KANAL_UNKLAR, "eBay-Adresse, aber Fremdbeleg ist eine Zahl", ""
-        return KANAL_EBAY, "eBay-Relay-Adresse + eBay-Name '%s'" % fremd, mail
+        return KANAL_EBAY, ("eBay-Relay-Adresse, Fremdbeleg '%s'" % fremd) + zusatz, mail
     if re.fullmatch(r"\d{4,6}", fremd):
-        if any(w in dom for w in MARKTPLATZ_WOERTER):
-            return KANAL_UNKLAR, "Shop-Nummer, aber Marktplatz-Adresse (%s)" % dom, ""
-        return KANAL_SHOP, "Onlineshop-Nummer %s + Kundenadresse" % fremd, mail
-    return KANAL_UNKLAR, "Fremdbeleg '%s' / Adresse '%s' passen zu keinem sicher erkannten Kanal" % (fremd, dom), ""
+        return KANAL_SHOP, "Onlineshop-Nummer %s + Kundenadresse%s" % (fremd, zusatz), mail
+    return KANAL_SONST, "Kundenadresse, Fremdbeleg '%s'%s" % (fremd or "-", zusatz), mail
 
 
 def fremdbeleg_und_mails_rechnung(text):
@@ -725,30 +736,46 @@ def _selftest():
     check("Amazon (Nr + marketplace)", k("305-9853395-4797960", ["j5nv1s6ywkx9ywl@marketplace.amazon.de"]), KANAL_AMAZON)
     check("eBay (Name + members.ebay.com)", k("clerprem_de", ["0090fee3be64c33e1a7c@members.ebay.com"]), KANAL_EBAY)
     check("Shop (Nummer + Kundenmail)", k("25623", ["thorsten.gottlieb@st-tiefbau.de"]), KANAL_SHOP)
-    # --- Sicherheit: Amazon-Merkmal ueberall blockiert ---
-    check("Amazon-Nr auf der Rechnung obwohl Packliste nach eBay aussieht",
-          klassifiziere(pack("clerprem_de", ["x@members.ebay.com"]), rechn % "305-9853395-4797960")[0], KANAL_AMAZON)
-    check("Amazon-Nr irgendwo in der Packliste", k("clerprem_de", ["x@members.ebay.com"], ex="Ref 305-9853395-4797960"), KANAL_AMAZON)
-    check("Wort Amazon in Packliste", k("25623", ["a@b.de"], ex="per Amazon bestellt"), KANAL_AMAZON)
+    # --- Sicherheit: Amazon-ADRESSE blockiert immer (Regel seit 2026-11-06a: die Adresse entscheidet) ---
     check("Shop-Nr aber Amazon-Adresse", k("25623", ["a@marketplace.amazon.de"]), KANAL_AMAZON)
     check("Amazon-Adresse anderer Domain amazon.com", k("25623", ["a@amazon.com"]), KANAL_AMAZON)
     check("eBay-Name aber Amazon-Marketplace-Mail", k("clerprem_de", ["a@marketplace.amazon.de"]), KANAL_AMAZON)
+    check("Amazon-Adresse + zweite echte Adresse -> Amazon (nie senden)",
+          k("305-9853395-4797960", ["a@marketplace.amazon.de", "k@gmx.de"]), KANAL_AMAZON)
+    check("Amazon-Adresse nur im Rechnungstext", klassifiziere(pack("25623", ["a@b.de"]),
+          (rechn % "25623") + "\nkontakt: x@marketplace.amazon.de\n")[0], KANAL_AMAZON)
+    # --- Amazon-Merkmal OHNE Amazon-Adresse ---
+    check("Amazon-Nr im Fremdbeleg, keine Adresse -> Amazon (ruhig, nie senden)",
+          k("305-9853395-4797960", []), KANAL_AMAZON)
+    check("Amazon-Nr im Fremdbeleg, zwei echte Adressen -> Amazon (nie senden)",
+          k("305-9853395-4797960", ["a@b.de", "c@d.de"]), KANAL_AMAZON)
+    check("Amazon-Nr im Fremdbeleg, EINE echte Adresse -> darf gesendet werden (Matthias 06.11.)",
+          k("305-9853395-4797960", ["kunde@gmx.de"]), KANAL_SONST)
+    check("Wort Amazon in Packliste, echte Adresse -> SHOP", k("25623", ["a@b.de"], ex="per Amazon bestellt"), KANAL_SHOP)
+    check("Amazon-Nr irgendwo in der Packliste, eBay-Adresse -> EBAY",
+          k("clerprem_de", ["x@members.ebay.com"], ex="Ref 305-9853395-4797960"), KANAL_EBAY)
+    check("Amazon-Nr nur auf der Rechnung, Packliste anders -> unklar (Fremdbeleg weicht ab)",
+          klassifiziere(pack("clerprem_de", ["x@members.ebay.com"]), rechn % "305-9853395-4797960")[0], KANAL_UNKLAR)
+    check("Grund nennt Amazon-Merkmal bei echter Adresse",
+          "Amazon-Merkmal" in klassifiziere(pack("305-9853395-4797960", ["kunde@gmx.de"]),
+                                            rechn % "305-9853395-4797960")[1], True)
     # --- Zweifel -> UNKLAR ---
     check("keine Mail", k("25623", []), KANAL_UNKLAR)
     check("zwei Mails", k("25623", ["a@b.de", "c@d.de"]), KANAL_UNKLAR)
-    check("kein Fremdbeleg", klassifiziere(pack("", ["a@b.de"]), rechn % "")[0], KANAL_UNKLAR)
-    check("normaler Name + normale Mail (kein eBay) -> unklar", k("hans_mueller", ["h@gmx.de"]), KANAL_UNKLAR)
-    check("Zahl zu kurz (3 Stellen) + Mail -> unklar", k("123", ["h@gmx.de"]), KANAL_UNKLAR)
-    check("Zahl zu lang (7 Stellen) + Mail -> unklar", k("1234567", ["h@gmx.de"]), KANAL_UNKLAR)
-    check("eBay-Mail aber Zahl als Fremdbeleg -> unklar", k("25623", ["x@members.ebay.com"]), KANAL_UNKLAR)
-    check("Shop-Mail mit 'members.' Domain -> unklar", k("25623", ["x@members.example.org"]), KANAL_UNKLAR)
+    check("kein Fremdbeleg, echte Adresse -> SONSTIGE", klassifiziere(pack("", ["a@b.de"]), rechn % "")[0], KANAL_SONST)
+    check("normaler Name + normale Mail (kein eBay) -> SONSTIGE", k("hans_mueller", ["h@gmx.de"]), KANAL_SONST)
+    check("Zahl zu kurz (3 Stellen) + Mail -> SONSTIGE", k("123", ["h@gmx.de"]), KANAL_SONST)
+    check("Zahl zu lang (7 Stellen) + Mail -> SONSTIGE", k("1234567", ["h@gmx.de"]), KANAL_SONST)
+    check("eBay-Mail mit Zahl als Fremdbeleg -> EBAY", k("25623", ["x@members.ebay.com"]), KANAL_EBAY)
+    check("Shop-Nr + Mail anderer Domain mit 'members.' -> SHOP", k("25623", ["x@members.example.org"]), KANAL_SHOP)
     check("Fremdbeleg Rechnung weicht ab -> unklar", klassifiziere(pack("25623", ["a@b.de"]), rechn % "25999")[0], KANAL_UNKLAR)
     check("keine Packliste -> unklar", klassifiziere(None, "x")[0], KANAL_UNKLAR)
     check("Rechnung ohne Fremdbeleg-Zeile bleibt ok (Vorlagentext wird nicht als Fremdbeleg gelesen)",
           klassifiziere(pack("25623", ["a@b.de"]),
                         "Rechnungsdatum: 20.10.2026\nRechnungsdatum = Lieferdatum falls\nnicht anders angegeben\n")[0], KANAL_SHOP)
-    check("eBay-Name + normale Mail + Shop-Nr (Historie, 2 Fremdbeleg-Zeilen) -> unklar (manuell)",
-          klassifiziere(pack("svestei_0", ["x@gmail.com"], ex="25662"), rechn % "svestei_0")[0], KANAL_UNKLAR)
+    check("eBay-Name + normale Mail + Shop-Nr (Historie, 2 Fremdbeleg-Zeilen) -> echte Adresse -> SONSTIGE",
+          klassifiziere(pack("svestei_0", ["x@gmail.com"], ex="25662"), rechn % "svestei_0")[0], KANAL_SONST)
+    check("SONSTIGE: Platzhalter {bestellung} neutral", platzhalter("1", KANAL_SONST, "abc")["{bestellung}"], "Ihre Bestellung")
     check("eigene Firmenadresse zaehlt nicht als Kunde",
           klassifiziere(pack("25623", ["a@b.de"], ex="Email@Gasecenter-Augsburg.de"), rechn % "25623")[0], KANAL_SHOP)
     # --- HTML-Mail mit Vorlage ---
@@ -829,7 +856,8 @@ def _selftest():
                    "Gasecenter, Karlsruher Strasse 3"])
         for rnr, fremd, mail in (("1710010", "25623", "kunde@example.org"), ("1710011", "clerprem_de", "a1@members.ebay.com"),
                                  ("1710012", "305-9853395-4797960", "zz@marketplace.amazon.de"),
-                                 ("1710013", "hans_x", "h@gmx.de"), ("1710015", "25700", "k2@example.org")):
+                                 ("1710013", "hans_x", "h@gmx.de c@gmx.de"),    # zwei Adressen -> unklar
+                                 ("1710015", "25700", "k2@example.org")):
             rechnung(rnr, fremd)
             packl(rnr, fremd, mail)
         rechnung("1710014", "25623")                      # ohne Packliste

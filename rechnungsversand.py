@@ -41,7 +41,11 @@ from datetime import datetime, timedelta
 from email.message import EmailMessage
 from email.utils import formatdate, make_msgid, formataddr
 
-VERSION = "2026-11-06a"
+VERSION = "2026-11-06b"
+# 2026-11-06b: Mischfall (Matthias): bestellt ein eBay-Kunde spaeter direkt im Shop, steht auf der Packliste noch der alte eBay-Name,
+#   auf der Rechnung aber die Shop-Nummer (real Rg 1712303). Das wird jetzt als Onlineshop GESENDET - nur wenn genau eine echte
+#   Kundenadresse da ist (keine eBay-Relay-, keine Amazon-Adresse) und die Packliste einen Namen (keine Zahl/Amazon-Nr) nennt.
+#   Der Mailtext nennt dann die Shop-Nummer der Rechnung. Alle anderen Abweichungen bleiben unklar.
 # 2026-11-06a: Regel (Matthias): Es entscheidet die E-MAIL-ADRESSE. Gesendet wird an jede einzelne echte Kundenadresse,
 #   nur nie an eine Amazon-Adresse (amazon/marketplace), weil die ueber das Amazon-Nachrichtensystem laeuft. Amazon-
 #   Bestellnummer/Wort 'Amazon' im Text blockieren nicht mehr, wenn eine echte Adresse da ist. Neuer Kanal SONSTIGE
@@ -211,6 +215,15 @@ def klassifiziere(pack, rechnung_text):
     kurz, lang = sorted((r_fremd, fremd), key=len)
     gleich = r_fremd == fremd or (len(kurz) >= 20 and lang.startswith(kurz))
     if r_fremd and not gleich:
+        # Mischfall (Matthias 06.11.): bestellt ein eBay-Kunde spaeter direkt im Shop, zieht Amicron den alten eBay-Namen
+        # aus dem Kundensatz in die Packliste, die Rechnung zeigt aber die Shop-Nummer. Die Rechnung gehoert dann
+        # eindeutig zur Shop-Bestellung -> senden, ABER nur an eine echte Adresse (keine eBay-Relay-Adresse: die
+        # koennte im alten Kundensatz veraltet sein) und nur wenn die Packliste einen Namen (keine Zahl/Amazon-Nr) nennt.
+        if (re.fullmatch(r"\d{4,6}", r_fremd) and fremd and not re.fullmatch(r"\d+", fremd)
+                and not RE_AMAZON_NR.search(fremd) and dom not in EBAY_DOMAINS):
+            zus = (" [Amazon-Merkmal: %s, aber echte Kundenadresse]" % ", ".join(sig)) if sig else ""
+            return (KANAL_SHOP, "Onlineshop-Nummer %s (Rechnung) + Kundenadresse; Packliste nennt noch den "
+                                "eBay-Namen '%s' (Mischfall)%s" % (r_fremd, fremd, zus), mail)
         return KANAL_UNKLAR, "Fremdbeleg auf Rechnung (%s) weicht von Packliste (%s) ab" % (r_fremd, fremd), ""
     zusatz = (" [Amazon-Merkmal: %s, aber echte Kundenadresse]" % ", ".join(sig)) if sig else ""
     if dom in EBAY_DOMAINS:
@@ -218,6 +231,17 @@ def klassifiziere(pack, rechnung_text):
     if re.fullmatch(r"\d{4,6}", fremd):
         return KANAL_SHOP, "Onlineshop-Nummer %s + Kundenadresse%s" % (fremd, zusatz), mail
     return KANAL_SONST, "Kundenadresse, Fremdbeleg '%s'%s" % (fremd or "-", zusatz), mail
+
+
+def fremdbeleg_fuer_mail(kanal, pack, rtext):
+    """Fremdbeleg fuer den Mailtext. Beim Kanal SHOP kommt die Shop-Nummer von der RECHNUNG (im Mischfall nennt die
+    Packliste noch den alten eBay-Namen), sonst die der Packliste."""
+    fb = (pack or {}).get("fremdbeleg", "")
+    if kanal == KANAL_SHOP:
+        rf, _ = fremdbeleg_und_mails_rechnung(rtext)
+        if re.fullmatch(r"\d{4,6}", rf or ""):
+            fb = rf
+    return fb
 
 
 def fremdbeleg_und_mails_rechnung(text):
@@ -550,7 +574,7 @@ def lauf(cfg, modus=None, jetzt=None, log=print):
         # --- Versand / Entwurf ---
         try:
             test_an = (cfg.get("test_empfaenger") or "").strip()
-            msg = baue_mail(cfg, rnr, test_an or empf, pdf, kanal, (pack or {}).get("fremdbeleg", ""),
+            msg = baue_mail(cfg, rnr, test_an or empf, pdf, kanal, fremdbeleg_fuer_mail(kanal, pack, rtext),
                             rechnungsdatum_aus_text(rtext))
             if test_an:
                 msg.replace_header("Subject", "[TEST für %s] %s" % (empf, msg["Subject"]))
@@ -775,6 +799,34 @@ def _selftest():
                         "Rechnungsdatum: 20.10.2026\nRechnungsdatum = Lieferdatum falls\nnicht anders angegeben\n")[0], KANAL_SHOP)
     check("eBay-Name + normale Mail + Shop-Nr (Historie, 2 Fremdbeleg-Zeilen) -> echte Adresse -> SONSTIGE",
           klassifiziere(pack("svestei_0", ["x@gmail.com"], ex="25662"), rechn % "svestei_0")[0], KANAL_SONST)
+    # --- Mischfall: eBay-Kunde bestellt spaeter im Shop (Rechnung: Shop-Nr, Packliste: alter eBay-Name) ---
+    check("Mischfall Rechnung Shop-Nr + Packliste eBay-Name + echte Adresse -> SHOP",
+          klassifiziere(pack("mihen2013_7", ["k@gmx.de"]), rechn % "25956")[0], KANAL_SHOP)
+    check("Mischfall: Grund nennt Mischfall + Rechnungsnummer des Shops",
+          ("Mischfall" in klassifiziere(pack("mihen2013_7", ["k@gmx.de"]), rechn % "25956")[1],
+           "25956" in klassifiziere(pack("mihen2013_7", ["k@gmx.de"]), rechn % "25956")[1]), (True, True))
+    check("Mischfall: Empfaenger ist die Kundenadresse",
+          klassifiziere(pack("mihen2013_7", ["k@gmx.de"]), rechn % "25956")[2], "k@gmx.de")
+    check("Mischfall aber eBay-Relay-Adresse -> unklar (koennte veraltet sein)",
+          klassifiziere(pack("mihen2013_7", ["x@members.ebay.com"]), rechn % "25956")[0], KANAL_UNKLAR)
+    check("Mischfall aber zwei Adressen -> unklar",
+          klassifiziere(pack("mihen2013_7", ["k@gmx.de", "m@web.de"]), rechn % "25956")[0], KANAL_UNKLAR)
+    check("Mischfall aber Amazon-Adresse -> Amazon",
+          klassifiziere(pack("mihen2013_7", ["x@marketplace.amazon.de"]), rechn % "25956")[0], KANAL_AMAZON)
+    check("umgekehrt: Rechnung eBay-Name, Packliste Shop-Nr -> unklar",
+          klassifiziere(pack("25956", ["k@gmx.de"]), rechn % "mihen2013_7")[0], KANAL_UNKLAR)
+    check("Rechnung Shop-Nr, Packliste Amazon-Nr als Fremdbeleg -> unklar",
+          klassifiziere(pack("305-9853395-4797960", ["k@gmx.de"]), rechn % "25956")[0], KANAL_UNKLAR)
+    check("Rechnung Shop-Nr, Packliste ohne Fremdbeleg -> unklar",
+          klassifiziere(pack("", ["k@gmx.de"]), rechn % "25956")[0], KANAL_UNKLAR)
+    check("Rechnung andere Zahl als Packliste (beide Shop-Nr) -> unklar",
+          klassifiziere(pack("25623", ["k@gmx.de"]), rechn % "25956")[0], KANAL_UNKLAR)
+    check("Mailtext im Mischfall nennt die Shop-Nummer der RECHNUNG",
+          fremdbeleg_fuer_mail(KANAL_SHOP, pack("mihen2013_7", ["k@gmx.de"]), rechn % "25956"), "25956")
+    check("Mailtext normaler Shop-Fall nennt die Packliste-Nummer",
+          fremdbeleg_fuer_mail(KANAL_SHOP, pack("25623", ["k@gmx.de"]), rechn % "25623"), "25623")
+    check("Mailtext eBay nennt den eBay-Namen",
+          fremdbeleg_fuer_mail(KANAL_EBAY, pack("clerprem_de", ["x@members.ebay.com"]), rechn % "clerprem_de"), "clerprem_de")
     check("SONSTIGE: Platzhalter {bestellung} neutral", platzhalter("1", KANAL_SONST, "abc")["{bestellung}"], "Ihre Bestellung")
     check("eigene Firmenadresse zaehlt nicht als Kunde",
           klassifiziere(pack("25623", ["a@b.de"], ex="Email@Gasecenter-Augsburg.de"), rechn % "25623")[0], KANAL_SHOP)

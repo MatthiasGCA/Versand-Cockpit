@@ -16,7 +16,9 @@ Die Adresse und der Fremdbeleg stehen auf der **Packliste** (Rechnungsnummer = V
 | **eBay** | genau eine Adresse `@members.ebay.com` | senden |
 | **Sonstige** | genau eine andere echte Kunden-Adresse (kein Amazon) | senden |
 | **Amazon** | eine Adresse mit „amazon“/„marketplace“ in Packliste oder Rechnung – **oder** ein Amazon-Merkmal (Bestellnummer/Wort) und keine einzelne echte Adresse | **nie senden** (ruhig, kein Hinweis) |
-| **unklar** | keine Packliste, keine oder mehrere Adressen, Fremdbeleg der Rechnung weicht von der Packliste ab | **nicht senden**, im Bericht melden |
+| **unklar** | keine Packliste, keine oder mehrere Adressen, Fremdbeleg der Rechnung weicht von der Packliste ab (Ausnahme Mischfall, s. u.) | **nicht senden**, im Bericht melden |
+
+**Mischfall (seit 2026-11-06b):** Bestellt ein eBay-Kunde später direkt im Shop, zieht Amicron den alten eBay-Namen in die Packliste, die Rechnung zeigt aber die Shop-Nummer. Das wird als **Onlineshop gesendet**, wenn die Rechnung eine 4–6-stellige Shop-Nummer, die Packliste einen Namen und genau eine **echte** Adresse nennt (keine eBay-Relay-, keine Amazon-Adresse – eine Relay-Adresse im alten Kundensatz könnte veraltet sein). Der Mailtext nennt die Shop-Nummer der Rechnung. Alle anderen Abweichungen bleiben „unklar“ (von Hand in Amicron senden).
 
 Weitere Sicherungen: Pflicht-Startnummer `ab_rechnungsnummer` (keine alten Rechnungen), Höchstzahl Mails je Lauf,
 `nie_senden.txt` (eine Rechnungsnummer pro Zeile), Sendeprotokoll `gesendet.csv` (nie doppelt; ein Versuch ohne

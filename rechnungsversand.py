@@ -41,7 +41,9 @@ from datetime import datetime, timedelta
 from email.message import EmailMessage
 from email.utils import formatdate, make_msgid, formataddr
 
-VERSION = "2026-11-06b"
+VERSION = "2026-11-11a"
+# 2026-11-11a: Rechnungen ueber der Hoechstzahl je Lauf heissen "zurueckgestellt" (grau) statt "NICHT gesendet" und
+#   zaehlen nicht mehr als "unklar" (Testlauf mit max 5 zeigte sonst "224 unklar" und loeste die Warnung aus).
 # 2026-11-06b: Mischfall (Matthias): bestellt ein eBay-Kunde spaeter direkt im Shop, steht auf der Packliste noch der alte eBay-Name,
 #   auf der Rechnung aber die Shop-Nummer (real Rg 1712303). Das wird jetzt als Onlineshop GESENDET - nur wenn genau eine echte
 #   Kundenadresse da ist (keine eBay-Relay-, keine Amazon-Adresse) und die Packliste einen Namen (keine Zahl/Amazon-Nr) nennt.
@@ -569,7 +571,7 @@ def lauf(cfg, modus=None, jetzt=None, log=print):
                                                               "falsches Formular?" % interne.group(0).strip())
             continue
         if gesendet + entworfen >= maxmails:
-            zeile.update(entscheidung="NICHT gesendet", grund="Höchstzahl Mails je Lauf (%d) erreicht" % maxmails)
+            zeile.update(entscheidung="zurückgestellt", grund="Höchstzahl Mails je Lauf (%d) erreicht - kommt im nächsten Lauf dran" % maxmails)
             continue
         # --- Versand / Entwurf ---
         try:
@@ -1017,6 +1019,12 @@ def _selftest():
             os.remove(os.path.join(aus, "gesendet.csv"))
         res = lauf(dict(cfg, max_mails_pro_lauf=1), "entwurf")
         check("Maximalzahl Mails", res["entworfen"], 1)
+        check("Maximalzahl: Rest 'zurückgestellt', nicht unklar",
+              (sum(1 for z in res["ergebnisse"] if z["entscheidung"] == "zurückgestellt") > 0,
+               _status_aus_ergebnis(res, "manuell")["unklar"] == sum(1 for z in res["ergebnisse"]
+                                                                       if z["entscheidung"].startswith("NICHT gesendet")
+                                                                       and "Amazon" not in z["entscheidung"])),
+              (True, True))
         # SMTP-Fehler -> Abbruch und Protokoll 'fehler'
         srv.shutdown()
         srv.server_close()

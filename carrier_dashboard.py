@@ -1023,7 +1023,7 @@ def _rechnungsversand_dialog(root, rv, cfg, nach_lauf=None):
             e = z["entscheidung"]
             tag = ("fehler" if e.startswith("FEHLER") else "gesendet" if e == "gesendet" or e.startswith("TEST")
                    else "sendet" if e in ("würde senden", "Entwurf erstellt")
-                   else "amazon" if "Amazon" in e or "bereits" in e else "unklar")
+                   else "amazon" if "Amazon" in e or "bereits" in e or e.startswith("zurückgestellt") else "unklar")
             tv.insert("", "end", values=(z["rnr"], z["kanal"], e, z["grund"], z["empfaenger"]), tags=(tag,))
         if st and st.get("fehler"):
             tv.insert("", 0, values=("-", "-", "FEHLER", st["fehler"], ""), tags=("fehler",))

@@ -101,7 +101,8 @@ from tkinter import messagebox, simpledialog, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-11-06a"
+VERSION = "2026-11-11a"
+# 2026-11-11a: Rechnungsversand-Fenster: "zurueckgestellt" (ueber der Hoechstzahl je Lauf) grau statt gelb.
 # 2026-11-06a: Rechnungsversand-Rueckfrage zeigt zusaetzlich "Sonstige" (neuer Kanal im Rechnungsversand: jede einzelne echte
 #   Kundenadresse ausser Amazon-Adressen).
 # 2026-10-26a: Bruecken-CSVs: "[WinError 5] Zugriff verweigert" beim Ersetzen von mengen_zuordnung.csv im Netzordner

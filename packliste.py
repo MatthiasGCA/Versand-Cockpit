@@ -70,7 +70,12 @@ from reportlab.graphics.shapes import Drawing
 # KONFIGURATION
 # ----------------------------------------------------------------------------
 
-VERSION = "2026-10-20c"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+VERSION = "2026-11-12a"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+# 2026-11-12a: MEHRSEITIGE RECHNUNGEN. parse_pdf las bisher nur Seite 1: ging eine Rechnung ueber zwei Seiten (erstmals Rg 1713345,
+#   16 Positionen), fehlten die Positionen der 2. Seite in Pickliste/Packuebersicht, EAN-/Mengen-CSV und Statistik, und der
+#   Rechnungsbetrag (steht nur auf der LETZTEN Seite) galt als "nicht lesbar" (Versicherungsgrenze im Carrier-Dashboard!).
+#   Jetzt werden Folgeseiten mit derselben Rechnungsnummer und Tabellenkopf "Artikelnr" mitgelesen (Positionen angehaengt,
+#   Rechnungsbetrag aus allen Seiten); Kopf, Adresse und Gewicht kommen weiter von Seite 1. Einseitige Rechnungen unveraendert.
 # 2026-10-20c: Code-Review-Fixes. (1) _hausnr_zeile_zusammenfuehren(): eine reine 4-stellige Zahl, hinter
 #   der keine weitere PLZ-Zeile folgt, ist selbst die PLZ (AT/CH ohne Laenderpraefix, "8020"/"Graz") und
 #   wird nicht mehr an die Ortszeile geklebt ("Graz 8020" -> "Keine Postleitzahl gefunden"). (2) RE_PLZ_ZEILE
@@ -1289,6 +1294,21 @@ def parse_pdf(path):
     with pdfplumber.open(path) as pdf:
         page = pdf.pages[0]
         words = _extrahiere_woerter(page)
+        # Fortsetzungsseiten (Rechnung mit vielen Positionen geht ueber 2+ Seiten, erstmals 12.11.2026 Rg 1713345):
+        # Kopf/Adresse stehen auf Seite 1, die Positionen laufen auf der naechsten Seite weiter, der Rechnungsbetrag
+        # steht erst auf der LETZTEN Seite. Eine Folgeseite zaehlt nur, wenn sie dieselbe Rechnungsnummer
+        # und den Tabellenkopf 'Artikelnr' traegt (sonst wie bisher ignoriert).
+        def _seitentext(ws):
+            return "\n".join(line_text([w for w in ws if round(w["top"]) == t])
+                             for t in sorted({round(w["top"]) for w in ws}))
+        _re_rnr = re.compile(r"Rechnung\s*Nr\.?\s*:?\s*(\d+)")
+        _m1 = _re_rnr.search(_seitentext(words))
+        folge_woerter = []
+        for pg in pdf.pages[1:]:
+            wp = _extrahiere_woerter(pg)
+            mr = _re_rnr.search(_seitentext(wp))
+            if _m1 and mr and mr.group(1) == _m1.group(1) and any(w["text"] == "Artikelnr" for w in wp):
+                folge_woerter.append(wp)
 
     tops = sorted({round(w["top"]) for w in words})
     zeilen = [line_text([w for w in words if round(w["top"]) == t]) for t in tops]
@@ -1354,29 +1374,38 @@ def parse_pdf(path):
     # kurz davor reicht die Tabelle. Fixe 388 waren zu niedrig -> bei mehreren
     # Artikeln / langen Bezeichnungen fielen Versand oder ganze Positionen weg,
     # weil deren Trennpunkte unterhalb 388 lagen.
-    kopf_top = min((w["top"] for w in words if w["text"] == "Artikelnr"),
-                   default=TABLE_TOP)
-    wiederhol = [w["top"] for w in words
-                 if w["text"].startswith("Druckdatum") and w["top"] > kopf_top + 5]
-    if wiederhol:
-        table_bot = min(wiederhol) - 2
-    else:
-        rb = [w["top"] for w in words if "Rechnungsbetrag" in w["text"]]
-        table_bot = (max(rb) + 40) if rb else TABLE_BOT
+    def _positionen_einer_seite(ws):
+        kopf_top = min((w["top"] for w in ws if w["text"] == "Artikelnr"),
+                       default=TABLE_TOP)
+        wiederhol = [w["top"] for w in ws
+                     if w["text"].startswith("Druckdatum") and w["top"] > kopf_top + 5]
+        if wiederhol:
+            table_bot = min(wiederhol) - 2
+        else:
+            rb = [w["top"] for w in ws if "Rechnungsbetrag" in w["text"]]
+            table_bot = (max(rb) + 40) if rb else TABLE_BOT
 
-    tab = [w for w in words if TABLE_TOP < w["top"] < table_bot]
-    seps = sorted(w["top"] for w in tab if _ist_trenner(w))
-    positionen = []
-    lo = TABLE_TOP
-    for s in seps:
-        block = [w for w in tab if lo < w["top"] < s and not _ist_trenner(w)]
-        if block:
-            p = parse_block(block)
-            if p["gp"] is not None or p["art"] or p["bez"]:
-                positionen.append(p)
-        lo = s
+        tab = [w for w in ws if TABLE_TOP < w["top"] < table_bot]
+        seps = sorted(w["top"] for w in tab if _ist_trenner(w))
+        res = []
+        lo = TABLE_TOP
+        for s in seps:
+            block = [w for w in tab if lo < w["top"] < s and not _ist_trenner(w)]
+            if block:
+                p = parse_block(block)
+                if p["gp"] is not None or p["art"] or p["bez"]:
+                    res.append(p)
+            lo = s
+        return res
 
-    mb = re.search(r"Rechnungsbetrag\s*€?\s*([\d.,]+)", full)
+    positionen = _positionen_einer_seite(words)
+    full_alle = full
+    for wp in folge_woerter:                       # Fortsetzungsseiten: Positionen anhaengen
+        positionen += _positionen_einer_seite(wp)
+        full_alle += "\n" + _seitentext(wp)
+
+    # Der Rechnungsbetrag steht auf der LETZTEN Seite (bei einseitigen Rechnungen: auf der einzigen).
+    mb = re.search(r"Rechnungsbetrag\s*€?\s*([\d.,]+)", full_alle)
     total = num(mb.group(1)) if mb else None
 
     name, strasse, hausnr, plz = extrahiere_adresse(words)

@@ -17,7 +17,7 @@ Hintergrund (unveraendert bewaehrt): Live-Ueberwachung des Ordners,
 Doppeldruck-Schutz, Tagesstatistik, Auto-Archiv fertiger Dateien.
 Versender-Erkennung am INHALT der Seite (nicht am Dateinamen):
   - DPD  : Anker "Referenz 1"           Deadline 14:00
-  - DHL  : Anker "Kostenstelle:"        Deadline 16:00
+  - DHL  : Anker "Sendungsref.:" (neues Layout ab 11/2026), "Reference No.:" (International) oder "Kostenstelle:" (altes)  Deadline 16:00
   - Deutsche Post (GoGreen): KEINE Rechnungsnummer auf dem Label -> Zuordnung
            ueber die Lieferadresse (PLZ + Hausnr + Name) via post_zuordnung.csv.
 Voraussetzungen (einmalig):
@@ -51,7 +51,11 @@ try:
 except Exception:
     _HAS_REPORTLAB = False
 # ============================ KONFIGURATION ============================
-VERSION = "2026-10-27a"          # im Fenstertitel sichtbar -> Deployment pruefbar
+VERSION = "2026-11-13a"          # im Fenstertitel sichtbar -> Deployment pruefbar
+# 2026-11-13a: NEUES DHL-LABEL-DESIGN (real SHIPMENT_LABEL_20261113_084721.pdf, 89 Seiten): die Rechnungsnummer steht nicht mehr hinter
+#   "Kostenstelle:", sondern hinter "Sendungsref.:" (Kopf weiter "DHL PAKET", Empfaenger weiter nach "An:"). Der DHL-Anker
+#   passte deshalb auf keiner Seite -> 0 Labels erkannt. Anker jetzt "Kostenstelle:" ODER "Sendungsref.:" ODER "Reference No.:" (Paket International/AT:
+#   "To:" statt "An:", Nummer hinter "Reference No."; alte Labels gehen weiter).
 # 2026-10-27a: DHL-Label wurde als DPD erkannt, weil in der EMPFAENGERADRESSE "Im DPD Paketshop" stand (real Re 1710967,
 #   SHIPMENT_LABEL.pdf S. 105/106) - das DPD-Erkennungswort passte, der DPD-Anker "Referenz 1" fehlte -> Seite ohne
 #   Rechnungsnummer, Scan meldete "nicht gefunden". erkenne_profil() nimmt jetzt das Profil, dessen ANKER (Rechnungs-
@@ -389,7 +393,7 @@ VERSENDER_PROFILE = [
     {
         "name": "DHL",
         "erkennung": r"DHL\s*PAKET|PAKET INTERNATIONAL|Kostenstelle:",
-        "anker": r"Kostenstelle:\s*(\d+)",
+        "anker": r"(?:Kostenstelle:|Sendungsref\.:|Reference\s*No\.:)\s*(\d+)",
         "empfaenger_anker": r"(?:An|To)\s*[:\s]+(.*)",
         "deadline": "16:00",
         "farbe": "#B8860B",

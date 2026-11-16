@@ -48,7 +48,8 @@ Rechnungs-PDF mit internen Angaben (Lagerort/Kennung) wird nicht gesendet, bei j
 6. Erst danach in der Konfiguration Modus `"senden"`. **Wichtig:** Ab dann die Rechnungen für Onlineshop/eBay **nicht mehr
    zusätzlich** in Amicron per „Belege per Email versenden“ verschicken, sonst bekommen Kunden sie doppelt.
 7. Aufgabenplanung (täglich 15:00), Eingabeaufforderung als Administrator (Pfad anpassen):
-   `schtasks /create /tn "Rechnungsversand" /tr "C:\Carrier-Dashboard\Rechnungsversand_starten.bat" /sc daily /st 15:00`
+   `schtasks /create /f /tn "Rechnungsversand" /tr "wscript.exe \"C:\Carrier-Dashboard\Rechnungsversand_starten.vbs\"" /sc daily /st 15:00`
+   (seit 16.11.2026 über die .vbs: läuft OHNE Konsolenfenster – ein geschlossenes Fenster hatte einen Lauf mitten im Versand beendet)
    Die Aufgabe muss unter dem Benutzer laufen, der Zugriff auf `Ausgangsrechnungen` hat und die Umgebungsvariable besitzt.
 
 ## E-Mail-Text und Signatur

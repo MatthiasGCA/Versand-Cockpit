@@ -41,7 +41,10 @@ from datetime import datetime, timedelta
 from email.message import EmailMessage
 from email.utils import formatdate, make_msgid, formataddr
 
-VERSION = "2026-11-16e"
+VERSION = "2026-11-16f"
+# 2026-11-16f: Sperrdatei lauf.lock enthaelt die Prozessnummer; laeuft dieser Prozess nicht mehr (Lauf abgebrochen,
+#   z.B. Konsolenfenster geschlossen - real 16.11. 15:03, danach "laeuft bereits" bis zu 3 Stunden), wird die Sperre
+#   sofort als verwaist erkannt und ersetzt. Dazu Rechnungsversand_starten.vbs: Start ohne Konsolenfenster.
 # 2026-11-16e: Belege an eigene Kundennummern (Konfig "ignorierte_kundennummern", Standard 483911 = Ladengeschaeft/
 #   Thekenrechner) werden still ignoriert - auch ohne Packliste (Theke-Verkaeufe haben keine). Pruefung an 1085
 #   Rechnungen 1713500-1714699: einziger solcher Beleg war 1713932 (Kunde 483911).
@@ -484,10 +487,45 @@ class EinzelInstanz:
         self.pfad = pfad
         self.ok = False
 
+    @staticmethod
+    def _prozess_laeuft(pid):
+        """True, wenn der Prozess pid noch laeuft (Windows ueber OpenProcess/GetExitCodeProcess). Im Zweifel True."""
+        try:
+            pid = int(pid)
+        except (TypeError, ValueError):
+            return True
+        if pid == os.getpid():
+            return True
+        if os.name != "nt":
+            try:
+                os.kill(pid, 0)
+                return True
+            except OSError:
+                return False
+        try:
+            import ctypes
+            k = ctypes.windll.kernel32
+            h = k.OpenProcess(0x1000, False, pid)            # PROCESS_QUERY_LIMITED_INFORMATION
+            if not h:
+                return False
+            code = ctypes.c_ulong()
+            ok = k.GetExitCodeProcess(h, ctypes.byref(code))
+            k.CloseHandle(h)
+            return bool(ok) and code.value == 259            # STILL_ACTIVE
+        except Exception:
+            return True
+
     def __enter__(self):
         try:
             if os.path.exists(self.pfad) and time.time() - os.path.getmtime(self.pfad) < 3 * 3600:
-                return self
+                try:
+                    with open(self.pfad) as f:
+                        pid_alt = f.read().strip()
+                except OSError:
+                    pid_alt = ""
+                if self._prozess_laeuft(pid_alt):
+                    return self                                # laeuft wirklich noch
+                # verwaiste Sperre (Prozess beendet) -> uebernehmen
             with open(self.pfad, "w") as f:
                 f.write(str(os.getpid()))
             self.ok = True
@@ -1227,6 +1265,15 @@ def _selftest():
         check("Firmenadresse in der Fusszeile zaehlt nicht als eigene Kundenadresse",
               eigene_adresse_im_kopf("Rechnung Nr. : 1\n25623\nkunde@example.org\nSendungsgewicht : 1\nA\nB\nC\n"
                                      "Gerichtsstand Augsburg Email@Gasecenter-Augsburg.de"), "")
+        # verwaiste Sperre (Prozess beendet) wird uebernommen, eine lebende nicht
+        lockp = os.path.join(aus, "lauf.lock")
+        open(lockp, "w").write("999999")                       # PID, die es nicht gibt
+        with EinzelInstanz(lockp) as l1:
+            check("Verwaiste lauf.lock wird übernommen", l1.ok, True)
+        open(lockp, "w").write(str(os.getpid()))               # lebender Prozess
+        with EinzelInstanz(lockp) as l2:
+            check("Lebende Sperre bleibt bestehen", l2.ok, False)
+        os.remove(lockp)
         # Maximalzahl
         if os.path.exists(os.path.join(aus, "gesendet.csv")):
             os.remove(os.path.join(aus, "gesendet.csv"))

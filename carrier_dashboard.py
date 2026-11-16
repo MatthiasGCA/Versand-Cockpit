@@ -101,7 +101,8 @@ from tkinter import messagebox, simpledialog, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-11-16d"
+VERSION = "2026-11-16e"
+# 2026-11-16e: Rechnungsversand-Fenster: "ignoriert (eigene Adresse)" grau.
 # 2026-11-16d: Knopf "Doch senden" heisst jetzt "Trotzdem senden" (Wunsch Matthias).
 # 2026-11-16c: Rechnungsversand - OFFENE FAELLE: Ansicht "Offene Fälle" im Fenster (nicht versendete Problem-Rechnungen
 #   bleiben, bis sie von Hand erledigt sind), Knoepfe "Erledigt" und "Doch senden ..." (Adresse vorbelegt bzw. eingeben,
@@ -1107,7 +1108,7 @@ def _rechnungsversand_dialog(root, rv, cfg, nach_lauf=None):
             e = z["entscheidung"]
             tag = ("fehler" if e.startswith("FEHLER") else "gesendet" if e == "gesendet" or e.startswith("TEST")
                    else "sendet" if e in ("würde senden", "Entwurf erstellt")
-                   else "amazon" if "Amazon" in e or "bereits" in e or e.startswith(("zurückgestellt", "ausgeschlossen")) else "unklar")
+                   else "amazon" if "Amazon" in e or "bereits" in e or e.startswith(("zurückgestellt", "ausgeschlossen", "ignoriert")) else "unklar")
             tv.insert("", "end", values=(z["rnr"], z["kanal"], e, z["grund"], z["empfaenger"]), tags=(tag,))
         if st and st.get("fehler"):
             tv.insert("", 0, values=("-", "-", "FEHLER", st["fehler"], ""), tags=("fehler",))

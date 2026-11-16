@@ -41,7 +41,11 @@ from datetime import datetime, timedelta
 from email.message import EmailMessage
 from email.utils import formatdate, make_msgid, formataddr
 
-VERSION = "2026-11-16c"
+VERSION = "2026-11-16d"
+# 2026-11-16d: THEKENRECHNER-AUSBUCHUNG (Wunsch Matthias): steht als Kunden-E-Mail der Packliste eine EIGENE Adresse
+#   (z.B. email@gasecenter-augsburg.de), wird die Rechnung still ignoriert ("ignoriert (eigene Adresse)", grau, kein
+#   offener Fall). Geprueft wird nur der Kopfblock unter "Rechnung Nr." - die Firmenadresse in der Fusszeile jeder
+#   Rechnung zaehlt nicht.
 # 2026-11-16c: OFFENE FAELLE (Wunsch Matthias): jede nicht versendete Problem-Rechnung (unklar, interne Angaben, Fehler,
 #   Versuch ohne Bestaetigung ...) kommt in offene_rechnungen.json und bleibt dort, bis sie im Dashboard von Hand
 #   "Erledigt" (-> nie_senden.txt) oder "Doch senden" (an die bekannte oder eine eingegebene Adresse, nie an Amazon)
@@ -161,15 +165,30 @@ def alle_kundenmails(text):
     return out
 
 
+def eigene_adresse_im_kopf(text):
+    """Eigene Firmenadresse (z.B. email@gasecenter-augsburg.de) als KUNDEN-Adresse im Kopfblock unter 'Rechnung Nr.'
+    (Thekenrechner-Ausbuchung). Die Firmenadresse in der Fusszeile zaehlt nicht."""
+    zeilen = (text or "").split("\n")
+    idx = next((i for i, z in enumerate(zeilen) if re.search(r"\bRechnung\s*Nr\.?\s*:", z)), None)
+    if idx is None:
+        return ""
+    for z in zeilen[idx + 1: idx + 7]:
+        for m in RE_MAIL.findall(z):
+            if ist_firmenadresse(m):
+                return m.lower()
+    return ""
+
+
 def lies_packliste(pfad):
-    """Packliste -> dict(rnr, fremdbeleg, mails, alle_mails, amazon_signal, text) oder None."""
+    """Packliste -> dict(rnr, fremdbeleg, mails, alle_mails, eigene_adresse, text) oder None."""
     text = pdf_text(pfad)
     rnr = rechnungsnummer_aus_text(text)
     if not rnr:
         return None
     fremd, mails = fremdbeleg_und_mails(text)
     return {"rnr": rnr, "fremdbeleg": fremd, "mails": [m.lower() for m in mails],
-            "alle_mails": alle_kundenmails(text), "text": text, "pfad": pfad}
+            "alle_mails": alle_kundenmails(text), "eigene_adresse": eigene_adresse_im_kopf(text),
+            "text": text, "pfad": pfad}
 
 
 # ----------------------------------------------------------------------------------------------
@@ -574,6 +593,11 @@ def lauf(cfg, modus=None, jetzt=None, log=print):
                 zeile.update(kanal=KANAL_UNKLAR, entscheidung="NICHT gesendet",
                              grund="mehrere Packlisten mit unterschiedlichen Angaben")
                 continue
+        eigene = next((p_.get("eigene_adresse") for p_ in packs if p_.get("eigene_adresse")), "")
+        if eigene:
+            zeile.update(entscheidung="ignoriert (eigene Adresse)",
+                         grund="Kunden-E-Mail ist die eigene Adresse %s (z.B. Thekenrechner-Ausbuchung)" % eigene)
+            continue
         kanal, grund, empf = klassifiziere(pack, rtext)
         zeile.update(kanal=kanal, grund=grund, empfaenger=empf, fremdbeleg=fremdbeleg_fuer_mail(kanal, pack, rtext))
         if kanal == KANAL_AMAZON:
@@ -636,7 +660,7 @@ def lauf(cfg, modus=None, jetzt=None, log=print):
                                    "fremdbeleg": z.get("fremdbeleg", ""), "rechnungsdatum": z.get("rechnungsdatum", ""),
                                    "erstmals": alt.get("erstmals") or jetzt.strftime("%Y-%m-%d %H:%M"),
                                    "zuletzt": jetzt.strftime("%Y-%m-%d %H:%M")}
-            elif e in ("gesendet", "bereits gesendet", "ausgeschlossen"):
+            elif e in ("gesendet", "bereits gesendet", "ausgeschlossen") or e.startswith("ignoriert"):
                 offen.pop(z["rnr"], None)
         speichere_offen(aus, offen)
     except (OSError, ValueError) as e:
@@ -1175,6 +1199,17 @@ def _selftest():
         check("Erledigt: im nächsten Lauf 'ausgeschlossen', nicht wieder offen",
               ({z["rnr"]: z["entscheidung"] for z in res["ergebnisse"]}.get("1710014"), "1710014" in lade_offen(aus)),
               ("ausgeschlossen", False))
+        # Thekenrechner-Ausbuchung: eigene Adresse als Kunden-E-Mail -> still ignorieren
+        rechnung("1710040", "Theke")
+        packl("1710040", "Theke", "email@gasecenter-augsburg.de")
+        res = lauf(cfg, "bericht")
+        z40 = {z["rnr"]: z for z in res["ergebnisse"]}.get("1710040", {})
+        check("Eigene Adresse (Theke) -> ignoriert, kein offener Fall, nicht unklar",
+              (z40.get("entscheidung"), "1710040" in lade_offen(aus), _status_aus_ergebnis(res, "x")["unklar"] >= 0),
+              ("ignoriert (eigene Adresse)", False, True))
+        check("Firmenadresse in der Fusszeile zaehlt nicht als eigene Kundenadresse",
+              eigene_adresse_im_kopf("Rechnung Nr. : 1\n25623\nkunde@example.org\nSendungsgewicht : 1\nA\nB\nC\n"
+                                     "Gerichtsstand Augsburg Email@Gasecenter-Augsburg.de"), "")
         # Maximalzahl
         if os.path.exists(os.path.join(aus, "gesendet.csv")):
             os.remove(os.path.join(aus, "gesendet.csv"))

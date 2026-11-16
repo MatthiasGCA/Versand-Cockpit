@@ -58,7 +58,11 @@ Siehe ist_auslands_kleinpaket() und die Konstanten KLEINPAKET_*.
 import html
 import re
 
-VERSION = "2026-10-27b"
+VERSION = "2026-11-16a"
+# 2026-11-16a: Packstation/Postfiliale/DHL-Filiale im INLAND bis 1 kg ohne Pax1 (bisher nur Hinweis "Achtung bei DHL auf
+#   Kleinpaket abändern", Umstellen von Hand) wird jetzt direkt als DHL Kleinpaket (V62KP) exportiert - wie bei der
+#   Inselregel nur bei lesbarem Warenwert unter 50 EUR; darueber bleibt der Hinweis (versichertes Paket?). Der Pruefhinweis
+#   "Packstation/... bitte manuell prüfen" bleibt (Status gelb, quittieren).
 # 2026-10-20a: Ort in eigener Zeile nach "DE 92237" (neues Lieferadress-Format, Rg 1709625/1709769) wird als Ort erkannt.
 # 2026-10-19a: Deutsche Inseln sind fuer DPD zuschlagspflichtig (hoher Inselzuschlag): Sendungen, die sonst
 #   DPD waeren, gehen per DHL, bis 1 kg als Kleinpaket (siehe DPD_INSEL_PLZ / ist_dpd_insel()).
@@ -73,6 +77,7 @@ G_DHL_MAX = 31.5
 # DHL-Kleinpaket Ausland (Regel von Matthias 2026-09-25)
 KLEINPAKET_MIN_KG = 0.6
 KLEINPAKET_MAX_KG = 1.0
+KLEINPAKET_HINWEIS = "Achtung bei DHL auf Kleinpaket abändern"   # Packstation bis 1 kg ohne Pax1
 KLEINPAKET_MIN_WARENWERT = 40.0               # EUR, strikt darueber
 # Versicherungsgrenze (Matthias 2026-09-28): AB diesem Warenwert (Summe der
 # Artikelpreise ohne Versandkosten) geht jede Sendung auf DHL - nur dort sind
@@ -653,7 +658,7 @@ def bestimme_carrier(kennungen, gewicht, land, packstation=False, dhl_zustellung
         # DHL-System manuell auf "Kleinpaket" umgestellt werden. Nur, wenn es
         # ueberhaupt ein Kleinpaket sein kann: hoechstens 1 kg UND keine Pax1
         # (Pax1 = Paket-Pflicht, Matthias 2026-09-28, Rechnung 1706130 Pax1 4,5 kg).
-        hinweise.append("Achtung bei DHL auf Kleinpaket abändern")
+        hinweise.append(KLEINPAKET_HINWEIS)
     if klasse == DHL and gewicht > G_DHL_MAX:
         # DHL nimmt schwerere Pakete nicht an (Matthias bestaetigt) - blockiert
         # den Export, carrier/grund bleiben aber informativ auf DHL stehen
@@ -926,7 +931,17 @@ def bewerte_rechnung(r):
         # 50 EUR bleibt es ein versichertes DHL-Paket; Pax1 = Paket-Pflicht.
         kleinpaket = True
         grund += ", bis 1 kg → DHL Kleinpaket"
-        hinweise = [h for h in hinweise if h != "Achtung bei DHL auf Kleinpaket abändern"]
+        hinweise = [h for h in hinweise if h != KLEINPAKET_HINWEIS]
+    elif (carrier == DHL and adr["land"] == "DE" and KLEINPAKET_HINWEIS in hinweise
+          and pakete is None and wert is not None and wert < DHL_MIN_WARENWERT):
+        # Packstation/Postfiliale/DHL-Filiale im Inland, hoechstens 1 kg, keine Pax1 (= Bedingungen des
+        # Kleinpaket-Hinweises aus bestimme_carrier): direkt als DHL Kleinpaket (V62KP) exportieren statt
+        # den Hinweis zum Umstellen von Hand anzuzeigen (Matthias 2026-11-16). Wie bei der Inselregel:
+        # ab 50 EUR Warenwert (oder Wert nicht lesbar) bleibt es beim Hinweis - dann entscheidet der Mensch
+        # (versichertes Paket). Der Pruefhinweis "Packstation/... bitte manuell prüfen" bleibt stehen.
+        kleinpaket = True
+        grund += ", Packstation/Postfiliale bis 1 kg → DHL Kleinpaket"
+        hinweise = [h for h in hinweise if h != KLEINPAKET_HINWEIS]
     elif kleinpaket:
         wert_kp = warenwert(r)
         # Warenwert kann hier None sein (Preis nicht lesbar) - die Wapo-Regel
@@ -1149,10 +1164,10 @@ def selftest():
     b_pf = bewerte_rechnung(r_pf)
     check("Postfiliale (1710104): Wapo 0,25 kg -> DHL statt DPD",
           (b_pf["carrier"], b_pf["adresse"]["packstation"], b_pf["status"]), (DHL, True, "warn"))
-    check("Postfiliale: Hinweise Postfiliale + Kleinpaket, Grund nennt Postfiliale",
-          (any("Postfiliale" in h for h in b_pf["hinweise"]),
-           "Achtung bei DHL auf Kleinpaket abändern" in b_pf["hinweise"], "Postfiliale" in b_pf["grund"]),
-          (True, True, True))
+    check("Postfiliale: Pruefhinweis bleibt, automatisch Kleinpaket (statt Umstell-Hinweis), Grund nennt Postfiliale",
+          (any("Postfiliale" in h for h in b_pf["hinweise"]), KLEINPAKET_HINWEIS in b_pf["hinweise"],
+           b_pf["kleinpaket"], "Postfiliale" in b_pf["grund"]),
+          (True, False, True, True))
     for zeilen_, name_ in ((["A B", "Post-Filiale 12", "12345 Ort"], "Post-Filiale"),
                            (["A B", "Post Filiale 12", "12345 Ort"], "Post Filiale"),
                            (["A B", "Postfiliale Direkt 511", "12345 Ort"], "Postfiliale Direkt")):
@@ -1370,8 +1385,34 @@ def selftest():
     b6 = bewerte_rechnung(r6)
     check("Rechnung 1705540 (Packstation) -> DHL statt DPD, warn", (b6["carrier"], b6["status"]),
           (DHL, "warn"))
-    check("Rechnung 1705540 -> Kleinpaket-Hinweis dabei",
-          "Achtung bei DHL auf Kleinpaket abändern" in b6["hinweise"], True)
+    check("Rechnung 1705540 -> automatisch DHL Kleinpaket, kein Umstell-Hinweis mehr (2026-11-16)",
+          (b6["kleinpaket"], KLEINPAKET_HINWEIS in b6["hinweise"], "Kleinpaket" in b6["grund"]), (True, False, True))
+
+    # --- Packstation/Postfiliale im Inland bis 1 kg ohne Pax1 -> automatisch DHL Kleinpaket (Matthias 2026-11-16) ---
+    def _ps(kenn_, g_, gp_, zeilen_=None):
+        return bewerte_rechnung({"rnr": "1799991", "datei": "x.pdf", "sendungsgewicht": g_,
+                                 "adresse_zeilen": zeilen_ or ["A B", "123456789", "Packstation 105", "DE-68307 Mannheim"],
+                                 "positionen": [{"art": "X1", "bez": "Artikel", "menge": 1, "ep": gp_, "gp": gp_,
+                                                 "kennungen": [kenn_], "lagerorte": []}],
+                                 "zeilen_ok": True, "summe_ok": True, "vollstaendig_ok": True})
+    b_k = _ps("wapo", 0.4, 12.0)
+    check("Packstation Wapo 0,4 kg 12 EUR -> DHL Kleinpaket, Pruefhinweis bleibt (warn)",
+          (b_k["carrier"], b_k["kleinpaket"], KLEINPAKET_HINWEIS in b_k["hinweise"],
+           any("bitte manuell prüfen" in h for h in b_k["hinweise"]), b_k["status"]), (DHL, True, False, True, "warn"))
+    check("Packstation Wapo 1,0 kg (Grenze inklusive) -> Kleinpaket", _ps("wapo", 1.0, 12.0)["kleinpaket"], True)
+    b_g = _ps("wapo", 1.2, 12.0)
+    check("Packstation Wapo 1,2 kg -> DHL-Paket, kein Kleinpaket", (b_g["carrier"], b_g["kleinpaket"]), (DHL, False))
+    b_p = _ps("pax1", 0.4, 12.0)
+    check("Packstation Pax1 0,4 kg -> DHL-Paket (Pax1 = Paket-Pflicht)", (b_p["carrier"], b_p["kleinpaket"]), (DHL, False))
+    b_w = _ps("wapo", 0.4, 60.0)
+    check("Packstation Wapo 0,4 kg 60 EUR -> kein Auto-Kleinpaket, Umstell-Hinweis bleibt (Versicherung)",
+          (b_w["carrier"], b_w["kleinpaket"], KLEINPAKET_HINWEIS in b_w["hinweise"]), (DHL, False, True))
+    b_b = _ps("pox1", 0.25, 8.0)
+    check("Packstation Pox1 (Grossbrief) 0,25 kg -> DHL Kleinpaket", (b_b["carrier"], b_b["kleinpaket"]), (DHL, True))
+    b_f = _ps("wapo", 0.3, 9.0, ["A B", "Postfiliale 511", "DE-26188 Edewecht"])
+    check("Postfiliale Wapo 0,3 kg -> DHL Kleinpaket", (b_f["carrier"], b_f["kleinpaket"]), (DHL, True))
+    b_n = _ps("wapo", 0.4, 12.0, ["A B", "Hauptstr. 5", "DE-68307 Mannheim"])
+    check("normale Adresse Wapo 0,4 kg -> bleibt DPD, kein Kleinpaket", (b_n["carrier"], b_n["kleinpaket"]), (DPD, False))
 
     # --- "<N>-je-Paket" automatische Paketaufteilung (2026-09-23, mit
     # Matthias abgestimmt: Doppelpack-Artikel IMMER einzeln, Kartons-Artikel

@@ -41,7 +41,10 @@ from datetime import datetime, timedelta
 from email.message import EmailMessage
 from email.utils import formatdate, make_msgid, formataddr
 
-VERSION = "2026-11-11a"
+VERSION = "2026-11-16a"
+# 2026-11-16a: (1) Interne Belege an die eigene Firma (z.B. "MONATLICHE VERKAEUFE LADENGESCHAEFT", Empfaenger
+#   "Gasecenter Augsburg", real 1713932) werden still ignoriert statt jeden Tag als "unklar" gemeldet. (2) Amazon-
+#   Bestellnummer auf der Rechnung und keine Packliste (E-Mail-Adresse unbekannt, real 1714238) -> Amazon (ruhig).
 # 2026-11-11a: Rechnungen ueber der Hoechstzahl je Lauf heissen "zurueckgestellt" (grau) statt "NICHT gesendet" und
 #   zaehlen nicht mehr als "unklar" (Testlauf mit max 5 zeigte sonst "224 unklar" und loeste die Warnung aus).
 # 2026-11-06b: Mischfall (Matthias): bestellt ein eBay-Kunde spaeter direkt im Shop, steht auf der Packliste noch der alte eBay-Name,
@@ -106,6 +109,10 @@ def ist_kundenrechnung(text):
     for w in KEINE_RECHNUNG:
         if w in kopf:
             return False, "kein Rechnungsbeleg (%s)" % w
+    zeilen = [z.strip().lower() for z in (text or "").split("\n")[:4]]
+    if "verkäufe ladengeschäft" in kopf or "verkaeufe ladengeschaeft" in kopf or \
+            any(z.startswith("gasecenter augsburg") for z in zeilen[1:3]):
+        return False, "interner Beleg an die eigene Firma (z.B. Ladengeschäft)"
     return True, ""
 
 
@@ -196,6 +203,8 @@ def klassifiziere(pack, rechnung_text):
       SONSTIGE: jede andere echte Kundenadresse.
     """
     if not pack:
+        if amazon_signale(rechnung_text or ""):    # Amazon-Bestellung ohne Packliste: Adresse unbekannt -> ruhig nie senden
+            return KANAL_AMAZON, "Amazon-Bestellung ohne Packliste (E-Mail-Adresse unbekannt)", ""
         return KANAL_UNKLAR, "keine zugehörige Packliste gefunden (E-Mail-Adresse unbekannt)", ""
     ptext, rtext = pack.get("text", ""), rechnung_text or ""
     sig = amazon_signale(ptext, rtext)
@@ -796,6 +805,14 @@ def _selftest():
     check("Shop-Nr + Mail anderer Domain mit 'members.' -> SHOP", k("25623", ["x@members.example.org"]), KANAL_SHOP)
     check("Fremdbeleg Rechnung weicht ab -> unklar", klassifiziere(pack("25623", ["a@b.de"]), rechn % "25999")[0], KANAL_UNKLAR)
     check("keine Packliste -> unklar", klassifiziere(None, "x")[0], KANAL_UNKLAR)
+    check("keine Packliste + Amazon-Nr auf der Rechnung -> Amazon (ruhig)",
+          klassifiziere(None, "Rechnungsdatum: 16.11.2026\n304-0312378-5789914\n")[0], KANAL_AMAZON)
+    check("interner Beleg Ladengeschaeft wird ignoriert",
+          ist_kundenrechnung("Gasecenter, Karlsruher Strasse 3, 86156 Augsburg (GVZ)\nGasecenter Augsburg\n"
+                             "MONATLICHE VERKÄUFE LADENGESCHÄFT\n02.11 - 12.11.2026\nRechnung Nr. : 1713932\n")[0], False)
+    check("normale Rechnung bleibt Rechnung",
+          ist_kundenrechnung("Gasecenter, Karlsruher Strasse 3, 86156 Augsburg (GVZ)\nFritz Muster\nHauptstr. 1\n"
+                             "Rechnung Nr. : 1713966\n")[0], True)
     check("Rechnung ohne Fremdbeleg-Zeile bleibt ok (Vorlagentext wird nicht als Fremdbeleg gelesen)",
           klassifiziere(pack("25623", ["a@b.de"]),
                         "Rechnungsdatum: 20.10.2026\nRechnungsdatum = Lieferdatum falls\nnicht anders angegeben\n")[0], KANAL_SHOP)

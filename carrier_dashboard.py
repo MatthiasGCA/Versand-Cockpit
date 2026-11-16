@@ -101,7 +101,8 @@ from tkinter import messagebox, simpledialog, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-11-16c"
+VERSION = "2026-11-16d"
+# 2026-11-16d: Knopf "Doch senden" heisst jetzt "Trotzdem senden" (Wunsch Matthias).
 # 2026-11-16c: Rechnungsversand - OFFENE FAELLE: Ansicht "Offene Fälle" im Fenster (nicht versendete Problem-Rechnungen
 #   bleiben, bis sie von Hand erledigt sind), Knoepfe "Erledigt" und "Doch senden ..." (Adresse vorbelegt bzw. eingeben,
 #   nie an Amazon); Statuszeile zeigt "N offen" (gelb), solange etwas offen ist.
@@ -1088,7 +1089,7 @@ def _rechnungsversand_dialog(root, rv, cfg, nach_lauf=None):
         rb_offen.configure(text="Offene Fälle (%d)" % len(offen))
         if ansicht_var.get() == "offen":
             modus_lbl.configure(text="Nicht versendete Rechnungen - bleiben hier, bis sie \"Erledigt\" (z.B. von Hand "
-                                     "verschickt) oder per \"Doch senden\" versendet sind.")
+                                     "verschickt) oder per \"Trotzdem senden\" versendet sind.")
             tv.delete(*tv.get_children())
             for f in sorted(offen.values(), key=lambda f: f.get("rnr", "")):
                 tag = "fehler" if (f.get("entscheidung") or "").startswith("FEHLER") else "unklar"
@@ -1211,7 +1212,7 @@ def _rechnungsversand_dialog(root, rv, cfg, nach_lauf=None):
         if not f:
             return
         from tkinter import simpledialog
-        adr = simpledialog.askstring("Rechnungsversand - doch senden",
+        adr = simpledialog.askstring("Rechnungsversand - trotzdem senden",
                                      "Rechnung %s\nGrund: %s\n\nAn diese E-Mail-Adresse senden:"
                                      % (f["rnr"], f.get("grund", "")),
                                      initialvalue=f.get("empfaenger", ""), parent=dlg)
@@ -1254,7 +1255,7 @@ def _rechnungsversand_dialog(root, rv, cfg, nach_lauf=None):
                RundButton(unten, text="Bericht öffnen", command=bericht_oeffnen)]
     if hasattr(rv, "lade_offen"):
         knoepfe += [RundButton(unten, text="Erledigt", command=erledigt),
-                    RundButton(unten, text="Doch senden ...", command=doch_senden)]
+                    RundButton(unten, text="Trotzdem senden ...", command=doch_senden)]
     for b in knoepfe:
         b.pack(side="left", padx=(0, 8))
     RundButton(unten, text="Schließen", command=dlg.destroy).pack(side="right")

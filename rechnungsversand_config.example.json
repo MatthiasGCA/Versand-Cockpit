@@ -10,6 +10,9 @@
   "lauf_uhrzeit": "15:00",
   "max_alter_tage": 4,
   "max_mails_pro_lauf": 400,
+  "ignorierte_kundennummern": [
+    "483911"
+  ],
   "pause_sekunden": 1.0,
   "bei_fehler_abbrechen": true,
   "absender": "onlinerechnung@gasecenter-onlineshop.de",

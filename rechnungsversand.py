@@ -41,7 +41,10 @@ from datetime import datetime, timedelta
 from email.message import EmailMessage
 from email.utils import formatdate, make_msgid, formataddr
 
-VERSION = "2026-11-16d"
+VERSION = "2026-11-16e"
+# 2026-11-16e: Belege an eigene Kundennummern (Konfig "ignorierte_kundennummern", Standard 483911 = Ladengeschaeft/
+#   Thekenrechner) werden still ignoriert - auch ohne Packliste (Theke-Verkaeufe haben keine). Pruefung an 1085
+#   Rechnungen 1713500-1714699: einziger solcher Beleg war 1713932 (Kunde 483911).
 # 2026-11-16d: THEKENRECHNER-AUSBUCHUNG (Wunsch Matthias): steht als Kunden-E-Mail der Packliste eine EIGENE Adresse
 #   (z.B. email@gasecenter-augsburg.de), wird die Rechnung still ignoriert ("ignoriert (eigene Adresse)", grau, kein
 #   offener Fall). Geprueft wird nur der Kopfblock unter "Rechnung Nr." - die Firmenadresse in der Fusszeile jeder
@@ -548,6 +551,10 @@ def lauf(cfg, modus=None, jetzt=None, log=print):
     for mt, p in pdfs:
         t = pdf_text(p)
         ok, grund = ist_kundenrechnung(t)
+        if ok:
+            mk = RE_KUNDENNR.search(t)
+            if mk and mk.group(1) in {str(k) for k in cfg.get("ignorierte_kundennummern", IGNORIERTE_KUNDEN)}:
+                ok, grund = False, "eigene Kundennummer %s (Ladengeschäft/Theke)" % mk.group(1)
         if not ok:
             ignoriert.append((os.path.basename(p), grund))
             continue
@@ -692,6 +699,8 @@ def schreibe_zusammenfassung(res, log=print):
 
 
 STATUS_DATEI = "letzter_lauf.json"
+RE_KUNDENNR = re.compile(r"Kunden\s*Nr\.?\s*:\s*(\d+)")
+IGNORIERTE_KUNDEN = ("483911",)          # Ladengeschaeft / Thekenrechner (Sammelbelege an die eigene Firma)
 OFFEN_DATEI = "offene_rechnungen.json"
 
 
@@ -1199,6 +1208,14 @@ def _selftest():
         check("Erledigt: im nächsten Lauf 'ausgeschlossen', nicht wieder offen",
               ({z["rnr"]: z["entscheidung"] for z in res["ergebnisse"]}.get("1710014"), "1710014" in lade_offen(aus)),
               ("ausgeschlossen", False))
+        # eigene Kundennummer (Ladengeschaeft/Theke, ohne Packliste) -> still ignorieren
+        mkpdf(os.path.join(rd, "Packliste Nr. 1710050 20261116.pdf"),
+              ["Gasecenter, Karlsruher Strasse 3", "Max Theke", "Rechnung Nr. : 1710050", "Kunden Nr. : 483911",
+               "Rechnungsdatum: 16.11.2026", "Rechnung"])
+        res = lauf(cfg, "bericht")
+        check("Kundennummer 483911 -> ignoriert (nicht in der Liste, kein offener Fall)",
+              ("1710050" in {z["rnr"] for z in res["ergebnisse"]}, "1710050" in lade_offen(aus),
+               any("483911" in g for _, g in res["ignoriert"])), (False, False, True))
         # Thekenrechner-Ausbuchung: eigene Adresse als Kunden-E-Mail -> still ignorieren
         rechnung("1710040", "Theke")
         packl("1710040", "Theke", "email@gasecenter-augsburg.de")

@@ -70,7 +70,10 @@ from reportlab.graphics.shapes import Drawing
 # KONFIGURATION
 # ----------------------------------------------------------------------------
 
-VERSION = "2026-11-12a"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+VERSION = "2026-11-16a"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+# 2026-11-16a: STORNO-SPERRE. main() prueft jede Onlineshop-Rechnung ueber wc_storno.py (Statusdatei des WooCommerce-
+#   Auftragsimports + Live-Abfrage im Shop). Im Shop stornierte/erstattete/widerrufene/wieder unbezahlte Bestellungen kommen
+#   NICHT auf die Pickliste, werden nicht archiviert und bleiben im Ordner (Ausgabe "!!! NICHT GEPACKT").
 # 2026-11-12a: MEHRSEITIGE RECHNUNGEN. parse_pdf las bisher nur Seite 1: ging eine Rechnung ueber zwei Seiten (erstmals Rg 1713345,
 #   16 Positionen), fehlten die Positionen der 2. Seite in Pickliste/Packuebersicht, EAN-/Mengen-CSV und Statistik, und der
 #   Rechnungsbetrag (steht nur auf der LETZTEN Seite) galt als "nicht lesbar" (Versicherungsgrenze im Carrier-Dashboard!).
@@ -2577,6 +2580,22 @@ def main(argv):
                   f"-> Positionssumme {r['summe']:.2f} geprueft")
         if not r["vollstaendig_ok"]:
             print(f"      unvollstaendige Position(en): {', '.join(r['unvollstaendig'])}")
+
+    # Storno-Sperre (wc_storno.py): im Shop stornierte Bestellungen kommen nicht auf die
+    # Pickliste, werden nicht archiviert und bleiben im Ordner liegen.
+    try:
+        import wc_storno
+        storniert, nicht_geprueft = wc_storno.StornoPruefung().pruefe(rechnungen)
+    except Exception as e:
+        storniert, nicht_geprueft = {}, {"?": "Storno-Pruefung fehlgeschlagen: %s" % e}
+    if storniert:
+        rechnungen = [r for r in rechnungen if r["rnr"] not in storniert]
+        print("-" * 60)
+        for rnr, text in sorted(storniert.items()):
+            print(f"  !!! NICHT GEPACKT - Rg {rnr}: {text}")
+    if nicht_geprueft:
+        print(f"  ACHTUNG: Storno-Pruefung fuer {len(nicht_geprueft)} Shop-Rechnung(en) nicht moeglich: "
+              + sorted(set(nicht_geprueft.values()))[0])
 
     if not rechnungen:
         print("Keine auswertbaren Rechnungen.")

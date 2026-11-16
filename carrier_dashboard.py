@@ -101,7 +101,14 @@ from tkinter import messagebox, simpledialog, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-11-11a"
+VERSION = "2026-11-16a"
+# 2026-11-16a: STORNO-SPERRE (wc_storno.py). Schritt 1 markiert Shop-Rechnungen, fuer die der WooCommerce-Auftragsimport schon
+#   einen Warnauftrag (-ST) geschrieben hat, als FEHLER "STORNIERT". Schritt 2 prueft unmittelbar vor dem Packen jede Shop-
+#   Rechnung LIVE im Shop; stornierte werden markiert und Schritt 2 bricht ab (nichts verarbeitet). Shop nicht erreichbar ->
+#   Rueckfrage (Vorbelegung Nein). exportiere_alles() bricht zusaetzlich ab, wenn eine laut Statusdatei stornierte Rechnung
+#   im Lauf ist (ausser Schritt 2 hat sie eben live freigegeben). Ist der Shop erreichbar, entscheidet der LIVE-Status: eine
+#   im Shop wieder auf "processing" gesetzte Bestellung wird in Schritt 2 freigegeben. Config-Schluessel "wc_storno_config"
+#   (Standard C:\Scripts\wc_auftragsimport_config.json).
 # 2026-11-11a: Rechnungsversand-Fenster: "zurueckgestellt" (ueber der Hoechstzahl je Lauf) grau statt gelb.
 # 2026-11-06a: Rechnungsversand-Rueckfrage zeigt zusaetzlich "Sonstige" (neuer Kanal im Rechnungsversand: jede einzelne echte
 #   Kundenadresse ausser Amazon-Adressen).
@@ -358,6 +365,9 @@ CONFIG_PFAD = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 CONFIG_FEHLER = ""
 RECHNUNGSVERSAND_CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                        "rechnungsversand_config.json")
+# Storno-Sperre (wc_storno.py): Konfig des WooCommerce-Auftragsimports (Lese-Schluessel + Pfad der
+# Statusdatei). Leer = wc_storno.STANDARD_CONFIG (C:\Scripts\wc_auftragsimport_config.json).
+WC_STORNO_CONFIG = ""
 
 
 def _lade_config(pfad=None):
@@ -386,7 +396,8 @@ def _lade_config(pfad=None):
              "archiv_ordner": "ARCHIV_ORDNER", "carrier_export_ordner": "CARRIER_EXPORT_ORDNER",
              "wc_sync_ordner": "WC_SYNC_ORDNER", "bruecken_ziel": "BRUECKEN_ZIEL",
              "pickliste_drucker": "PICKLISTE_DRUCKER",
-             "rechnungsversand_config": "RECHNUNGSVERSAND_CONFIG"}
+             "rechnungsversand_config": "RECHNUNGSVERSAND_CONFIG",
+             "wc_storno_config": "WC_STORNO_CONFIG"}
     gesetzt = []
     for schluessel, name in ziele.items():
         wert = cfg.get(schluessel)
@@ -524,7 +535,42 @@ def lese_datei(pfad):
         return fehler("Auswertung fehlgeschlagen: %s: %s" % (type(e).__name__, e),
                       r.get("rnr", ""))
     b["quelle"], b["sig"] = pfad, sig
+    # Storno-Sperre, Schritt 1: nur die Statusdatei des Auftragsimports (schnell, ohne
+    # Netz). Die Live-Abfrage im Shop folgt unmittelbar vor dem Packen (starte_export).
+    try:
+        gesperrt, _ = storno_pruefung().pruefe([r], live=False)
+    except Exception:
+        gesperrt = {}
+    if r.get("rnr") in gesperrt:
+        markiere_storno(b, gesperrt[r["rnr"]])
     return r, b
+
+
+def storno_pruefung():
+    import wc_storno
+    return wc_storno.StornoPruefung(WC_STORNO_CONFIG or None)
+
+
+def markiere_storno(b, text):
+    """Stornierte Shop-Bestellung: als FEHLER markieren - Fehler werden in Schritt 2
+    weder gepackt noch exportiert noch archiviert und bleiben im Pool (siehe
+    starte_export(): ohne_label)."""
+    if b.get("storniert"):
+        return
+    b["storniert"] = text
+    b["status_vor_storno"] = b["status"]
+    b["fehler"].insert(0, text)
+    b["status"] = "fehler"
+
+
+def hebe_storno_auf(b):
+    """Bestellung ist live wieder in Ordnung (z.B. im Shop zurueck auf "processing")."""
+    text = b.pop("storniert", None)
+    if not text:
+        return
+    if text in b["fehler"]:
+        b["fehler"].remove(text)
+    b["status"] = b.pop("status_vor_storno", "fehler" if b["fehler"] else "ok")
 
 
 def _sortiere_paare(paare):
@@ -706,7 +752,7 @@ def kopiere_wc_bestellnummern(quelle, ziel_ordner):
 
 
 def exportiere_alles(rechnungen, ergebnisse, ausgabe_pfad, archiv_ordner, carrier_ordner,
-                     gesperrt=()):
+                     gesperrt=(), storno_frei=()):
     """Schritt 2: rechnungen (gueltige parse_pdf()-Dicts, "quelle" gesetzt) UND
     ergebnisse (dazu bewertete Carrier-Ergebnisse, GLEICHE Reihenfolge/Laenge)
     -> Pickliste-PDF + fuenf Bruecken-CSVs (wie packliste.main(), Layout/Logik
@@ -727,6 +773,15 @@ def exportiere_alles(rechnungen, ergebnisse, ausgabe_pfad, archiv_ordner, carrie
         sperre = packliste.pruefe_belegnummer(r.get("rnr"))
         if sperre:
             raise ValueError("%s: %s" % (r.get("datei") or r.get("rnr"), sperre))
+    # Letzte Storno-Sicherung (ohne Netz, nur Statusdatei des Auftragsimports): eine als
+    # storniert bekannte Shop-Bestellung bricht den ganzen Lauf ab, BEVOR etwas gepackt wird.
+    storniert, _ = storno_pruefung().pruefe(rechnungen, live=False)
+    # Was Schritt 2 eben LIVE als in Ordnung geprueft hat (z.B. im Shop wieder auf
+    # "processing" gesetzt), zaehlt mehr als ein alter Warnvermerk der Statusdatei.
+    storniert = {k: v for k, v in storniert.items() if k not in set(storno_frei)}
+    if storniert:
+        raise ValueError("Stornierte Shop-Bestellung im Lauf - nichts wurde gepackt:\n"
+                         + "\n".join("Rg %s: %s" % kv for kv in sorted(storniert.items())))
 
     out_dir = os.path.dirname(os.path.abspath(ausgabe_pfad))
     os.makedirs(out_dir, exist_ok=True)
@@ -1381,7 +1436,7 @@ def gui():
 
     wartet = {"an": False}
 
-    def im_hintergrund(fn, timeout=20.0):
+    def im_hintergrund(fn, timeout=20.0, warte_text="Lese Statistik-Dateien ..."):
         """Fuehrt fn (z.B. Lesezugriff auf das Netzlaufwerk mit den Statistik-
         Dateien) in einem Thread aus, waehrend die GUI weiter Ereignisse
         verarbeitet - ein nicht erreichbarer UNC-Pfad kann sonst das ganze
@@ -1411,7 +1466,6 @@ def gui():
         wartet["an"] = True
         btn_zuordnen.configure(state="disabled")
         btn_export.configure(state="disabled")
-        warte_text = "Lese Statistik-Dateien ..."
         status_var.set(warte_text)
         root.after(50, poll)
         root.wait_variable(fertig)
@@ -1954,10 +2008,10 @@ def gui():
 
     # --- Schritt 2 im Hintergrund ---------------------------------------------
     def arbeite_export(rechnungen, ergebnisse_gueltig, ausgabe_pfad, archiv_ordner, carrier_ordner,
-                       gesperrt=()):
+                       gesperrt=(), storno_frei=()):
         try:
             bericht = exportiere_alles(rechnungen, ergebnisse_gueltig, ausgabe_pfad,
-                                       archiv_ordner, carrier_ordner, gesperrt)
+                                       archiv_ordner, carrier_ordner, gesperrt, storno_frei)
             q.put(("export_fertig", bericht))
         except Exception as e:
             q.put(("export_abbruch", "%s: %s" % (type(e).__name__, e)))
@@ -1991,6 +2045,67 @@ def gui():
         verarbeitete_indizes = {i for i, (r, b) in alle
                                 if r is not None and not b.get("dup_kopie")
                                 and i in sichtbare_indizes and not ohne_label(b)}
+        # Storno-Sperre, Schritt 2: unmittelbar vor dem Packen jede Onlineshop-Rechnung
+        # LIVE im Shop pruefen (wc_storno.py). Stornierte werden als Fehler markiert und
+        # bleiben im Pool - Schritt 2 bricht ab, damit die Tabelle neu angesehen wird.
+        # Bereits als storniert markierte Zeilen gehen mit in die Abfrage: steht die Bestellung
+        # im Shop inzwischen wieder auf "processing", wird die Sperre aufgehoben.
+        storno_zeilen = [(r, b) for i, (r, b) in alle
+                         if r is not None and b.get("storniert") and i in sichtbare_indizes]
+
+        def _storno_lauf():
+            sp = storno_pruefung()
+            g, ng = sp.pruefe([r for r, _ in paare + storno_zeilen])
+            return g, ng, sp.live_frei
+
+        # (steht VOR "if not paare": auch wenn nur gesperrte Zeilen uebrig sind, muss eine
+        # im Shop wieder freigegebene Bestellung freikommen koennen)
+        if paare or storno_zeilen:
+            ok_st, st_erg = im_hintergrund(_storno_lauf, timeout=120.0,
+                                           warte_text="Pruefe Shop-Bestellungen auf Storno ...")
+        else:
+            ok_st, st_erg = True, ({}, {}, set())
+        storniert, nicht_geprueft, storno_frei = st_erg if ok_st else ({}, None, set())
+        wieder_frei = [b["rnr"] for r, b in storno_zeilen if r.get("rnr") in storno_frei]
+        if wieder_frei:
+            for r, b in storno_zeilen:
+                if r.get("rnr") in storno_frei:
+                    hebe_storno_auf(b)
+            fuelle()
+        storniert = {k: v for k, v in storniert.items()
+                     if k in {r.get("rnr") for r, _ in paare}}
+        if wieder_frei and not storniert:
+            messagebox.showinfo(
+                "Carrier-Dashboard",
+                "Diese Bestellung(en) stehen im Shop wieder auf \"In Bearbeitung\" - die "
+                "Storno-Sperre ist aufgehoben:\n\n%s\n\nEs wurde noch nichts verarbeitet - "
+                "bitte Schritt 2 erneut starten." % "\n".join("Rg %s" % x for x in wieder_frei))
+            return
+        if storniert:
+            for r, b in paare:
+                if r.get("rnr") in storniert:
+                    markiere_storno(b, storniert[r["rnr"]])
+            fuelle()
+            messagebox.showwarning(
+                "Carrier-Dashboard - STORNIERT",
+                "%d Onlineshop-Bestellung(en) sind im Shop storniert/nicht mehr bezahlt:\n\n%s"
+                "\n\nSie sind jetzt als FEHLER markiert und werden NICHT gepackt, exportiert "
+                "oder archiviert. Es wurde noch nichts verarbeitet - bitte Schritt 2 erneut "
+                "starten." % (len(storniert), "\n".join(
+                    "Rg %s: %s" % kv for kv in sorted(storniert.items()))))
+            return
+        if nicht_geprueft is None or nicht_geprueft:
+            n = "alle" if nicht_geprueft is None else str(len(nicht_geprueft))
+            grund = ("Zeitueberschreitung" if nicht_geprueft is None
+                     else sorted(set(nicht_geprueft.values()))[0])
+            if not messagebox.askyesno(
+                    "Carrier-Dashboard - Storno-Pruefung nicht moeglich",
+                    "Fuer %s Onlineshop-Rechnung(en) konnte NICHT im Shop geprueft werden, ob die "
+                    "Bestellung inzwischen storniert ist:\n%s\n\nBereits bekannte Stornos "
+                    "(Warnauftrag -ST) sind trotzdem gesperrt.\n\nTrotzdem mit Schritt 2 "
+                    "fortfahren?" % (n, grund), icon="warning", default=messagebox.NO):
+                return
+
         if not paare:
             if zurueckgestellt:
                 messagebox.showwarning(
@@ -2116,7 +2231,7 @@ def gui():
         ergebnisse_g = [b for _, b in paare]
         threading.Thread(target=arbeite_export,
                          args=(rechnungen_g, ergebnisse_g, ausgabe_pfad, archiv_ordner,
-                               carrier_ordner, set(schon_exportiert)),
+                               carrier_ordner, set(schon_exportiert), set(storno_frei)),
                          daemon=True).start()
         root.after(100, abfrage_export)
 

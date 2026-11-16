@@ -41,7 +41,13 @@ from datetime import datetime, timedelta
 from email.message import EmailMessage
 from email.utils import formatdate, make_msgid, formataddr
 
-VERSION = "2026-11-16a"
+VERSION = "2026-11-16c"
+# 2026-11-16c: OFFENE FAELLE (Wunsch Matthias): jede nicht versendete Problem-Rechnung (unklar, interne Angaben, Fehler,
+#   Versuch ohne Bestaetigung ...) kommt in offene_rechnungen.json und bleibt dort, bis sie im Dashboard von Hand
+#   "Erledigt" (-> nie_senden.txt) oder "Doch senden" (an die bekannte oder eine eingegebene Adresse, nie an Amazon)
+#   bekommt - sie verschwindet nicht mehr unbemerkt, wenn sie aelter als max_alter_tage wird.
+# 2026-11-16b: Rechnungen aus nie_senden.txt heissen "ausgeschlossen" (grau) und zaehlen nicht mehr als "unklar" - so kann
+#   man eine von Hand erledigte Rechnung (z.B. aus Amicron verschickt) still stellen.
 # 2026-11-16a: (1) Interne Belege an die eigene Firma (z.B. "MONATLICHE VERKAEUFE LADENGESCHAEFT", Empfaenger
 #   "Gasecenter Augsburg", real 1713932) werden still ignoriert statt jeden Tag als "unklar" gemeldet. (2) Amazon-
 #   Bestellnummer auf der Rechnung und keine Packliste (E-Mail-Adresse unbekannt, real 1714238) -> Amazon (ruhig).
@@ -539,7 +545,8 @@ def lauf(cfg, modus=None, jetzt=None, log=print):
     for rnr in sorted(je_rnr):
         pdf = je_rnr[rnr]
         rtext = texte[rnr]
-        zeile = {"rnr": rnr, "pdf": os.path.basename(pdf), "kanal": "", "entscheidung": "", "grund": "", "empfaenger": ""}
+        zeile = {"rnr": rnr, "pdf": os.path.basename(pdf), "kanal": "", "entscheidung": "", "grund": "", "empfaenger": "",
+                 "pfad": pdf, "fremdbeleg": "", "rechnungsdatum": rechnungsdatum_aus_text(rtext)}
         ergebnisse.append(zeile)
         if protokoll.get(rnr) == "gesendet":
             zeile.update(entscheidung="bereits gesendet", grund="laut Protokoll schon versendet")
@@ -549,7 +556,7 @@ def lauf(cfg, modus=None, jetzt=None, log=print):
                                                               "(wurde die Mail evtl. schon verschickt?)")
             continue
         if rnr in sperre:
-            zeile.update(entscheidung="NICHT gesendet", grund="steht in nie_senden.txt")
+            zeile.update(entscheidung="ausgeschlossen", grund="steht in nie_senden.txt (von Hand erledigt)")
             continue
         interne = INTERN_MARKER.search(rtext)
         packs = []
@@ -568,7 +575,7 @@ def lauf(cfg, modus=None, jetzt=None, log=print):
                              grund="mehrere Packlisten mit unterschiedlichen Angaben")
                 continue
         kanal, grund, empf = klassifiziere(pack, rtext)
-        zeile.update(kanal=kanal, grund=grund, empfaenger=empf)
+        zeile.update(kanal=kanal, grund=grund, empfaenger=empf, fremdbeleg=fremdbeleg_fuer_mail(kanal, pack, rtext))
         if kanal == KANAL_AMAZON:
             zeile["entscheidung"] = "NICHT gesendet (Amazon)"
             continue
@@ -617,6 +624,23 @@ def lauf(cfg, modus=None, jetzt=None, log=print):
             zeile["entscheidung"] = ("TEST gesendet an %s" % test_an) if test_an else "gesendet"
             gesendet += 1
             time.sleep(float(cfg.get("pause_sekunden", 1.0)))
+    # Offene Faelle pflegen: Problemfaelle aufnehmen, versendete/ausgeschlossene austragen
+    try:
+        offen = lade_offen(aus)
+        for z in ergebnisse:
+            e = z["entscheidung"]
+            if ist_problemfall(e):
+                alt = offen.get(z["rnr"], {})
+                offen[z["rnr"]] = {"rnr": z["rnr"], "pdf": z.get("pfad", ""), "kanal": z["kanal"], "grund": z["grund"],
+                                   "entscheidung": e, "empfaenger": z["empfaenger"],
+                                   "fremdbeleg": z.get("fremdbeleg", ""), "rechnungsdatum": z.get("rechnungsdatum", ""),
+                                   "erstmals": alt.get("erstmals") or jetzt.strftime("%Y-%m-%d %H:%M"),
+                                   "zuletzt": jetzt.strftime("%Y-%m-%d %H:%M")}
+            elif e in ("gesendet", "bereits gesendet", "ausgeschlossen"):
+                offen.pop(z["rnr"], None)
+        speichere_offen(aus, offen)
+    except (OSError, ValueError) as e:
+        log("Offene Fälle konnten nicht gespeichert werden: %s" % e)
     # Bericht schreiben
     bericht = os.path.join(aus, "Bericht_%s.csv" % jetzt.strftime("%Y-%m-%d_%H%M"))
     with open(bericht, "w", encoding="utf-8-sig", newline="") as f:
@@ -644,6 +668,106 @@ def schreibe_zusammenfassung(res, log=print):
 
 
 STATUS_DATEI = "letzter_lauf.json"
+OFFEN_DATEI = "offene_rechnungen.json"
+
+
+def ist_problemfall(entscheidung):
+    """Nicht versendet und braucht einen Menschen (kein Amazon, nicht zurueckgestellt/ausgeschlossen/schon gesendet)."""
+    e = entscheidung or ""
+    return e.startswith("FEHLER") or (e.startswith("NICHT gesendet") and "Amazon" not in e)
+
+
+def _schreibe_json(pfad, daten):
+    tmp = pfad + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(daten, f, ensure_ascii=False, indent=1)
+    for i in range(6):
+        try:
+            os.replace(tmp, pfad)
+            return
+        except OSError:
+            time.sleep(0.3 * (i + 1))
+    with open(tmp, encoding="utf-8") as q, open(pfad, "w", encoding="utf-8") as z:
+        z.write(q.read())
+    os.remove(tmp)
+
+
+def lade_offen(ausgabe_ordner):
+    """{rnr: Fall} - offene (nicht versendete) Problem-Rechnungen, bis sie von Hand erledigt/gesendet werden."""
+    try:
+        with open(os.path.join(ausgabe_ordner, OFFEN_DATEI), encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def speichere_offen(ausgabe_ordner, offen):
+    _schreibe_json(os.path.join(ausgabe_ordner, OFFEN_DATEI), offen)
+
+
+def markiere_erledigt(cfg, rnr, notiz="von Hand erledigt"):
+    """Fall schliessen: Rechnungsnummer in nie_senden.txt (wird nie automatisch versendet) und aus den offenen Faellen."""
+    aus = cfg["ausgabe_ordner"]
+    with open(os.path.join(aus, "nie_senden.txt"), "a", encoding="utf-8") as f:
+        f.write("%s  # %s %s\n" % (rnr, notiz, datetime.now().strftime("%Y-%m-%d %H:%M")))
+    offen = lade_offen(aus)
+    offen.pop(rnr, None)
+    speichere_offen(aus, offen)
+
+
+def pruefe_adresse(adresse):
+    """'' wenn die Adresse fuer 'Doch senden' zulaessig ist, sonst der Grund."""
+    a = (adresse or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", a):
+        return "keine gültige E-Mail-Adresse"
+    if ist_amazon_adresse(a.lower()) or "amazon" in a.lower():
+        return "an Amazon-Adressen wird nie gesendet"
+    if ist_firmenadresse(a):
+        return "das ist eine eigene Firmenadresse"
+    return ""
+
+
+def sende_einzeln(cfg, rnr, empfaenger):
+    """'Doch senden' aus dem Dashboard: eine offene Rechnung an empfaenger schicken (mit Sperre, Protokoll, BCC und
+    Testadresse wie im normalen Lauf). Rueckgabe (ok, text)."""
+    aus = cfg["ausgabe_ordner"]
+    grund = pruefe_adresse(empfaenger)
+    if grund:
+        return False, grund
+    with EinzelInstanz(os.path.join(aus, "lauf.lock")) as lock:
+        if not lock.ok:
+            return False, "es läuft gerade ein anderer Lauf - bitte gleich nochmal versuchen"
+        fall = lade_offen(aus).get(rnr)
+        if not fall:
+            return False, "Rechnung %s ist kein offener Fall (mehr)" % rnr
+        prot_pfad = os.path.join(aus, "gesendet.csv")
+        if lade_protokoll(prot_pfad).get(rnr) == "gesendet":
+            return False, "Rechnung %s wurde laut Protokoll schon versendet" % rnr
+        pdf = fall.get("pdf") or ""
+        if not pdf or not os.path.exists(pdf):
+            return False, "Rechnungs-PDF nicht gefunden: %s" % pdf
+        if rechnungsnummer_aus_text(pdf_text(pdf)) != rnr:
+            return False, "PDF enthält nicht die Rechnung %s" % rnr
+        kanal = fall.get("kanal") if fall.get("kanal") in (KANAL_SHOP, KANAL_EBAY, KANAL_SONST) else ""
+        test_an = (cfg.get("test_empfaenger") or "").strip()
+        msg = baue_mail(cfg, rnr, test_an or empfaenger.strip(), pdf, kanal, fall.get("fremdbeleg", ""),
+                        fall.get("rechnungsdatum", ""))
+        if test_an:
+            msg.replace_header("Subject", "[TEST für %s] %s" % (empfaenger, msg["Subject"]))
+        st_v, st_ok = ("testversuch", "test") if test_an else ("versuch", "gesendet")
+        protokolliere(prot_pfad, rnr, st_v, kanal or "MANUELL", test_an or empfaenger, pdf, "manuell")
+        try:
+            sende_smtp(cfg, msg)
+        except Exception as e:
+            protokolliere(prot_pfad, rnr, "fehler", kanal or "MANUELL", empfaenger, pdf, "manuell")
+            return False, "Senden fehlgeschlagen: %s" % e
+        protokolliere(prot_pfad, rnr, st_ok, kanal or "MANUELL", test_an or empfaenger, pdf, "manuell")
+        if not test_an:
+            offen = lade_offen(aus)
+            offen.pop(rnr, None)
+            speichere_offen(aus, offen)
+        return True, ("TEST gesendet an %s" % test_an) if test_an else "gesendet an %s" % empfaenger
 
 
 def lade_status(ausgabe_ordner):
@@ -991,7 +1115,7 @@ def _selftest():
         check("Bericht: Amazon gesperrt", je["1710012"]["entscheidung"], "NICHT gesendet (Amazon)")
         check("Bericht: unklarer Name/Mail", je["1710013"]["entscheidung"], "NICHT gesendet (unklar)")
         check("Bericht: ohne Packliste unklar", je["1710014"]["entscheidung"], "NICHT gesendet (unklar)")
-        check("Bericht: nie_senden.txt greift", je["1710015"]["entscheidung"], "NICHT gesendet")
+        check("Bericht: nie_senden.txt greift (ausgeschlossen, nicht unklar)", je["1710015"]["entscheidung"], "ausgeschlossen")
         check("Bericht: unter Startnummer fehlt", "1709999" in je, False)
         check("Bericht: Gutschrift ignoriert", "1110001" in je, False)
         check("Bericht: internes Formular (Lagerort) blockiert", je["1710020"]["entscheidung"], "NICHT gesendet")
@@ -1031,6 +1155,26 @@ def _selftest():
         res = lauf(cfg, "senden")
         je = {z["rnr"]: z for z in res["ergebnisse"]}
         check("Versuch ohne Bestaetigung wird NICHT wiederholt", (je["1710099"]["entscheidung"], len(gefangen)), ("NICHT gesendet", 3))
+        # --- offene Faelle ---
+        off = lade_offen(aus)
+        check("Offene Fälle: unklare Rechnungen drin, Amazon/gesendet/ausgeschlossen nicht",
+              (("1710013" in off, "1710014" in off), "1710012" in off, "1710010" in off, "1710015" in off),
+              ((True, True), False, False, False))
+        check("Doch senden: Amazon-Adresse abgelehnt", sende_einzeln(cfg, "1710013", "x@marketplace.amazon.de")[0], False)
+        check("Doch senden: ungültige Adresse abgelehnt", sende_einzeln(cfg, "1710013", "kein-at-zeichen")[0], False)
+        n_vor = len(gefangen)
+        ok_ds, txt_ds = sende_einzeln(cfg, "1710013", "h@gmx.de")
+        check("Doch senden: gesendet, Mail raus, Fall weg, Protokoll gesendet",
+              (ok_ds, len(gefangen) - n_vor, "1710013" in lade_offen(aus),
+               lade_protokoll(os.path.join(aus, "gesendet.csv")).get("1710013")), (True, 1, False, "gesendet"))
+        check("Doch senden: zweites Mal abgelehnt", sende_einzeln(cfg, "1710013", "h@gmx.de")[0], False)
+        markiere_erledigt(cfg, "1710014")
+        check("Erledigt: aus offenen Fällen raus und in nie_senden.txt", ("1710014" in lade_offen(aus),
+              "1710014" in lade_sperre(os.path.join(aus, "nie_senden.txt"))), (False, True))
+        res = lauf(cfg, "bericht")
+        check("Erledigt: im nächsten Lauf 'ausgeschlossen', nicht wieder offen",
+              ({z["rnr"]: z["entscheidung"] for z in res["ergebnisse"]}.get("1710014"), "1710014" in lade_offen(aus)),
+              ("ausgeschlossen", False))
         # Maximalzahl
         if os.path.exists(os.path.join(aus, "gesendet.csv")):
             os.remove(os.path.join(aus, "gesendet.csv"))

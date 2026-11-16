@@ -58,7 +58,11 @@ Siehe ist_auslands_kleinpaket() und die Konstanten KLEINPAKET_*.
 import html
 import re
 
-VERSION = "2026-11-16a"
+VERSION = "2026-11-16b"
+# 2026-11-16b: Paketaufteilung, wenn N kein Vielfaches des Fach-Faktors ist (real Rg 1714519: 3 x BP-TILL-48 "48 Packungen
+#   (2 Kartons)" mit "72-je-Paket" = 3 Kartons je Paket): verteilt wird jetzt in Teilen von ggT(N, Fach) = 24 (1 Karton)
+#   -> 2 Pakete mit je 3 Kartons statt 3 Pakete mit je 2. Ist N ein Vielfaches des Fach-Faktors (der Normalfall),
+#   bleibt alles wie bisher (ganze Einheiten werden nie aufgebrochen).
 # 2026-11-16a: Packstation/Postfiliale/DHL-Filiale im INLAND bis 1 kg ohne Pax1 (bisher nur Hinweis "Achtung bei DHL auf
 #   Kleinpaket abändern", Umstellen von Hand) wird jetzt direkt als DHL Kleinpaket (V62KP) exportiert - wie bei der
 #   Inselregel nur bei lesbarem Warenwert unter 50 EUR; darueber bleibt der Hinweis (versichertes Paket?). Der Pruefhinweis
@@ -808,16 +812,22 @@ def je_paket_aufteilung(r, gewicht):
         stueckzahlen = [basis + 1] * rest + [basis] * (n_pakete - rest)
     else:
         # Fall 2: "<N>-je-Paket" = N/Fach ganze Mengen-Einheiten (Kartons)
-        # je Paket - in ganzen Kartons verteilen, nie aufbrechen.
-        kartons_je_paket = je_paket // fach
-        if kartons_je_paket < 1:
+        # je Paket - in ganzen Kartons verteilen, nie aufbrechen. Ist N KEIN
+        # Vielfaches des Fach-Faktors (z.B. "72-je-Paket" bei "48-Fach-Artikel"
+        # = Schuber aus 2 Kartons a 24), ist die kleinste packbare Einheit
+        # ggT(N, Fach) = 24 (ein Karton) - in diesen Teilen verteilen.
+        import math
+        teil = math.gcd(je_paket, fach)
+        einheiten = effektiv // teil
+        einheiten_je_paket = je_paket // teil
+        if einheiten_je_paket < 1:
             return None, None
-        n_pakete = (menge_i + kartons_je_paket - 1) // kartons_je_paket
+        n_pakete = (einheiten + einheiten_je_paket - 1) // einheiten_je_paket
         if n_pakete <= 1:
             return None, None        # passt ohnehin in ein Paket
-        basis, rest = divmod(menge_i, n_pakete)
-        kartons_verteilung = [basis + 1] * rest + [basis] * (n_pakete - rest)
-        stueckzahlen = [k * fach for k in kartons_verteilung]
+        basis, rest = divmod(einheiten, n_pakete)
+        verteilung = [basis + 1] * rest + [basis] * (n_pakete - rest)
+        stueckzahlen = [k * teil for k in verteilung]
 
     stueckgewicht = gewicht / effektiv
     pakete = [s * stueckgewicht for s in stueckzahlen]
@@ -1440,6 +1450,22 @@ def selftest():
                  "zeilen_ok": True, "summe_ok": True, "vollstaendig_ok": True}
     # sendungsgewicht=8,0 kg / 4 Kartons = 2,0 kg/Karton -> Stueckzahlen [2,2]
     # (gleichmaessig, NICHT [3,1]) -> Paketgewichte je 2x2,0 kg = [4.0, 4.0]
+    # Real Rg 1714519: 3 x BP-TILL-48 ("48 Packungen (2 Kartons)", 48-Fach) mit "72-je-Paket", 40,2 kg
+    r_till = {"rnr": "1714519", "datei": "x.pdf", "sendungsgewicht": 40.2,
+              "adresse_zeilen": ["A B", "Weg 1", "12345 Ort"],
+              "positionen": [{"art": "BP-TILL-48", "bez": "TILL 48 Packungen (2 Kartons)", "menge": 3.0, "gp": 284.97,
+                              "kennungen": ["pax1"], "lagerorte": [], "fach": 48, "je_paket": 72}],
+              "zeilen_ok": True, "summe_ok": True, "vollstaendig_ok": True}
+    b_till = bewerte_rechnung(r_till)
+    check("72-je-Paket bei 48-Fach (Schuber aus 2 Kartons): 2 Pakete mit je 3 Kartons (20,1 kg)",
+          ([round(g, 1) for g in b_till["pakete"] or []], b_till["fehler"]), ([20.1, 20.1], []))
+    r_till2 = dict(r_till, sendungsgewicht=26.8,
+                   positionen=[dict(r_till["positionen"][0], menge=2.0, gp=189.98)])
+    check("72-je-Paket bei 48-Fach, 4 Kartons: 2+2 Kartons", [round(g, 1) for g in bewerte_rechnung(r_till2)["pakete"] or []],
+          [13.4, 13.4])
+    check("Vielfaches (96-je-Paket bei 48-Fach) bleibt in ganzen Schubern: 3 Schuber -> 2+1",
+          [round(g, 1) for g in bewerte_rechnung(dict(r_till, positionen=[dict(r_till["positionen"][0], je_paket=96)]))["pakete"] or []],
+          [26.8, 13.4])
     check("4 Kartons bei 3-je-Paket -> 2+2 Stueck (gleichmaessig, nicht 3+1)",
           bewerte_rechnung(r_4kartons)["pakete"], [4.0, 4.0])
 

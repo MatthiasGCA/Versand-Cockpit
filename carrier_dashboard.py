@@ -101,7 +101,11 @@ from tkinter import messagebox, simpledialog, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-11-16a"
+VERSION = "2026-11-16c"
+# 2026-11-16c: Rechnungsversand - OFFENE FAELLE: Ansicht "Offene Fälle" im Fenster (nicht versendete Problem-Rechnungen
+#   bleiben, bis sie von Hand erledigt sind), Knoepfe "Erledigt" und "Doch senden ..." (Adresse vorbelegt bzw. eingeben,
+#   nie an Amazon); Statuszeile zeigt "N offen" (gelb), solange etwas offen ist.
+# 2026-11-16b: Rechnungsversand-Fenster: "ausgeschlossen" (nie_senden.txt) grau.
 # 2026-11-16a: STORNO-SPERRE (wc_storno.py). Schritt 1 markiert Shop-Rechnungen, fuer die der WooCommerce-Auftragsimport schon
 #   einen Warnauftrag (-ST) geschrieben hat, als FEHLER "STORNIERT". Schritt 2 prueft unmittelbar vor dem Packen jede Shop-
 #   Rechnung LIVE im Shop; stornierte werden markiert und Schritt 2 bricht ab (nichts verarbeitet). Shop nicht erreichbar ->
@@ -971,8 +975,9 @@ def _rv_lade_config():
         return None, None, "%s: %s" % (os.path.basename(RECHNUNGSVERSAND_CONFIG), e)
 
 
-def rv_status_text(st, cfg=None, jetzt=None):
-    """(Text, Art) fuer die Statuszeile; Art: ok | warn | fehler | neutral."""
+def rv_status_text(st, cfg=None, jetzt=None, n_offen=None):
+    """(Text, Art) fuer die Statuszeile; Art: ok | warn | fehler | neutral. n_offen (Anzahl offener Faelle) ersetzt
+    die "unklar"-Zahl des letzten Laufs - offene Faelle bleiben bis zur Erledigung sichtbar."""
     jetzt = jetzt or datetime.now()
     cfg = cfg or {}
     if not st:
@@ -999,8 +1004,10 @@ def rv_status_text(st, cfg=None, jetzt=None):
     else:
         txt = "Rechnungsversand %s (Probelauf): %d würden gesendet" % (wann, wuerde)
     art = "ok"
+    if n_offen is not None:
+        unklar = n_offen
     if unklar:
-        txt += ", %d unklar" % unklar
+        txt += ", %d offen" % unklar if n_offen is not None else ", %d unklar" % unklar
         art = "warn"
     if fehler:
         txt += ", %d Fehler" % fehler
@@ -1033,8 +1040,16 @@ def _rechnungsversand_dialog(root, rv, cfg, nach_lauf=None):
     modus_lbl = tk.Label(dlg, bg=BG, fg=MUTED, font=("Segoe UI", 9), anchor="w")
     modus_lbl.pack(fill="x", padx=12)
     nur_var = tk.BooleanVar(value=False)
-    ttk.Checkbutton(dlg, text="Nur Unklares / Fehler anzeigen", variable=nur_var,
-                    command=lambda: fuelle()).pack(anchor="w", padx=12, pady=(4, 0))
+    ansicht_var = tk.StringVar(value="lauf")
+    leiste = ttk.Frame(dlg)
+    leiste.pack(fill="x", padx=12, pady=(4, 0))
+    ttk.Radiobutton(leiste, text="Letzter Lauf", value="lauf", variable=ansicht_var,
+                    command=lambda: fuelle()).pack(side="left")
+    rb_offen = ttk.Radiobutton(leiste, text="Offene Fälle", value="offen", variable=ansicht_var,
+                               command=lambda: fuelle())
+    rb_offen.pack(side="left", padx=(12, 24))
+    ttk.Checkbutton(leiste, text="Nur Unklares / Fehler anzeigen", variable=nur_var,
+                    command=lambda: fuelle()).pack(side="left")
     spalten = ("rnr", "kanal", "entscheidung", "grund", "empfaenger")
     tv = ttk.Treeview(dlg, columns=spalten, show="headings", selectmode="browse")
     for sp, txt, br in (("rnr", "Rechnung", 90), ("kanal", "Kanal", 70), ("entscheidung", "Entscheidung", 170),
@@ -1067,8 +1082,20 @@ def _rechnungsversand_dialog(root, rv, cfg, nach_lauf=None):
 
     def fuelle():
         st = rv.lade_status(aus)
-        text, art = rv_status_text(st, cfg)
+        offen = rv.lade_offen(aus)
+        text, art = rv_status_text(st, cfg, n_offen=len(offen))
         status_lbl.configure(text=text, fg=farben[art])
+        rb_offen.configure(text="Offene Fälle (%d)" % len(offen))
+        if ansicht_var.get() == "offen":
+            modus_lbl.configure(text="Nicht versendete Rechnungen - bleiben hier, bis sie \"Erledigt\" (z.B. von Hand "
+                                     "verschickt) oder per \"Doch senden\" versendet sind.")
+            tv.delete(*tv.get_children())
+            for f in sorted(offen.values(), key=lambda f: f.get("rnr", "")):
+                tag = "fehler" if (f.get("entscheidung") or "").startswith("FEHLER") else "unklar"
+                tv.insert("", "end", iid="offen_" + f["rnr"],
+                          values=(f["rnr"], f.get("kanal", ""), "offen seit %s" % f.get("erstmals", "?"),
+                                  f.get("grund", ""), f.get("empfaenger", "")), tags=(tag,))
+            return
         modus_lbl.configure(text="Eingestellter Modus: %s   |   Sendung wird nur im Modus \"senden\" freigegeben   |   "
                                  "geplanter Lauf: täglich %s Uhr" % (cfg.get("modus", "bericht"),
                                                                     cfg.get("lauf_uhrzeit", "15:00")))
@@ -1079,7 +1106,7 @@ def _rechnungsversand_dialog(root, rv, cfg, nach_lauf=None):
             e = z["entscheidung"]
             tag = ("fehler" if e.startswith("FEHLER") else "gesendet" if e == "gesendet" or e.startswith("TEST")
                    else "sendet" if e in ("würde senden", "Entwurf erstellt")
-                   else "amazon" if "Amazon" in e or "bereits" in e or e.startswith("zurückgestellt") else "unklar")
+                   else "amazon" if "Amazon" in e or "bereits" in e or e.startswith(("zurückgestellt", "ausgeschlossen")) else "unklar")
             tv.insert("", "end", values=(z["rnr"], z["kanal"], e, z["grund"], z["empfaenger"]), tags=(tag,))
         if st and st.get("fehler"):
             tv.insert("", 0, values=("-", "-", "FEHLER", st["fehler"], ""), tags=("fehler",))
@@ -1155,6 +1182,64 @@ def _rechnungsversand_dialog(root, rv, cfg, nach_lauf=None):
             return
         lauf_async("bericht", dann=senden_nach_pruefung)
 
+    def gewaehlter_fall():
+        sel = tv.selection()
+        if ansicht_var.get() != "offen" or not sel or not str(sel[0]).startswith("offen_"):
+            messagebox.showinfo("Rechnungsversand", "Bitte oben \"Offene Fälle\" wählen und eine Rechnung anklicken.",
+                                parent=dlg)
+            return None
+        return rv.lade_offen(aus).get(str(sel[0])[len("offen_"):])
+
+    def erledigt():
+        f = gewaehlter_fall()
+        if not f:
+            return
+        if messagebox.askyesno("Rechnungsversand - erledigt?",
+                               "Rechnung %s als ERLEDIGT markieren (z.B. von Hand verschickt oder soll nicht verschickt "
+                               "werden)?\n\nSie verschwindet aus den offenen Fällen und wird nie automatisch versendet."
+                               % f["rnr"], default=messagebox.NO, parent=dlg):
+            try:
+                rv.markiere_erledigt(cfg, f["rnr"])
+            except OSError as e:
+                messagebox.showerror("Rechnungsversand", "Konnte nicht speichern: %s" % e, parent=dlg)
+            fuelle()
+            if nach_lauf:
+                nach_lauf()
+
+    def doch_senden():
+        f = gewaehlter_fall()
+        if not f:
+            return
+        from tkinter import simpledialog
+        adr = simpledialog.askstring("Rechnungsversand - doch senden",
+                                     "Rechnung %s\nGrund: %s\n\nAn diese E-Mail-Adresse senden:"
+                                     % (f["rnr"], f.get("grund", "")),
+                                     initialvalue=f.get("empfaenger", ""), parent=dlg)
+        if not adr:
+            return
+        adr = adr.strip()
+        fehlt = rv.pruefe_adresse(adr)
+        if fehlt:
+            messagebox.showwarning("Rechnungsversand", "Nicht gesendet: %s." % fehlt, parent=dlg)
+            return
+        test_an = (cfg.get("test_empfaenger") or "").strip()
+        hinweis = ("\n\nACHTUNG: Testbetrieb - die Mail geht an %s." % test_an) if test_an else ""
+        if not messagebox.askyesno("Rechnungsversand - jetzt senden?",
+                                   "Rechnung %s JETZT an %s senden?%s" % (f["rnr"], adr, hinweis),
+                                   icon="warning", default=messagebox.NO, parent=dlg):
+            return
+        status_lbl.configure(text="Sende Rechnung %s ..." % f["rnr"], fg=MUTED)
+        dlg.update_idletasks()
+        try:
+            ok, txt = rv.sende_einzeln(cfg, f["rnr"], adr)
+        except Exception as e:
+            ok, txt = False, str(e)
+        (messagebox.showinfo if ok else messagebox.showwarning)(
+            "Rechnungsversand", ("Rechnung %s: %s" % (f["rnr"], txt)), parent=dlg)
+        fuelle()
+        if nach_lauf:
+            nach_lauf()
+
     def bericht_oeffnen():
         st = rv.lade_status(aus)
         pfad = (st or {}).get("bericht") or ""
@@ -1167,6 +1252,9 @@ def _rechnungsversand_dialog(root, rv, cfg, nach_lauf=None):
                RundButton(unten, text="Entwürfe erstellen", command=entwuerfe),
                RundButton(unten, text="Jetzt senden ...", command=senden, stil="primaer"),
                RundButton(unten, text="Bericht öffnen", command=bericht_oeffnen)]
+    if hasattr(rv, "lade_offen"):
+        knoepfe += [RundButton(unten, text="Erledigt", command=erledigt),
+                    RundButton(unten, text="Doch senden ...", command=doch_senden)]
     for b in knoepfe:
         b.pack(side="left", padx=(0, 8))
     RundButton(unten, text="Schließen", command=dlg.destroy).pack(side="right")
@@ -1407,7 +1495,8 @@ def gui():
                 rv_lbl.configure(text="Rechnungsversand: Konfiguration fehlerhaft", fg=ROT)
             return
         st = rv_mod.lade_status(rv_cfg["ausgabe_ordner"])
-        text, art = rv_status_text(st, rv_cfg)
+        n_off = len(rv_mod.lade_offen(rv_cfg["ausgabe_ordner"])) if hasattr(rv_mod, "lade_offen") else None
+        text, art = rv_status_text(st, rv_cfg, n_offen=n_off)
         rv_lbl.configure(text=text, fg=rv_farben[art])
         sig = (st or {}).get("zeit")
         vorher, rv_state["sig"] = rv_state["sig"], sig

@@ -70,7 +70,9 @@ from reportlab.graphics.shapes import Drawing
 # KONFIGURATION
 # ----------------------------------------------------------------------------
 
-VERSION = "2026-11-16a"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+VERSION = "2026-11-16b"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+# 2026-11-16b: Paket-Markierung auch als "<N>-pro-Paket" (gleichbedeutend mit "<N>-je-Paket"; Matthias hat bei den
+#   Brennpasten "72-pro-Paket" hinterlegt).
 # 2026-11-16a: STORNO-SPERRE. main() prueft jede Onlineshop-Rechnung ueber wc_storno.py (Statusdatei des WooCommerce-
 #   Auftragsimports + Live-Abfrage im Shop). Im Shop stornierte/erstattete/widerrufene/wieder unbezahlte Bestellungen kommen
 #   NICHT auf die Pickliste, werden nicht archiviert und bleiben im Ordner (Ausgabe "!!! NICHT GEPACKT").
@@ -793,7 +795,7 @@ KENNUNG_RE = re.compile(r"^\s*(pax1|pox1|brx1|wapo)\s*$", re.IGNORECASE)
 # uebernommen; ausgewertet vom Carrier-Dashboard (carrier_regeln.
 # je_paket_aufteilung()), die Pickliste selbst nutzt sie nicht - mit
 # Matthias abgestimmt 2026-09-23.
-JE_PAKET_RE = re.compile(r"^\s*(\d+)-je-Paket[\s.]*$", re.IGNORECASE)   # ganze Zeile, wie KENNUNG_RE
+JE_PAKET_RE = re.compile(r"^\s*(\d+)-(?:je|pro)-Paket[\s.]*$", re.IGNORECASE)   # ganze Zeile, wie KENNUNG_RE
 
 
 # ----------------------------------------------------------------------------

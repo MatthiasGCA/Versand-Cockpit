@@ -58,7 +58,15 @@ Siehe ist_auslands_kleinpaket() und die Konstanten KLEINPAKET_*.
 import html
 import re
 
-VERSION = "2026-11-16b"
+VERSION = "2026-11-18a"
+# 2026-11-18a: POSTNUMMER bei Packstation/Postfiliale/DHL-Filiale (Ruecksendungen, z.B. Rg 1713997 "Feyen Anja /
+#   Packstation201 / 40589 Duesseldorf" ohne Postnummer): DHL stellt dort nur mit Postnummer im Feld "Name 2 /
+#   Postnummer" zu. Die Postnummer (6-10 Ziffern) wird jetzt auch gefunden, wenn sie in der Namenszeile, hinter der
+#   Packstationsnummer, als "Postnummer: ..." oder nicht als erste Zusatzzeile steht, und immer als ERSTE Zusatzzeile
+#   (= Name 2) exportiert. Fehlt sie ganz -> FEHLER (blockiert den Export), statt nur Pruefhinweis.
+#   Steht "Packstation 464" / "Postfiliale 479" in einer ZUSATZ- oder Namenszeile und als Strasse die Strassenadresse
+#   der Station (real 1707054 "803583883 , Packstation 464" / "Muellerstrasse 123"), wird umgestellt: Strasse =
+#   Packstation, Nr = 464, Name 2 = Postnummer - sonst hielt DHL das fuer eine Hausadresse (Ruecksendung).
 # 2026-11-16b: Paketaufteilung, wenn N kein Vielfaches des Fach-Faktors ist (real Rg 1714519: 3 x BP-TILL-48 "48 Packungen
 #   (2 Kartons)" mit "72-je-Paket" = 3 Kartons je Paket): verteilt wird jetzt in Teilen von ggT(N, Fach) = 24 (1 Karton)
 #   -> 2 Pakete mit je 3 Kartons statt 3 Pakete mit je 2. Ist N ein Vielfaches des Fach-Faktors (der Normalfall),
@@ -237,6 +245,88 @@ _RE_NICHT_DPD = re.compile(
 # Abholstellen, bei denen DPD NUR mit DPD-Paketshop geht, DHL-/Hermes-Shops aber nicht: bleibt DPD,
 # bekommt aber einen HINWEIS zur Pruefung (Matthias: "ein DPD Paketshop waere kein Problem, DHL
 # schon oder Hermes").
+# Zustellung NUR mit DHL-Postnummer (Postfach nicht - dort genuegt die Postfach-Nummer)
+_RE_POSTNR_PFLICHT = re.compile(r"pack[\s-]?station|paketstation|\bpost[\s-]?filiale\b|\bdhl[\s-]?filiale", re.I)
+_RE_POSTNR_TEXT = re.compile(r"(?:post[\s-]?(?:nummer|nr\.?)|\bpnr\.?)\s*[:.#]?\s*(\d{6,10})\b", re.I)
+_RE_STATION_MIT_PNR = re.compile(
+    r"^\s*(pack[\s-]?station|paketstation|post[\s-]?filiale|dhl[\s-]?filiale)\s*(\d{1,4})\s*[,/;:\s]\s*(\d{6,10})\s*$", re.I)
+
+
+_RE_STATION_NR = re.compile(r"(pack[\s-]?station|paketstation|post[\s-]?filiale|dhl[\s-]?filiale)\s*(?:nr\.?\s*)?(\d{1,4})(?!\d)",
+                            re.I)
+
+
+def _station_aus_zusatz(out):
+    """Steht "Packstation 464" in einer Zusatz- oder Namenszeile, die Strasse aber ist eine normale Adresse (die der
+    Station), wird die Station zur Strasse: Strasse = Packstation/Postfiliale, Nr = Stationsnummer. Rueckgabe True."""
+    if _RE_STATION_NR.match(out["strasse"] + " " + out["hausnr"]):
+        return False
+    for quelle in ("zusatz", "name"):
+        zeilen = out["zusatz"] if quelle == "zusatz" else [out["name"]]
+        for i, z in enumerate(zeilen):
+            m = _RE_STATION_NR.search(z)
+            if not m:
+                continue
+            wort = "Packstation" if re.match(r"pack|paket", m.group(1), re.I) else "Postfiliale"
+            alt = ("%s %s" % (out["strasse"], out["hausnr"])).strip()
+            rest = (z[:m.start()] + " " + z[m.end():]).strip(" ,;/-")
+            rest = re.sub(r"\b(?:dhl)\b", "", rest, flags=re.I).strip(" ,;/-")
+            if quelle == "zusatz":
+                if rest:
+                    out["zusatz"][i] = rest
+                else:
+                    out["zusatz"].pop(i)
+            else:
+                out["name"] = rest or out["name"]
+            out["strasse"], out["hausnr"] = wort, m.group(2)
+            if alt:
+                out["hinweise"].append("%s-Adresse: Straße \"%s\" durch \"%s %s\" ersetzt (DHL braucht Station + "
+                                       "Postnummer)" % (wort, alt, wort, m.group(2)))
+            return True
+    return False
+
+
+def _postnummer_einordnen(out, strasse_roh):
+    """Packstation/Postfiliale: Postnummer suchen und als ERSTE Zusatzzeile (DHL "Name 2 / Postnummer") einsetzen.
+    Rueckgabe die gefundene Postnummer oder ''."""
+    pnr = ""
+    _station_aus_zusatz(out)
+    # 1) eigene Zusatzzeile, nur die Nummer (ggf. mit "Postnummer:" davor, Satzzeichen egal)
+    for z in list(out["zusatz"]):
+        m = re.fullmatch(r"[\s,;/-]*(?:(?:post[\s-]?(?:nummer|nr\.?)|pnr\.?)\s*[:.#]?\s*)?(\d{6,10})[\s,;/-]*", z, re.I)
+        if m:
+            pnr = m.group(1)
+            out["zusatz"].remove(z)
+            break
+    # 2) "Postnummer 12345678" innerhalb einer Zusatzzeile oder im Namen
+    if not pnr:
+        for i, z in enumerate(list(out["zusatz"])):
+            m = _RE_POSTNR_TEXT.search(z)
+            if m:
+                pnr = m.group(1)
+                rest = (z[:m.start()] + z[m.end():]).strip(" ,;/-")
+                if rest:
+                    out["zusatz"][i] = rest
+                else:
+                    out["zusatz"].pop(i)
+                break
+    if not pnr:
+        m = _RE_POSTNR_TEXT.search(out["name"]) or re.search(r"\s(\d{6,10})\s*$", out["name"])
+        if m:
+            pnr = m.group(1)
+            out["name"] = (out["name"][:m.start()] + out["name"][m.end():]).strip(" ,;/-")
+    # 3) hinter der Stationsnummer in der Strassenzeile ("Packstation 201 12345678")
+    if not pnr:
+        m = _RE_STATION_MIT_PNR.match(strasse_roh or "")
+        if m:
+            pnr = m.group(3)
+            out["strasse"] = re.sub(r"\s+", " ", m.group(1)).strip().title().replace("Dhl", "DHL")
+            out["hausnr"] = m.group(2)
+    if pnr:
+        out["zusatz"] = [pnr] + [z for z in out["zusatz"] if z != pnr]
+    return pnr
+
+
 _RE_ABHOLSTELLE = re.compile(
     r"pakets?[\s-]?hop|parcel[\s-]?shop|\bhermes\b|abhol[\s-]?(?:station|stelle|punkt)"
     r"|post[\s-]?agentur|pick[\s-]?up[\s-]?(?:point|station|shop)", re.I)
@@ -548,6 +638,13 @@ def analysiere_adresse(zeilen):
         if _RE_NICHT_DPD.search(such_text):
             out["packstation"] = True
             out["hinweise"].append("Packstation/Postfach/Postfiliale/DHL-Filiale - bitte manuell prüfen")
+        if _RE_POSTNR_PFLICHT.search(such_text + " " + out["name"]) and not out["packstation"]:
+            out["packstation"] = True                 # Station nur in der Namenszeile genannt
+            out["hinweise"].append("Packstation/Postfach/Postfiliale/DHL-Filiale - bitte manuell prüfen")
+        if _RE_POSTNR_PFLICHT.search(such_text + " " + out["name"]) and not _postnummer_einordnen(out, strasse_roh):
+            out["fehler"].append("Packstation/Postfiliale ohne Postnummer - DHL stellt so nicht zu (Rücksendung). "
+                                 "Postnummer beim Kunden erfragen und über \"Adresse bearbeiten\" als Zusatzzeile "
+                                 "eintragen")
         out["abholstelle"] = sorted({m.group(0).lower() for m in _RE_ABHOLSTELLE.finditer(such_text)})
 
     # ">2 Zusatzzeilen"-Hinweis ERST HIER (nicht vor der Strasse/Hausnr-Erkennung
@@ -1149,12 +1246,13 @@ def selftest():
     b_he = _ab("wapo", 0.5, ["A B", "Hermes PaketShop", "Hauptstr. 5", "12345 Ort"])
     check("Hermes PaketShop -> bleibt DPD mit Pruefhinweis",
           (b_he["carrier"], any("hermes" in h.lower() for h in b_he["hinweise"])), (DPD, True))
-    for z_, n_ in ((["A B", "DHL Filiale 12", "Hauptstr. 5", "12345 Ort"], "DHL Filiale"),
-                   (["A B", "DHL-Filiale", "Hauptstr. 5", "12345 Ort"], "DHL-Filiale"),
-                   (["A B", "DHLFiliale 7", "Hauptstr. 5", "12345 Ort"], "DHLFiliale"),
+    # (mit Postnummer - ohne waere es seit 2026-11-18a ein Fehler, siehe Postnummer-Tests)
+    for z_, n_ in ((["A B", "12345678", "DHL Filiale 12", "Hauptstr. 5", "12345 Ort"], "DHL Filiale"),
+                   (["A B", "12345678", "DHL-Filiale", "Hauptstr. 5", "12345 Ort"], "DHL-Filiale"),
+                   (["A B", "12345678", "DHLFiliale 7", "Hauptstr. 5", "12345 Ort"], "DHLFiliale"),
                    (["A B", "DHL Paketshop 9", "Hauptstr. 5", "12345 Ort"], "DHL Paketshop"),
-                   (["A B", "Paketstation 133", "12345 Ort"], "Paketstation"),
-                   (["A B", "Pack Station 133", "12345 Ort"], "Pack Station")):
+                   (["A B", "12345678", "Paketstation 133", "12345 Ort"], "Paketstation"),
+                   (["A B", "12345678", "Pack Station 133", "12345 Ort"], "Pack Station")):
         b_x = _ab("wapo", 0.5, z_)
         check("%s -> DPD nicht moeglich, DHL (mit Hinweis)" % n_,
               (b_x["carrier"], b_x["status"], any("bitte manuell prüfen" in h for h in b_x["hinweise"])),
@@ -1172,8 +1270,8 @@ def selftest():
             "adresse_zeilen": ["Michal Wolek", "Postfiliale 511", "DE-26188 Edewecht"],
             "positionen": [{"kennungen": ["wapo"], "lagerorte": ["Regal 8, E0", "Wapo"]}]}
     b_pf = bewerte_rechnung(r_pf)
-    check("Postfiliale (1710104): Wapo 0,25 kg -> DHL statt DPD",
-          (b_pf["carrier"], b_pf["adresse"]["packstation"], b_pf["status"]), (DHL, True, "warn"))
+    check("Postfiliale (1710104, ohne Postnummer): Wapo 0,25 kg -> DHL statt DPD, Fehler wegen fehlender Postnummer",
+          (b_pf["carrier"], b_pf["adresse"]["packstation"], b_pf["status"]), (DHL, True, "fehler"))
     check("Postfiliale: Pruefhinweis bleibt, automatisch Kleinpaket (statt Umstell-Hinweis), Grund nennt Postfiliale",
           (any("Postfiliale" in h for h in b_pf["hinweise"]), KLEINPAKET_HINWEIS in b_pf["hinweise"],
            b_pf["kleinpaket"], "Postfiliale" in b_pf["grund"]),
@@ -1364,6 +1462,33 @@ def selftest():
           ("DE", "68307", "Mannheim", True, []))
     a = analysiere_adresse(["X Y", "Postfach 12", "12345 Ort"])
     check("adr Postfach -> packstation=True", a["packstation"], True)
+    # Postnummer bei Packstation/Postfiliale (Ruecksendungen 11/2026)
+    def _ps(z):
+        a_ = analysiere_adresse(z)
+        return (a_["name"], a_["zusatz"][:1], a_["strasse"], a_["hausnr"], bool([f for f in a_["fehler"] if "Postnummer" in f]))
+    check("Packstation Standard (Postnummer eigene Zeile)", _ps(["Alexej Kosenko", "981454528", "Packstation 158", "DE-90449 Nürnberg"]),
+          ("Alexej Kosenko", ["981454528"], "Packstation", "158", False))
+    check("Packstation OHNE Postnummer (real 1713997) -> Fehler", _ps(["Feyen Anja", "Packstation201", "40589 Düsseldorf"])[4], True)
+    check("Postnummer in der Namenszeile", _ps(["Max Muster 12345678", "Packstation 201", "40589 Düsseldorf"]),
+          ("Max Muster", ["12345678"], "Packstation", "201", False))
+    check("Postnummer hinter der Packstationsnummer", _ps(["Max Muster", "Packstation 201 12345678", "40589 Düsseldorf"]),
+          ("Max Muster", ["12345678"], "Packstation", "201", False))
+    check("'Postnummer: ...' als Zusatzzeile", _ps(["Max Muster", "Postnummer: 12345678", "Packstation 201", "40589 Düsseldorf"]),
+          ("Max Muster", ["12345678"], "Packstation", "201", False))
+    check("Postnummer nicht als erste Zusatzzeile -> nach vorne (Name 2)",
+          _ps(["Max Muster", "Firma X GmbH", "12345678", "Packstation 201", "40589 Düsseldorf"])[1], ["12345678"])
+    check("Postfiliale ohne Postnummer -> Fehler", _ps(["Max Muster", "Postfiliale 511", "40589 Düsseldorf"])[4], True)
+    check("Postfach braucht keine Postnummer", _ps(["Max Muster", "Postfach 1234", "40589 Düsseldorf"])[4], False)
+    check("Postnummer + Packstation in der Zusatzzeile, Stations-Strasse (real 1707054) -> umgestellt",
+          _ps(["Riewald Nicole", "803583883 , Packstation 464", "Müllerstrasse 123", "DE 13349 Berlin"]),
+          ("Riewald Nicole", ["803583883"], "Packstation", "464", False))
+    check("DHL Postfiliale in der Zusatzzeile ohne Postnummer (real 1707523) -> Postfiliale 479 + Fehler",
+          _ps(["Biester Manfred", "Dhl Postfiliale 479", "Sundweg 99", "DE 23774 Heiligenhafen"]),
+          ("Biester Manfred", [], "Postfiliale", "479", True))
+    check("Packstation im Namen", _ps(["Max Muster Packstation 201", "12345678", "Wegstr. 4", "40589 Düsseldorf"]),
+          ("Max Muster", ["12345678"], "Packstation", "201", False))
+    check("normale Strasse unberuehrt", _ps(["Max Muster 2", "Hauptstr. 5", "40589 Düsseldorf"]),
+          ("Max Muster 2", [], "Hauptstr.", "5", False))
     a = analysiere_adresse(["Evi Schmid", "Jägerwirth 122", "DE-94081 Fürstenzell"])
     check("adr normale Strasse -> packstation=False", a["packstation"], False)
 

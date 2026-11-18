@@ -58,7 +58,10 @@ Siehe ist_auslands_kleinpaket() und die Konstanten KLEINPAKET_*.
 import html
 import re
 
-VERSION = "2026-11-18c"
+VERSION = "2026-11-18d"
+# 2026-11-18d: ABGESCHNITTENE POSTNUMMER erkennen. Amicron kuerzt Adresszeilen auf 40 Zeichen: real 1713166
+#   "Felix-wankel-strasse 18, Post-nr.: 1065123104" (44 Zeichen) -> "... Post-nr.: 106512" -> DHL "Fehler Postnummer".
+#   Endet eine Zeile (bzw. "Post-nr.:"-Zeile + Folgezeile) mit der Postnummer genau an der 40-Zeichen-Grenze -> FEHLER.
 # 2026-11-18c: Packstation/Postfiliale MIT Postnummer: Strasse genau "Packstation"/"Postfiliale" (ohne "Dhl" davor) und
 #   KEINE weiteren Zusatzzeilen (die Stations-Strasse "Felix-wankel-strasse 18, Post-nr.:" stand bei der Ruecksendung
 #   1713166 in Name 3 und "Dhl Packstation" als Strasse -> DHL: "Fehler Postnummer"). Weggelassenes steht im Hinweis.
@@ -137,6 +140,7 @@ DHL = "DHL"
 KLASSEN = [BRIEF, GROSSBRIEF, DPD, DHL]             # aufsteigend
 RANG = {k: i for i, k in enumerate(KLASSEN)}
 KENNUNG_KLASSE = {"brx1": BRIEF, "pox1": GROSSBRIEF, "wapo": DPD, "pax1": DHL}
+AMICRON_FELD_MAX = 40                                # Amicron kuerzt Adresszeilen auf 40 Zeichen
 MAX_ZEILENLAENGE = 50                                # DHL: max. 50 Zeichen je Namens-/Adressfeld
 
 # ISO2 -> (ISO3, Ländernamen in Grossschreibung ohne Umlaute)
@@ -681,6 +685,20 @@ def analysiere_adresse(zeilen):
         # zusammengefasst (carrier_export._name2_name3), bitte pruefen.
         out["hinweise"].append("Mehr als 2 Zusatzzeilen - bei DHL/DPD in Name 3 "
                                "zusammengefasst: %s" % " | ".join(out["zusatz"][1:]))
+
+    # --- Abgeschnittene Postnummer (Amicron-Adressfeld max. 40 Zeichen) ------------------
+    for i, z in enumerate(zl):
+        teile = None
+        nur_wort = re.search(r"(?:post[\s-]?(?:nummer|nr\.?)|pnr\.?)\s*[:.#]?\s*$", z, re.I)
+        if nur_wort and i + 1 < len(zl) and re.fullmatch(r"\d{6,10}", zl[i + 1].strip()):
+            teile = z.rstrip() + " " + zl[i + 1].strip()
+        elif re.search(r"(?:post[\s-]?(?:nummer|nr\.?)|pnr\.?)\s*[:.#]?\s*\d{5,10}\s*$", z, re.I):
+            teile = z.rstrip()
+        if teile and len(teile) >= AMICRON_FELD_MAX:
+            out["fehler"].append("Postnummer vermutlich abgeschnitten (Amicron-Adresszeile max. %d Zeichen: \"%s\") - "
+                                 "vollständige Postnummer aus der Bestellung (eBay/Shop) über \"Adresse bearbeiten\" "
+                                 "eintragen" % (AMICRON_FELD_MAX, teile))
+            break
 
     # --- Feld-Pruefungen ------------------------------------------------------
     felder = [out["name"], out["strasse"], out["ort"]] + list(out["zusatz"])
@@ -1519,11 +1537,18 @@ def selftest():
         a_ = analysiere_adresse(z)
         return (a_["name"], a_["zusatz"], a_["strasse"], a_["hausnr"], a_["fehler"])
     check("Ruecksendung 1713166 (Etikett): Dhl Packstation 168 + Stations-Strasse in Name 3 -> nur Postnummer + Packstation",
-          _dhl(["Heckmann Jessica", "Felix-wankel-straße 18, Post-nr.:", "106512", "Dhl Packstation 168", "69126 Heidelberg"]),
-          ("Heckmann Jessica", ["106512"], "Packstation", "168", []))
+          _dhl(["Heckmann Jessica", "Felix-wankel-straße 18, Post-nr.:", "106512", "Dhl Packstation 168", "69126 Heidelberg"])[:4],
+          ("Heckmann Jessica", ["106512"], "Packstation", "168"))
     check("Packstation mit Firmenzeile: Firma faellt weg (Hinweis)",
           _dhl(["Max Muster", "Firma X GmbH", "12345678", "Packstation 201", "40589 Düsseldorf"])[1:4],
           (["12345678"], "Packstation", "201"))
+    check("Abgeschnittene Postnummer (real 1713166, 40-Zeichen-Grenze) -> Fehler",
+          any("abgeschnitten" in f for f in analysiere_adresse(
+              ["Heckmann Jessica", "Felix-wankel-straße 18, Post-nr.:", "106512", "Dhl Packstation 168", "69126 Heidelberg"])["fehler"]),
+          True)
+    check("Kurze Zeile mit Postnummer (nicht an der Grenze) -> kein Abschneide-Fehler",
+          any("abgeschnitten" in f for f in analysiere_adresse(
+              ["Max Muster", "Postnr. 1278907", "Postfiliale 475", "DE-51069 Köln"])["fehler"]), False)
     check("Packstation im Namen", _ps(["Max Muster Packstation 201", "12345678", "Wegstr. 4", "40589 Düsseldorf"]),
           ("Max Muster", ["12345678"], "Packstation", "201", False))
     check("normale Strasse unberuehrt", _ps(["Max Muster 2", "Hauptstr. 5", "40589 Düsseldorf"]),

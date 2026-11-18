@@ -58,7 +58,8 @@ Siehe ist_auslands_kleinpaket() und die Konstanten KLEINPAKET_*.
 import html
 import re
 
-VERSION = "2026-11-18e"
+VERSION = "2026-11-18f"
+# 2026-11-18f: Postnummer auch VOR dem Namen ("1466861 Kerstin Trampler", real 1713526).
 # 2026-11-18e: Postnummer auch mit Kurzform "Postn.1166101950" / "Post no." / "Postnum." erkannt (real 1712395
 #   "Packstation 145 ,Postn.1166101950" -> war faelschlich "ohne Postnummer").
 # 2026-11-18d: ABGESCHNITTENE POSTNUMMER erkennen. Amicron kuerzt Adresszeilen auf 40 Zeichen: real 1713166
@@ -323,7 +324,8 @@ def _postnummer_einordnen(out, strasse_roh):
                     out["zusatz"].pop(i)
                 break
     if not pnr:
-        m = _RE_POSTNR_TEXT.search(out["name"]) or re.search(r"\s(\d{6,10})\s*$", out["name"])
+        m = (_RE_POSTNR_TEXT.search(out["name"]) or re.search(r"\s(\d{6,10})\s*$", out["name"])
+             or re.match(r"^\s*(\d{6,10})[\s,;/-]+", out["name"]))
         if m:
             pnr = m.group(1)
             out["name"] = (out["name"][:m.start()] + out["name"][m.end():]).strip(" ,;/-")
@@ -1554,6 +1556,9 @@ def selftest():
     check("Kurzform 'Postn.' (real 1712395) -> Postnummer erkannt, Stations-Strasse weg",
           _dhl(["Rene Hühn", "Ascherslebener Str. 1", "Packstation 145 ,Postn.1166101950", "DE-06425 Alsleben (saale)"]),
           ("Rene Hühn", ["1166101950"], "Packstation", "145", []))
+    check("Postnummer vor dem Namen (real 1713526)",
+          _dhl(["1466861 Kerstin Trampler", "Packstation 458", "80634 München"]),
+          ("Kerstin Trampler", ["1466861"], "Packstation", "458", []))
     check("Packstation im Namen", _ps(["Max Muster Packstation 201", "12345678", "Wegstr. 4", "40589 Düsseldorf"]),
           ("Max Muster", ["12345678"], "Packstation", "201", False))
     check("normale Strasse unberuehrt", _ps(["Max Muster 2", "Hauptstr. 5", "40589 Düsseldorf"]),

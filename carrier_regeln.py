@@ -58,7 +58,9 @@ Siehe ist_auslands_kleinpaket() und die Konstanten KLEINPAKET_*.
 import html
 import re
 
-VERSION = "2026-11-18d"
+VERSION = "2026-11-18e"
+# 2026-11-18e: Postnummer auch mit Kurzform "Postn.1166101950" / "Post no." / "Postnum." erkannt (real 1712395
+#   "Packstation 145 ,Postn.1166101950" -> war faelschlich "ohne Postnummer").
 # 2026-11-18d: ABGESCHNITTENE POSTNUMMER erkennen. Amicron kuerzt Adresszeilen auf 40 Zeichen: real 1713166
 #   "Felix-wankel-strasse 18, Post-nr.: 1065123104" (44 Zeichen) -> "... Post-nr.: 106512" -> DHL "Fehler Postnummer".
 #   Endet eine Zeile (bzw. "Post-nr.:"-Zeile + Folgezeile) mit der Postnummer genau an der 40-Zeichen-Grenze -> FEHLER.
@@ -257,7 +259,7 @@ _RE_NICHT_DPD = re.compile(
 # schon oder Hermes").
 # Zustellung NUR mit DHL-Postnummer (Postfach nicht - dort genuegt die Postfach-Nummer)
 _RE_POSTNR_PFLICHT = re.compile(r"pack[\s-]?station|paketstation|\bpost[\s-]?filiale\b|\bdhl[\s-]?filiale", re.I)
-_RE_POSTNR_TEXT = re.compile(r"(?:post[\s-]?(?:nummer|nr\.?)|\bpnr\.?)\s*[:.#]?\s*(\d{6,10})\b", re.I)
+_RE_POSTNR_TEXT = re.compile(r"(?:post[\s-]?(?:nummer|num\.?|nr\.?|no\.?|n\.?(?=\s*[:.#]?\s*\d))|\bpnr\.?)\s*[:.#]?\s*(\d{6,10})\b", re.I)
 _RE_STATION_MIT_PNR = re.compile(
     r"^\s*(pack[\s-]?station|paketstation|post[\s-]?filiale|dhl[\s-]?filiale)\s*(\d{1,4})\s*[,/;:\s]\s*(\d{6,10})\s*$", re.I)
 
@@ -303,7 +305,7 @@ def _postnummer_einordnen(out, strasse_roh):
     _station_aus_zusatz(out)
     # 1) eigene Zusatzzeile, nur die Nummer (ggf. mit "Postnummer:" davor, Satzzeichen egal)
     for z in list(out["zusatz"]):
-        m = re.fullmatch(r"[\s,;/-]*(?:(?:post[\s-]?(?:nummer|nr\.?)|pnr\.?)\s*[:.#]?\s*)?(\d{6,10})[\s,;/-]*", z, re.I)
+        m = re.fullmatch(r"[\s,;/-]*(?:(?:post[\s-]?(?:nummer|num\.?|nr\.?|no\.?|n\.?(?=\s*[:.#]?\s*\d))|pnr\.?)\s*[:.#]?\s*)?(\d{6,10})[\s,;/-]*", z, re.I)
         if m:
             pnr = m.group(1)
             out["zusatz"].remove(z)
@@ -341,7 +343,7 @@ def _postnummer_einordnen(out, strasse_roh):
             out["strasse"] = "Packstation"
         elif re.search(r"filiale", out["strasse"], re.I):
             out["strasse"] = "Postfiliale"
-        weg = [w for w in weg if re.sub(r"(?:post[\s-]?(?:nummer|nr\.?)|pnr\.?)\s*[:.#]?", "", w, flags=re.I).strip(" ,;:/-")]
+        weg = [w for w in weg if re.sub(r"(?:post[\s-]?(?:nummer|num\.?|nr\.?|no\.?|n\.?(?=\s*[:.#]?\s*\d))|pnr\.?)\s*[:.#]?", "", w, flags=re.I).strip(" ,;:/-")]
         if weg:
             out["hinweise"].append("%s-Adresse: Zusatzangaben weggelassen (DHL braucht nur Postnummer + Station): %s"
                                    % (out["strasse"] or "Packstation", " | ".join(weg)))
@@ -663,7 +665,7 @@ def analysiere_adresse(zeilen):
             out["packstation"] = True                 # Station nur in der Namenszeile genannt
             out["hinweise"].append("Packstation/Postfach/Postfiliale/DHL-Filiale - bitte manuell prüfen")
         mit_name = such_text + " " + out["name"]
-        postnr_wort = _RE_POSTNR_TEXT.search(mit_name) or re.search(r"post[\s-]?(?:nummer|nr)\b", such_text, re.I)
+        postnr_wort = _RE_POSTNR_TEXT.search(mit_name) or re.search(r"post[\s-]?(?:nummer|num|nr|no)\b|post[\s-]?n\.", such_text, re.I)
         if postnr_wort and not _RE_POSTNR_PFLICHT.search(mit_name) and not re.search(r"postfach", such_text, re.I):
             out["packstation"] = True
             out["fehler"].append("Postnummer angegeben, aber keine Packstation-/Filialnummer (z.B. \"Packstation 123\") - "
@@ -689,10 +691,10 @@ def analysiere_adresse(zeilen):
     # --- Abgeschnittene Postnummer (Amicron-Adressfeld max. 40 Zeichen) ------------------
     for i, z in enumerate(zl):
         teile = None
-        nur_wort = re.search(r"(?:post[\s-]?(?:nummer|nr\.?)|pnr\.?)\s*[:.#]?\s*$", z, re.I)
+        nur_wort = re.search(r"(?:post[\s-]?(?:nummer|num\.?|nr\.?|no\.?|n\.?(?=\s*[:.#]?\s*\d))|pnr\.?)\s*[:.#]?\s*$", z, re.I)
         if nur_wort and i + 1 < len(zl) and re.fullmatch(r"\d{6,10}", zl[i + 1].strip()):
             teile = z.rstrip() + " " + zl[i + 1].strip()
-        elif re.search(r"(?:post[\s-]?(?:nummer|nr\.?)|pnr\.?)\s*[:.#]?\s*\d{5,10}\s*$", z, re.I):
+        elif re.search(r"(?:post[\s-]?(?:nummer|num\.?|nr\.?|no\.?|n\.?(?=\s*[:.#]?\s*\d))|pnr\.?)\s*[:.#]?\s*\d{5,10}\s*$", z, re.I):
             teile = z.rstrip()
         if teile and len(teile) >= AMICRON_FELD_MAX:
             out["fehler"].append("Postnummer vermutlich abgeschnitten (Amicron-Adresszeile max. %d Zeichen: \"%s\") - "
@@ -1549,6 +1551,9 @@ def selftest():
     check("Kurze Zeile mit Postnummer (nicht an der Grenze) -> kein Abschneide-Fehler",
           any("abgeschnitten" in f for f in analysiere_adresse(
               ["Max Muster", "Postnr. 1278907", "Postfiliale 475", "DE-51069 Köln"])["fehler"]), False)
+    check("Kurzform 'Postn.' (real 1712395) -> Postnummer erkannt, Stations-Strasse weg",
+          _dhl(["Rene Hühn", "Ascherslebener Str. 1", "Packstation 145 ,Postn.1166101950", "DE-06425 Alsleben (saale)"]),
+          ("Rene Hühn", ["1166101950"], "Packstation", "145", []))
     check("Packstation im Namen", _ps(["Max Muster Packstation 201", "12345678", "Wegstr. 4", "40589 Düsseldorf"]),
           ("Max Muster", ["12345678"], "Packstation", "201", False))
     check("normale Strasse unberuehrt", _ps(["Max Muster 2", "Hauptstr. 5", "40589 Düsseldorf"]),

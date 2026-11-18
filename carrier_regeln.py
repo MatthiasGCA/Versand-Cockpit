@@ -58,7 +58,10 @@ Siehe ist_auslands_kleinpaket() und die Konstanten KLEINPAKET_*.
 import html
 import re
 
-VERSION = "2026-11-18b"
+VERSION = "2026-11-18c"
+# 2026-11-18c: Packstation/Postfiliale MIT Postnummer: Strasse genau "Packstation"/"Postfiliale" (ohne "Dhl" davor) und
+#   KEINE weiteren Zusatzzeilen (die Stations-Strasse "Felix-wankel-strasse 18, Post-nr.:" stand bei der Ruecksendung
+#   1713166 in Name 3 und "Dhl Packstation" als Strasse -> DHL: "Fehler Postnummer"). Weggelassenes steht im Hinweis.
 # 2026-11-18b: Postnummer ("Post-nr.: 106512") bei einer normalen Strassenadresse OHNE Packstation-/Filialnummer
 #   (real Ruecksendung 1713166 "Felix-wankel-strasse 18, Post-nr.: / 106512 / 69126 Heidelberg"): DHL hielt das fuer
 #   eine Hausadresse -> jetzt FEHLER (Stationsnummer beim Kunden erfragen) und nie DPD.
@@ -326,7 +329,18 @@ def _postnummer_einordnen(out, strasse_roh):
             out["strasse"] = re.sub(r"\s+", " ", m.group(1)).strip().title().replace("Dhl", "DHL")
             out["hausnr"] = m.group(2)
     if pnr:
-        out["zusatz"] = [pnr] + [z for z in out["zusatz"] if z != pnr]
+        # DHL-Packstation-Adresse ist genau: Name / Postnummer (Name 2) / Packstation NNN / PLZ Ort. Alles andere
+        # (Stations-Strasse, "Post-nr.:", Firma ...) verwirrt die Zuordnung -> weglassen und im Hinweis nennen.
+        weg = [z for z in out["zusatz"] if z != pnr]
+        out["zusatz"] = [pnr]
+        if re.search(r"pack|paket", out["strasse"], re.I):
+            out["strasse"] = "Packstation"
+        elif re.search(r"filiale", out["strasse"], re.I):
+            out["strasse"] = "Postfiliale"
+        weg = [w for w in weg if re.sub(r"(?:post[\s-]?(?:nummer|nr\.?)|pnr\.?)\s*[:.#]?", "", w, flags=re.I).strip(" ,;:/-")]
+        if weg:
+            out["hinweise"].append("%s-Adresse: Zusatzangaben weggelassen (DHL braucht nur Postnummer + Station): %s"
+                                   % (out["strasse"] or "Packstation", " | ".join(weg)))
     return pnr
 
 
@@ -1501,6 +1515,15 @@ def selftest():
           (True, True))
     check("Kundennummer o.ä. ohne 'Post' bleibt normale Adresse",
           analysiere_adresse(["Max Muster", "Kd-Nr 12345678", "Hauptstr. 5", "12345 Ort"])["fehler"], [])
+    def _dhl(z):
+        a_ = analysiere_adresse(z)
+        return (a_["name"], a_["zusatz"], a_["strasse"], a_["hausnr"], a_["fehler"])
+    check("Ruecksendung 1713166 (Etikett): Dhl Packstation 168 + Stations-Strasse in Name 3 -> nur Postnummer + Packstation",
+          _dhl(["Heckmann Jessica", "Felix-wankel-straße 18, Post-nr.:", "106512", "Dhl Packstation 168", "69126 Heidelberg"]),
+          ("Heckmann Jessica", ["106512"], "Packstation", "168", []))
+    check("Packstation mit Firmenzeile: Firma faellt weg (Hinweis)",
+          _dhl(["Max Muster", "Firma X GmbH", "12345678", "Packstation 201", "40589 Düsseldorf"])[1:4],
+          (["12345678"], "Packstation", "201"))
     check("Packstation im Namen", _ps(["Max Muster Packstation 201", "12345678", "Wegstr. 4", "40589 Düsseldorf"]),
           ("Max Muster", ["12345678"], "Packstation", "201", False))
     check("normale Strasse unberuehrt", _ps(["Max Muster 2", "Hauptstr. 5", "40589 Düsseldorf"]),

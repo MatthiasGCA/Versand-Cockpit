@@ -58,7 +58,10 @@ Siehe ist_auslands_kleinpaket() und die Konstanten KLEINPAKET_*.
 import html
 import re
 
-VERSION = "2026-11-18a"
+VERSION = "2026-11-18b"
+# 2026-11-18b: Postnummer ("Post-nr.: 106512") bei einer normalen Strassenadresse OHNE Packstation-/Filialnummer
+#   (real Ruecksendung 1713166 "Felix-wankel-strasse 18, Post-nr.: / 106512 / 69126 Heidelberg"): DHL hielt das fuer
+#   eine Hausadresse -> jetzt FEHLER (Stationsnummer beim Kunden erfragen) und nie DPD.
 # 2026-11-18a: POSTNUMMER bei Packstation/Postfiliale/DHL-Filiale (Ruecksendungen, z.B. Rg 1713997 "Feyen Anja /
 #   Packstation201 / 40589 Duesseldorf" ohne Postnummer): DHL stellt dort nur mit Postnummer im Feld "Name 2 /
 #   Postnummer" zu. Die Postnummer (6-10 Ziffern) wird jetzt auch gefunden, wenn sie in der Namenszeile, hinter der
@@ -641,6 +644,13 @@ def analysiere_adresse(zeilen):
         if _RE_POSTNR_PFLICHT.search(such_text + " " + out["name"]) and not out["packstation"]:
             out["packstation"] = True                 # Station nur in der Namenszeile genannt
             out["hinweise"].append("Packstation/Postfach/Postfiliale/DHL-Filiale - bitte manuell prüfen")
+        mit_name = such_text + " " + out["name"]
+        postnr_wort = _RE_POSTNR_TEXT.search(mit_name) or re.search(r"post[\s-]?(?:nummer|nr)\b", such_text, re.I)
+        if postnr_wort and not _RE_POSTNR_PFLICHT.search(mit_name) and not re.search(r"postfach", such_text, re.I):
+            out["packstation"] = True
+            out["fehler"].append("Postnummer angegeben, aber keine Packstation-/Filialnummer (z.B. \"Packstation 123\") - "
+                                 "DHL hält das für eine Hausadresse (Rücksendung). Beim Kunden Packstation/Filiale "
+                                 "erfragen und über \"Adresse bearbeiten\" eintragen")
         if _RE_POSTNR_PFLICHT.search(such_text + " " + out["name"]) and not _postnummer_einordnen(out, strasse_roh):
             out["fehler"].append("Packstation/Postfiliale ohne Postnummer - DHL stellt so nicht zu (Rücksendung). "
                                  "Postnummer beim Kunden erfragen und über \"Adresse bearbeiten\" als Zusatzzeile "
@@ -1485,6 +1495,12 @@ def selftest():
     check("DHL Postfiliale in der Zusatzzeile ohne Postnummer (real 1707523) -> Postfiliale 479 + Fehler",
           _ps(["Biester Manfred", "Dhl Postfiliale 479", "Sundweg 99", "DE 23774 Heiligenhafen"]),
           ("Biester Manfred", [], "Postfiliale", "479", True))
+    check("Postnummer bei Strassenadresse ohne Station (real Ruecksendung 1713166) -> Fehler, nie DPD",
+          (lambda a_: (a_["packstation"], any("keine Packstation-/Filialnummer" in f for f in a_["fehler"])))(
+              analysiere_adresse(["Heckmann Jessica", "Felix-wankel-straße 18, Post-nr.:", "106512", "69126 Heidelberg"])),
+          (True, True))
+    check("Kundennummer o.ä. ohne 'Post' bleibt normale Adresse",
+          analysiere_adresse(["Max Muster", "Kd-Nr 12345678", "Hauptstr. 5", "12345 Ort"])["fehler"], [])
     check("Packstation im Namen", _ps(["Max Muster Packstation 201", "12345678", "Wegstr. 4", "40589 Düsseldorf"]),
           ("Max Muster", ["12345678"], "Packstation", "201", False))
     check("normale Strasse unberuehrt", _ps(["Max Muster 2", "Hauptstr. 5", "40589 Düsseldorf"]),

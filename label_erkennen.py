@@ -27,7 +27,8 @@ import sys
 # --- Muster 1:1 aus scan_druck.py (VERSENDER_PROFILE / erkenne_profil) -------
 ERKENNUNG = [
     ("DPD", r"DPD|PARCELLetter|Parcel"),
-    ("DHL", r"DHL\s*PAKET|PAKET INTERNATIONAL|Kostenstelle:"),
+    # 2026-11-20: + KLEINPAKET / Sendungsref.: (neues DHL-Design, "DHL KLEINPAKET" ohne Kostenstelle)
+    ("DHL", r"DHL\s*(?:KLEIN)?PAKET|KLEINPAKET|PAKET INTERNATIONAL|Kostenstelle:|Sendungsref\.:"),
     ("Deutsche Post", r"NEERGOG|GOGREEN|tsoP ehcstueD|Deutsche Post"),
 ]
 

@@ -51,7 +51,10 @@ try:
 except Exception:
     _HAS_REPORTLAB = False
 # ============================ KONFIGURATION ============================
-VERSION = "2026-11-13a"          # im Fenstertitel sichtbar -> Deployment pruefbar
+VERSION = "2026-11-20a"          # im Fenstertitel sichtbar -> Deployment pruefbar
+# 2026-11-20a: DHL-KLEINPAKET im neuen Design (real SHIPMENT_LABEL_20261120_085212.pdf S. 49, Re 1715138 Langeoog):
+#   Kopf "DHL KLEINPAKET", weder "DHL PAKET" noch "Kostenstelle:" -> kein Profil erkannt, Label nicht zuordenbar.
+#   DHL-Erkennung jetzt zusaetzlich "KLEINPAKET" und "Sendungsref.:" (Anker des neuen DHL-Designs).
 # 2026-11-13a: NEUES DHL-LABEL-DESIGN (real SHIPMENT_LABEL_20261113_084721.pdf, 89 Seiten): die Rechnungsnummer steht nicht mehr hinter
 #   "Kostenstelle:", sondern hinter "Sendungsref.:" (Kopf weiter "DHL PAKET", Empfaenger weiter nach "An:"). Der DHL-Anker
 #   passte deshalb auf keiner Seite -> 0 Labels erkannt. Anker jetzt "Kostenstelle:" ODER "Sendungsref.:" ODER "Reference No.:" (Paket International/AT:
@@ -392,7 +395,7 @@ VERSENDER_PROFILE = [
     },
     {
         "name": "DHL",
-        "erkennung": r"DHL\s*PAKET|PAKET INTERNATIONAL|Kostenstelle:",
+        "erkennung": r"DHL\s*(?:KLEIN)?PAKET|KLEINPAKET|PAKET INTERNATIONAL|Kostenstelle:|Sendungsref\.:",
         "anker": r"(?:Kostenstelle:|Sendungsref\.:|Reference\s*No\.:)\s*(\d+)",
         "empfaenger_anker": r"(?:An|To)\s*[:\s]+(.*)",
         "deadline": "16:00",

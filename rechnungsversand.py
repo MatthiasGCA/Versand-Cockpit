@@ -41,7 +41,10 @@ from datetime import datetime, timedelta
 from email.message import EmailMessage
 from email.utils import formatdate, make_msgid, formataddr
 
-VERSION = "2026-11-23a"
+VERSION = "2026-11-23b"
+# 2026-11-23b: Offene Faelle werden bei JEDEM Lauf (auch "Pruefen") ausgetragen, wenn die Rechnung in nie_senden.txt
+#   steht oder laut Protokoll gesendet ist - auch wenn sie aelter als max_alter_tage ist und gar nicht mehr gelesen
+#   wird (real 1714151 vom 19.11.: frueheres "Erledigt" wurde vom Lauf wieder aufgenommen, danach zu alt -> blieb stehen).
 # 2026-11-23a: "Erledigt" wirkte bei "frueherer Versuch ohne Bestaetigung" nicht - der Versuch-Check kam VOR der
 #   Sperrliste, der naechste Lauf nahm den Fall wieder in die offenen Faelle auf (real 1714151). Sperrliste jetzt zuerst.
 # 2026-11-16f: Sperrdatei lauf.lock enthaelt die Prozessnummer; laeuft dieser Prozess nicht mehr (Lauf abgebrochen,
@@ -709,6 +712,12 @@ def lauf(cfg, modus=None, jetzt=None, log=print):
                                    "zuletzt": jetzt.strftime("%Y-%m-%d %H:%M")}
             elif e in ("gesendet", "bereits gesendet", "ausgeschlossen") or e.startswith("ignoriert"):
                 offen.pop(z["rnr"], None)
+        # auch Faelle ausserhalb des Zeitfensters: erledigt (Sperrliste) oder inzwischen gesendet -> raus
+        sperre_jetzt = lade_sperre(os.path.join(aus, "nie_senden.txt"))
+        prot_jetzt = lade_protokoll(prot_pfad)
+        for rnr_ in list(offen):
+            if rnr_ in sperre_jetzt or prot_jetzt.get(rnr_) == "gesendet":
+                offen.pop(rnr_, None)
         speichere_offen(aus, offen)
     except (OSError, ValueError) as e:
         log("Offene Fälle konnten nicht gespeichert werden: %s" % e)
@@ -1255,6 +1264,21 @@ def _selftest():
         check("Versuch + Erledigt: im nächsten Lauf 'ausgeschlossen', nicht wieder offen",
               ({z["rnr"]: z["entscheidung"] for z in res["ergebnisse"]}.get("1710099"), "1710099" in lade_offen(aus)),
               ("ausgeschlossen", False))
+        # alter offener Fall ausserhalb des Zeitfensters, steht schon in nie_senden.txt -> naechster Lauf traegt aus
+        off_ = lade_offen(aus)
+        off_["1700001"] = {"rnr": "1700001", "pdf": "", "kanal": "", "grund": "alt", "entscheidung": "NICHT gesendet",
+                           "empfaenger": "", "fremdbeleg": "", "rechnungsdatum": "", "erstmals": "2026-11-19 14:19",
+                           "zuletzt": "2026-11-19 14:19"}
+        off_["1700002"] = dict(off_["1700001"], rnr="1700002")
+        speichere_offen(aus, off_)
+        with open(os.path.join(aus, "nie_senden.txt"), "a", encoding="utf-8") as f_:
+            f_.write("1700001  # Test alt erledigt\n")
+        lauf(cfg, "bericht")
+        off_ = lade_offen(aus)
+        check("Alter offener Fall in nie_senden.txt: beim Prüfen ausgetragen, anderer alter Fall bleibt",
+              ("1700001" in off_, "1700002" in off_), (False, True))
+        off_.pop("1700002", None)
+        speichere_offen(aus, off_)
         # eigene Kundennummer (Ladengeschaeft/Theke, ohne Packliste) -> still ignorieren
         mkpdf(os.path.join(rd, "Packliste Nr. 1710050 20261116.pdf"),
               ["Gasecenter, Karlsruher Strasse 3", "Max Theke", "Rechnung Nr. : 1710050", "Kunden Nr. : 483911",

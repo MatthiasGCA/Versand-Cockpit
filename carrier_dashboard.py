@@ -30,11 +30,9 @@ Carrier-CSVs tatsaechlich geschrieben und die eingelesenen PDFs archiviert.
       eine EXPLIZITE Bestaetigung (Vorbelegung "Nein"), bevor irgendetwas
       gepackt/exportiert/archiviert wird. Filter: die Kacheln in der
       Zusammenfassung (DHL/DPD/.../Fehler/Hinweise) sind klickbar und
-      schraenken die Tabelle ein ("Alle anzeigen" setzt zurueck). Ist ein
-      Filter aktiv, verarbeitet Schritt 2 NUR die sichtbaren Zeilen (mit
-      eigener Bestaetigung, Vorbelegung "Nein", da das die Ausnahme sein
-      soll) - alles andere bleibt unveraendert in der Tabelle/im Pool stehen
-      und kann spaeter in einem weiteren Lauf verarbeitet werden. Button
+      schraenken nur die ANZEIGE ein ("Alle anzeigen" setzt zurueck).
+      Schritt 2 verarbeitet seit 2026-11-23a immer ALLE Rechnungen ohne
+      Fehler/offenen Hinweis, egal welcher Filter aktiv ist. Button
       "Hinweis quittieren": markiert die ausgewaehlte Zeile mit offenem
       Hinweis als geprueft (setzt status auf "ok") - sie zaehlt danach nicht
       mehr in der Hinweise-Kachel/im Hinweise-Filter (Meldungstext bleibt mit
@@ -101,7 +99,10 @@ from tkinter import messagebox, simpledialog, ttk
 
 import carrier_regeln as regeln
 
-VERSION = "2026-11-16e"
+VERSION = "2026-11-23a"
+# 2026-11-23a: Schritt 2 "Pickliste + CSV erstellen" verarbeitet IMMER alle Rechnungen ohne Fehler/offenen Hinweis -
+#   unabhaengig vom Kachel-Filter (der ist nur noch Anzeige; eigener DPD-Lauf wird nicht mehr gebraucht, Matthias)
+#   und ohne Rueckfrage. Zurueckgestellte (Fehler/Hinweis/unlesbar) bleiben in der Tabelle, Anzahl in der Statuszeile.
 # 2026-11-16e: Rechnungsversand-Fenster: "ignoriert (eigene Adresse)" grau.
 # 2026-11-16d: Knopf "Doch senden" heisst jetzt "Trotzdem senden" (Wunsch Matthias).
 # 2026-11-16c: Rechnungsversand - OFFENE FAELLE: Ansicht "Offene Fälle" im Fenster (nicht versendete Problem-Rechnungen
@@ -1937,8 +1938,8 @@ def gui():
         if schluessel is None:
             zf.configure(text="Zuordnung")
         else:
-            zf.configure(text="Zuordnung  -  Filter: %s (%d von %d angezeigt) - "
-                              "\"Alle anzeigen\" setzt zurueck"
+            zf.configure(text="Zuordnung  -  Anzeige: %s (%d von %d) - Schritt 2 verarbeitet trotzdem "
+                              "alle ohne Fehler/Hinweis - \"Alle anzeigen\" setzt zurueck"
                          % (FILTER_TITEL.get(schluessel, schluessel), angezeigt, len(ergebnisse)))
 
     # --- Schritt 1 im Hintergrund --------------------------------------------
@@ -2112,11 +2113,9 @@ def gui():
             return
         import carrier_export
         import carrier_statistik
-        # Schritt 2 verarbeitet NUR, was gerade in der Tabelle sichtbar ist -
-        # bei aktivem Filter (siehe wende_filter()) also nur der Ausschnitt.
-        # Alles andere bleibt unveraendert in rechnungen_roh/ergebnisse liegen
-        # (siehe export_fertig-Behandlung unten), nicht nur im Pool-Ordner.
-        sichtbare_indizes = {int(iid) for iid in tv.get_children()}
+        # Schritt 2 verarbeitet IMMER alle Zeilen ohne Fehler/offenen Hinweis - der Kachel-Filter
+        # ist nur Anzeige (2026-11-23a, frueher: nur sichtbare Zeilen = eigener DPD-Lauf).
+        sichtbare_indizes = set(range(len(ergebnisse)))
         alle = list(enumerate(zip(rechnungen_roh, ergebnisse)))
         # Kopien einer doppelten Rechnungsnummer (b["dup_kopie"], siehe
         # _markiere_pool_duplikate) zaehlen wie nicht lesbare PDFs: nicht verarbeiten.
@@ -2211,26 +2210,6 @@ def gui():
                                     "Schritt 1 erneut ausfuehren.")
             return
 
-        # Sicherung gegen Teilverarbeitung: ist ein Filter aktiv, wird nur der
-        # sichtbare Ausschnitt verarbeitet - das ist laut Matthias die
-        # Ausnahme, deshalb eine eigene, explizite Bestaetigung (Vorbelegung
-        # "Nein") VOR der normalen Bestaetigung weiter unten.
-        if len(sichtbare_indizes) < len(ergebnisse):
-            rest = len(ergebnisse) - len(sichtbare_indizes)
-            frage_teil = (
-                "Es ist ein Filter aktiv: \"%s\".\n\n"
-                "Nur %d von %d Rechnung(en) werden JETZT verarbeitet. Die "
-                "restlichen %d bleiben UNVERAENDERT liegen (weder gepackt "
-                "noch exportiert noch archiviert) und muessen spaeter separat "
-                "verarbeitet werden.\n\n"
-                "Das ist normalerweise NICHT gewuenscht - trotzdem nur diesen "
-                "Ausschnitt jetzt verarbeiten?"
-                % (FILTER_TITEL.get(filter_state["schluessel"], filter_state["schluessel"]),
-                   len(sichtbare_indizes), len(ergebnisse), rest))
-            if not messagebox.askyesno("Carrier-Dashboard - Nur Teil des Laufs verarbeiten?",
-                                       frage_teil, icon="warning", default=messagebox.NO):
-                return
-
         # Sicherung gegen Doppel-Verarbeitung: dieselbe Rechnungsnummer zweimal
         # im aktuellen Pool ODER laut Statistik-Historie schon einmal in einem
         # frueheren Schritt-2-Lauf verarbeitet - beides nur mit EXPLIZITER
@@ -2297,21 +2276,16 @@ def gui():
         # Bedarf _2/_3/... an) - eine Minute allein reichte nicht aus und liess
         # zwei Laeufe binnen derselben Minute die vorige Pickliste ueberschreiben.
         ausgabe_pfad = carrier_export.dateiname(ausgabe_ordner, "Pickliste", ext="pdf")
-        # Rueckfrage nur, wenn etwas NICHT mitverarbeitet wird (Fehler, offener Hinweis,
-        # unlesbare PDF/Kopie) - bei sauberem Lauf genuegt der Klick auf Schritt 2.
+        # Keine Rueckfrage mehr (2026-11-23a): Fehler / offene Hinweise / unlesbare PDFs bleiben einfach in der
+        # Tabelle und im Pool - die Statuszeile nennt sie nach dem Lauf.
         teile = []
         if n_fehler:
             teile.append("%d mit Fehler" % n_fehler)
         if n_hinweis_offen:
-            teile.append("%d mit offenem Hinweis" % n_hinweis_offen)
+            teile.append("%d mit Hinweis" % n_hinweis_offen)
         if uebersprungen:
             teile.append("%d nicht lesbar/doppelt" % len(uebersprungen))
-        if teile:
-            frage = ("%d Rechnung(en) werden verarbeitet.\n\nBleiben im Pool (nicht gepackt, "
-                     "nicht archiviert): %s.\n\nJetzt ausfuehren?"
-                     % (len(paare), ", ".join(teile)))
-            if not messagebox.askyesno("Carrier-Dashboard", frage):
-                return
+        export_info["zurueck_text"] = ", ".join(teile)
         export_info["uebersprungen"] = len(uebersprungen)
         export_info["verarbeitete_indizes"] = verarbeitete_indizes
         laeuft["an"] = True
@@ -2397,7 +2371,8 @@ def gui():
                         kurz += " - " + ", ".join("%s %d" % (k_.replace("_", " "), n_)
                                                   for k_, n_ in je_carrier.items())
                     if verbleibend:
-                        kurz += " (%d bleiben in der Tabelle)" % verbleibend
+                        zt_ = export_info.get("zurueck_text") or ""
+                        kurz += " (%d bleiben in der Tabelle%s)" % (verbleibend, (": " + zt_) if zt_ else "")
                     status_var.set(kurz + (" - ACHTUNG, siehe Meldung" if probleme else "."))
                     if probleme:
                         messagebox.showwarning("Carrier-Dashboard", "\n\n".join(probleme))

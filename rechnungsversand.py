@@ -41,7 +41,9 @@ from datetime import datetime, timedelta
 from email.message import EmailMessage
 from email.utils import formatdate, make_msgid, formataddr
 
-VERSION = "2026-11-16f"
+VERSION = "2026-11-23a"
+# 2026-11-23a: "Erledigt" wirkte bei "frueherer Versuch ohne Bestaetigung" nicht - der Versuch-Check kam VOR der
+#   Sperrliste, der naechste Lauf nahm den Fall wieder in die offenen Faelle auf (real 1714151). Sperrliste jetzt zuerst.
 # 2026-11-16f: Sperrdatei lauf.lock enthaelt die Prozessnummer; laeuft dieser Prozess nicht mehr (Lauf abgebrochen,
 #   z.B. Konsolenfenster geschlossen - real 16.11. 15:03, danach "laeuft bereits" bis zu 3 Stunden), wird die Sperre
 #   sofort als verwaist erkannt und ersetzt. Dazu Rechnungsversand_starten.vbs: Start ohne Konsolenfenster.
@@ -615,12 +617,12 @@ def lauf(cfg, modus=None, jetzt=None, log=print):
         if protokoll.get(rnr) == "gesendet":
             zeile.update(entscheidung="bereits gesendet", grund="laut Protokoll schon versendet")
             continue
+        if rnr in sperre:
+            zeile.update(entscheidung="ausgeschlossen", grund="steht in nie_senden.txt (von Hand erledigt)")
+            continue
         if protokoll.get(rnr) in ("versuch",):
             zeile.update(entscheidung="NICHT gesendet", grund="früherer Versuch ohne Bestätigung - bitte von Hand prüfen "
                                                               "(wurde die Mail evtl. schon verschickt?)")
-            continue
-        if rnr in sperre:
-            zeile.update(entscheidung="ausgeschlossen", grund="steht in nie_senden.txt (von Hand erledigt)")
             continue
         interne = INTERN_MARKER.search(rtext)
         packs = []
@@ -1245,6 +1247,13 @@ def _selftest():
         res = lauf(cfg, "bericht")
         check("Erledigt: im nächsten Lauf 'ausgeschlossen', nicht wieder offen",
               ({z["rnr"]: z["entscheidung"] for z in res["ergebnisse"]}.get("1710014"), "1710014" in lade_offen(aus)),
+              ("ausgeschlossen", False))
+        # Versuch ohne Bestaetigung + "Erledigt" -> bleibt erledigt (real 1714151)
+        check("Versuch ohne Bestaetigung ist offener Fall", "1710099" in lade_offen(aus), True)
+        markiere_erledigt(cfg, "1710099")
+        res = lauf(cfg, "bericht")
+        check("Versuch + Erledigt: im nächsten Lauf 'ausgeschlossen', nicht wieder offen",
+              ({z["rnr"]: z["entscheidung"] for z in res["ergebnisse"]}.get("1710099"), "1710099" in lade_offen(aus)),
               ("ausgeschlossen", False))
         # eigene Kundennummer (Ladengeschaeft/Theke, ohne Packliste) -> still ignorieren
         mkpdf(os.path.join(rd, "Packliste Nr. 1710050 20261116.pdf"),

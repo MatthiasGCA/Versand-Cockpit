@@ -70,7 +70,10 @@ from reportlab.graphics.shapes import Drawing
 # KONFIGURATION
 # ----------------------------------------------------------------------------
 
-VERSION = "2026-11-16b"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+VERSION = "2026-11-24a"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+# 2026-11-24a: Packuebersicht je Auftrag ohne dunklen Tabellenkopf (Artikelnr/Bezeichnung/Menge/Lagerort - Matthias)
+#   und mit sichtbarem Abstand zwischen den Auftragsrahmen: spaceBefore sitzt jetzt am Rahmen selbst (an KeepTogether
+#   gesetzt wurde er von reportlab ignoriert -> Rahmen klebten aneinander).
 # 2026-11-16b: Paket-Markierung auch als "<N>-pro-Paket" (gleichbedeutend mit "<N>-je-Paket"; Matthias hat bei den
 #   Brennpasten "72-pro-Paket" hinterlegt).
 # 2026-11-16a: STORNO-SPERRE. main() prueft jede Onlineshop-Rechnung ueber wc_storno.py (Statusdatei des WooCommerce-
@@ -1986,6 +1989,19 @@ def baue_pdf(rechnungen, pdf_pfad, gruppen, carrier_je_rnr=None):
                 Paragraph(lager, st_cell),
                 CheckBox(),
             ])
+        def _pos_style():
+            # wie _liste_style, aber OHNE Kopfzeile (Zeile 0 ist schon eine Position)
+            return TableStyle([
+                ("ROWBACKGROUNDS", (0, 0), (-1, -1), [colors.white, colors.HexColor("#F2F4F5")]),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#CFD8DC")),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("ALIGN", (-1, 0), (-1, -1), "CENTER"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ])
+
         def teil_rahmen(rows, teil, teile):
             """Ein Rahmen mit Kopf (+ Warnung nur im ersten Teil) und den Positionszeilen rows."""
             if teile > 1 and teil > 1:
@@ -1997,16 +2013,17 @@ def baue_pdf(rechnungen, pdf_pfad, gruppen, carrier_je_rnr=None):
                 inh = [kopf_t]
             else:
                 inh = [kopf] + warn_flow
-            t = Table([head2] + rows, colWidths=[aw, bw, mw, lw, cw], repeatRows=1)
-            t.setStyle(_liste_style())
-            inh.append(Spacer(1, 4))
-            inh.append(t)
+            if rows:
+                t = Table(rows, colWidths=[aw, bw, mw, lw, cw])
+                t.setStyle(_pos_style())
+                inh.append(Spacer(1, 4))
+                inh.append(t)
             return rahmen_block(inh, SEITE)
 
         # Passt der Rahmen nicht auf EINE Seite (sehr viele Positionen; ein 1x1-Tabellenblock ist
         # nicht teilbar -> reportlab LayoutError, Pickliste-Abbruch), wird er auf mehrere Rahmen
         # verteilt, die einzeln auf eine Seite passen (Rahmenhoehe wird gemessen).
-        MAX_H = 735          # nutzbare Rahmenhoehe 762 pt minus spaceBefore/Reserve
+        MAX_H = 730          # nutzbare Rahmenhoehe 762 pt minus spaceBefore/Reserve
         rows = data[1:]
 
         def hoehe(rs, teil=1, teile=1):
@@ -2026,12 +2043,13 @@ def baue_pdf(rechnungen, pdf_pfad, gruppen, carrier_je_rnr=None):
         teile = len(gruppen_rows)
         out = []
         for ti, rs in enumerate(gruppen_rows, 1):
-            kt = KeepTogether([teil_rahmen(rs, ti, teile)])
+            rb = teil_rahmen(rs, ti, teile)
             # Abstand VOR dem Rahmen als spaceBefore (am Seitenanfang entfaellt er): ein Spacer NACH
             # dem Rahmen ragte bei fast vollen Seiten ueber den Rand und erzeugte vor dem PageBreak
-            # eine Seite nur mit Fusszeile.
-            kt.spaceBefore = 8
-            out.append(kt)
+            # eine Seite nur mit Fusszeile. Muss am Rahmen selbst stehen - KeepTogether reicht nur
+            # den spaceBefore seines ersten Inhalts weiter (2026-11-24a).
+            rb.spaceBefore = 12
+            out.append(KeepTogether([rb]))
         return out
 
     def gruppe_block(g, gruppe_rechnungen):

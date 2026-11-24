@@ -70,7 +70,8 @@ from reportlab.graphics.shapes import Drawing
 # KONFIGURATION
 # ----------------------------------------------------------------------------
 
-VERSION = "2026-11-24a"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+VERSION = "2026-11-24b"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe je
+# 2026-11-24b: Abstand zwischen den Auftragsrahmen 12 -> 24 pt (Matthias: "noch etwas mehr").
 # 2026-11-24a: Packuebersicht je Auftrag ohne dunklen Tabellenkopf (Artikelnr/Bezeichnung/Menge/Lagerort - Matthias)
 #   und mit sichtbarem Abstand zwischen den Auftragsrahmen: spaceBefore sitzt jetzt am Rahmen selbst (an KeepTogether
 #   gesetzt wurde er von reportlab ignoriert -> Rahmen klebten aneinander).
@@ -2048,7 +2049,7 @@ def baue_pdf(rechnungen, pdf_pfad, gruppen, carrier_je_rnr=None):
             # dem Rahmen ragte bei fast vollen Seiten ueber den Rand und erzeugte vor dem PageBreak
             # eine Seite nur mit Fusszeile. Muss am Rahmen selbst stehen - KeepTogether reicht nur
             # den spaceBefore seines ersten Inhalts weiter (2026-11-24a).
-            rb.spaceBefore = 12
+            rb.spaceBefore = 24
             out.append(KeepTogether([rb]))
         return out
 

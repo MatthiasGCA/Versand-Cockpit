@@ -127,7 +127,7 @@ VERSION = "2026-11-20a"          # im Fenstertitel sichtbar -> Deployment pruefb
 #   z.gedruckt als "fremd belegt" -> Label unzuordenbar, Datei nie archiviert.
 #   Jetzt gelten fuer "belegt" und "verdaechtig" nur Drucke, die VOR dem
 #   Entstehen der Datei (mtime, 60 s Toleranz) lagen (gedruckt_vor_datei).
-#   Der Evi-Schmid-Fall (2026-08-28a, alte Rechnung Tage vorher gedruckt)
+#   Der Eva-Schmitt-Fall (2026-08-28a, alte Rechnung Tage vorher gedruckt)
 #   bleibt dadurch geschuetzt.
 # 2026-09-21b: Eigene Toene statt des Windows-Pieptons. standard.mp3 (Standard-
 #   ton: Mehrfach-Scan-Warnung, Mengeninfo fehlt, falscher Artikel) und EAN.mp3
@@ -178,7 +178,7 @@ VERSION = "2026-11-20a"          # im Fenstertitel sichtbar -> Deployment pruefb
 #   z.index), erschien deren PLZ+Hausnr in POST_LOOKUP dadurch faelschlich
 #   wieder als "frei" - die neue Briefmarke wurde der ALTEN, schon
 #   verschickten Rechnung zugeordnet statt der neuen. Real beobachtet an
-#   zwei Faellen vom 28.08.: Evi Schmid ("Jägerwirth 122, 94081
+#   zwei Faellen vom 28.08.: Eva Schmitt ("Jägerwirth 122, 94081
 #   Fürstenzell": Re 1701441 vom 26.08. kollidierte mit der neuen Re
 #   1701727) und Michael Bohn ("Gmünder Straße 47, 74417 Gschwend": Re
 #   1701272 vom 25.08. kollidierte mit der neuen Re 1701670). Fix:
@@ -1201,7 +1201,7 @@ def aktualisiere_index(z, ordner):
             # bereits vergebene Rechnungsnummern (ohne die eigenen alten dieser
             # Datei) -> eindeutige Post-Zuordnung bei mehreren gleichen Adressen.
             # BEWUSST auch z.gedruckt einbeziehen, nicht nur z.index (Bug
-            # gefunden 2026-08-28, real beobachtet an Evi Schmid/"Jägerwirth
+            # gefunden 2026-08-28, real beobachtet an Eva Schmitt/"Jägerwirth
             # 122, 94081 Fürstenzell": dieselbe Adresse bestellte am 26.08.
             # (Re 1701441, laengst verschickt+archiviert -> NICHT mehr in
             # z.index) und erneut am 28.08. (Re 1701727). post_zuordnung.csv

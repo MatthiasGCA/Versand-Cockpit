@@ -297,7 +297,7 @@ def selftest():
         else:
             n_fail.append("%s: erwartet %r, war %r" % (name, soll, ist))
 
-    b_dhl_de = _bsp("1705334", "pax1", 3.8, ["Karl-Heinz Kuril", "Stormstr. 98", "47445 Moers"])
+    b_dhl_de = _bsp("1705334", "pax1", 3.8, ["Karl-Heinz Kurz", "Stormstr. 98", "47445 Moers"])
     z = _dhl_dpd_zeile(b_dhl_de, False)
     check("DHL DE: Sendungsreferenz=Empfängerreferenz=Rnr",
           (z[0], z[23]), ("1705334", "1705334"))
@@ -305,7 +305,7 @@ def selftest():
     check("DHL DE: Land ISO3", z[19], "DEU")
     check("DHL DE: Telefon-Feld = Leerzeichen+Rnr", z[21], " 1705334")
     check("DHL DE: Name ungetrennt, ohne Zusatz Name 2/3 leer", (z[12], z[13], z[14]),
-          ("Karl-Heinz Kuril", "", ""))
+          ("Karl-Heinz Kurz", "", ""))
     check("DHL DE: Gewicht Komma-Format", z[22], "3,8000")
     b_z1 = _bsp("1700010", "pax1", 2.0, ["Max Muster", "Muster GmbH", "Weg 1", "12345 Ort"])
     z = _dhl_dpd_zeile(b_z1, False)
@@ -316,7 +316,7 @@ def selftest():
     z = _dhl_dpd_zeile(b_z3, True)
     check("DPD: 3 Zusatzzeilen -> Name 2 + Name 3 zusammengefasst", (z[13], z[14]),
           ("Muster GmbH", "c/o Lager, Tor 3"))
-    b_ot = _bsp("1705888", "pax1", 5.2, ["Scheffert Kornelia", "Dorf 17 OT Quitzerow",
+    b_ot = _bsp("1705888", "pax1", 5.2, ["Schefferle Konstanze", "Dorf 17 OT Quitzerow",
                                          "17111 Kletzin"])
     z = _dhl_dpd_zeile(b_ot, False)
     check("DHL: Ortsteil ohne Zusatz -> Name 3, Ort sauber",
@@ -343,7 +343,7 @@ def selftest():
     # Keine Obergrenze fuer die Paketanzahl - real beobachtet an Rechnung
     # 1705548 (70,4 kg): passt selbst in ZWEI Pakete a 31,5 kg nicht mehr
     # (2x31,5=63 < 70,4), braucht also mindestens DREI.
-    b_dhl_geteilt3 = _bsp("1705548", "pax1", 70.4, ["Bahittin Doener", "Rohrwangstr.3", "73430 AALEN"])
+    b_dhl_geteilt3 = _bsp("1705548", "pax1", 70.4, ["Bernd Doemer", "Rohrwangstr.3", "73430 AALEN"])
     check("Sendung vor Aufteilung -> Fehler (ueber DHL-Maximalgewicht)",
           b_dhl_geteilt3["status"], "fehler")
     # Wie carrier_dashboard.paket_aufteilen(): Aufteilung eintragen, den
@@ -369,17 +369,17 @@ def selftest():
     check("DHL ohne Kleinpaket-Flag: unveraendert Auslandsprodukt",
           (_dhl_dpd_zeile(dict(b_kp, kleinpaket=False), False)[24],), ("V53WPAK.V53VV",))
 
-    b_dhl_at = _bsp("1703056", "pax1", 2.4, ["Michael Höfler", "Mühldorf 414", "AT-8330 Feldbach"])
+    b_dhl_at = _bsp("1703056", "pax1", 2.4, ["Michael Höfner", "Mühldorf 414", "AT-8330 Feldbach"])
     z = _dhl_dpd_zeile(b_dhl_at, False)
     check("DHL AT: Produkt/Abrechnung", (z[24], z[25]), ("V53WPAK.V53VV", "52148008635303"))
     check("DHL AT: Land ISO3", z[19], "AUT")
 
-    b_dhl_fr = _bsp("1700001", "pax1", 1.0, ["Jan Dubois", "Rue Haute 5", "1000 Bruxelles", "BELGIEN"])
+    b_dhl_fr = _bsp("1700001", "pax1", 1.0, ["Jean Dupont", "Rue Haute 5", "1000 Bruxelles", "BELGIEN"])
     z = _dhl_dpd_zeile(b_dhl_fr, False)
     check("DHL BE (unbelegtes Land): Default wie AT", (z[24], z[25]),
           ("V53WPAK.V53VV", "52148008635303"))
 
-    b_dpd = _bsp("1705331", "wapo", 1.0, ["Nomi Atelier", "Ebbelicher Weg 70", "45701 Herten"],
+    b_dpd = _bsp("1705331", "wapo", 1.0, ["Lumi Atelier", "Ebbelicher Weg 70", "45701 Herten"],
                  kdnr="674982")
     z = _dhl_dpd_zeile(b_dpd, True)
     check("DPD: Empfängerreferenz=Kundennummer", z[23], "674982")
@@ -392,11 +392,11 @@ def selftest():
     check("DPD ohne Kundennummer: Feld bleibt leer", z[23], "")
 
     b_brief = _bsp("1705321", "brx1", 0.03,
-                    ["Petar Bekavac", "Hr. Bekavac / Produktion", "Balinger Straße 23",
+                    ["Petar Bekmuster", "Hr. Bekmuster / Produktion", "Balinger Straße 23",
                      "72415 Grosselfingen"])
     check("Brief: Ausland-Flag", b_brief["ausland"], False)
     zp = _post_zeile(b_brief["adresse"], b_brief["rnr"])
-    check("Post: NAME/ZUSATZ getrennt", (zp[0], zp[1]), ("Petar Bekavac", "Hr. Bekavac / Produktion"))
+    check("Post: NAME/ZUSATZ getrennt", (zp[0], zp[1]), ("Petar Bekmuster", "Hr. Bekmuster / Produktion"))
     check("Post: Straße/Hausnr/PLZ/Ort/Land/Typ/Referenz", tuple(zp[2:]),
           ("Balinger Straße", "23", "72415", "Grosselfingen", "DE", "HOUSE", "1705321"))
     check("Post-Absenderzeile", _post_absenderzeile(),
@@ -404,7 +404,7 @@ def selftest():
            "HOUSE", ""])
 
     b_grossbrief_aus = _bsp("1705399", "pox1", 0.4,
-                             ["Jan Peeters", "Rue Haute 5", "1000 Bruxelles", "BELGIEN"])
+                             ["Jan Pieters", "Rue Haute 5", "1000 Bruxelles", "BELGIEN"])
     check("Großbrief Ausland: Flag", b_grossbrief_aus["ausland"], True)
 
     # Fehlerhafte Rechnung (keine PLZ) darf NICHT exportiert werden

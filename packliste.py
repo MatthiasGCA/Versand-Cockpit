@@ -112,7 +112,7 @@ VERSION = "2026-11-24b"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe j
 #   Rahmen einer Seite ragte ueber den Seitenrand, der PageBreak erzeugte dann eine zusaetzliche Seite.
 #   Abstand steht jetzt VOR jedem Rahmen (im KeepTogether).
 # 2026-10-15a: Hausnummer in EIGENER Zeile VOR der Strasse (eBay-Adresszusatz, Rechnung 1709223:
-#   "Robert Schulze" / "39" / "Klein-Muckrow" / "DE-15848 Friedland") wird der Strassenzeile
+#   "Rainer Schulz" / "39" / "Klein-Muckrow" / "DE-15848 Friedland") wird der Strassenzeile
 #   zugeschlagen ("Klein-Muckrow 39"); siehe _hausnr_zeile_zusammenfuehren().
 # 2026-10-02d: Belegnummern-Sperre nur noch Praefix 111/444 (+ leere Nummer), KEINE
 #   Format-Pruefung mehr (Entscheidung Matthias).
@@ -447,7 +447,7 @@ VERSION = "2026-11-24b"          # Versionsschema: JJJJ-MM-TT + Kleinbuchstabe j
 #   zuverlaessig die echte PLZ-Zeile statt einer zufaellig passenden Ziffernfolge
 #   weiter oben im Adressblock.
 # 2026-08-11a: Fehlende PLZ bei abweichender Lieferadresse behoben (Rechnung
-#   1699130, Amazon "Jan Glöer": Rechnungsadresse AT-1020 Wien, Lieferadresse
+#   1699130, Amazon "Jan Gläser": Rechnungsadresse AT-1020 Wien, Lieferadresse
 #   24404 Maasholm/Deutschland). extrahiere_adresse() bestimmte das Land bisher
 #   IMMER aus Liefer- UND Rechnungsadresse zusammen (fuer den Fall 1695459, bei
 #   dem nur die Rechnungsadresse das "AT-"-Kuerzel trug). Das riss hier den
@@ -1279,7 +1279,7 @@ def extrahiere_adresse(words):
 def lieferadresse_zeilen(words):
     """ALLE Zeilen der Lieferadresse (bzw. der Rechnungsadresse, wenn keine
     abweichende Lieferadresse existiert) in Lesereihenfolge, z.B.
-    ['Evi Schmid', 'Jaegerwirth 122', 'DE-94081 Fuerstenzell'].
+    ['Eva Schmitt', 'Jaegerwirth 122', 'DE-94081 Fuerstenzell'].
     Grundlage fuer den CSV-Export des Carrier-Dashboards (Firma/c-o/Zusatzzeilen
     und Land werden dort ausgewertet). Die Zeilenauswahl ist bewusst IDENTISCH zu
     extrahiere_adresse() oben (gleiches Fenster, gleiche Links/Rechts-Regel) -

@@ -63,7 +63,7 @@ VERSION = "2026-11-25a"
 #   AT) -> Hausnr 12, Zusatz "Stiege 1 Tuer 4" (vorher Strasse "... 12 Stiege", Nr "1"). (2) Hausnummer-Zeile mit
 #   Schraegstrich/Bindestrich ("Steinheimer Strasse" / "19/3", real 1715822) gilt als reine Hausnummer -> mit der
 #   Strassenzeile davor verbunden (vorher Strasse "1", Nr "9/3").
-# 2026-11-18f: Postnummer auch VOR dem Namen ("1466861 Kerstin Trampler", real 1713526).
+# 2026-11-18f: Postnummer auch VOR dem Namen ("1466861 Karin Muster", real 1713526).
 # 2026-11-18e: Postnummer auch mit Kurzform "Postn.1166101950" / "Post no." / "Postnum." erkannt (real 1712395
 #   "Packstation 145 ,Postn.1166101950" -> war faelschlich "ohne Postnummer").
 # 2026-11-18d: ABGESCHNITTENE POSTNUMMER erkennen. Amicron kuerzt Adresszeilen auf 40 Zeichen: real 1713166
@@ -75,7 +75,7 @@ VERSION = "2026-11-25a"
 # 2026-11-18b: Postnummer ("Post-nr.: 106512") bei einer normalen Strassenadresse OHNE Packstation-/Filialnummer
 #   (real Ruecksendung 1713166 "Felix-wankel-strasse 18, Post-nr.: / 106512 / 69126 Heidelberg"): DHL hielt das fuer
 #   eine Hausadresse -> jetzt FEHLER (Stationsnummer beim Kunden erfragen) und nie DPD.
-# 2026-11-18a: POSTNUMMER bei Packstation/Postfiliale/DHL-Filiale (Ruecksendungen, z.B. Rg 1713997 "Feyen Anja /
+# 2026-11-18a: POSTNUMMER bei Packstation/Postfiliale/DHL-Filiale (Ruecksendungen, z.B. Rg 1713997 "Feldmann Anna /
 #   Packstation201 / 40589 Duesseldorf" ohne Postnummer): DHL stellt dort nur mit Postnummer im Feld "Name 2 /
 #   Postnummer" zu. Die Postnummer (6-10 Ziffern) wird jetzt auch gefunden, wenn sie in der Namenszeile, hinter der
 #   Packstationsnummer, als "Postnummer: ..." oder nicht als erste Zusatzzeile steht, und immer als ERSTE Zusatzzeile
@@ -1214,15 +1214,15 @@ def selftest():
           bestimme_carrier(["pax1", "wapo"], 0.3, "DE", packstation=True)[3], [])
 
     # Ortsname im Rechnungsfeld umbrochen (real 1706203 / 1706261)
-    a = analysiere_adresse(["Silva Mara da", "Eichhorstweg 1b", "DE 14776 Brandenburg An Der", "Havel"])
+    a = analysiere_adresse(["Souza Lia da", "Eichhorstweg 1b", "DE 14776 Brandenburg An Der", "Havel"])
     check("adr real 1706203 (Ort umbrochen)", (a["ort"], a["plz"], a["land"], a["hinweise"], a["fehler"]),
           ("Brandenburg An Der Havel", "14776", "DE", [], []))
-    a = analysiere_adresse(["Majewski Alexander", "Am Anger 19a", "DE 06567 Bad",
+    a = analysiere_adresse(["Majewsky Alex", "Am Anger 19a", "DE 06567 Bad",
                             "Frankenhausen/Kyffhäuser OT", "Esperste"])
     check("adr real 1706261 (Ort umbrochen + Ortsteil)",
           (a["ort"], a["ortsteil"], a["hinweise"], a["fehler"]),
           ("Bad Frankenhausen/Kyffhäuser", "OT Esperste", [], []))
-    a = analysiere_adresse(["Jan Peeters", "Rue Haute 5", "1000 Bruxelles", "BELGIEN"])
+    a = analysiere_adresse(["Jan Pieters", "Rue Haute 5", "1000 Bruxelles", "BELGIEN"])
     check("adr: Laenderzeile wird NICHT als Ortsfortsetzung gelesen", (a["ort"], a["land"]),
           ("Bruxelles", "BE"))
     a = analysiere_adresse(["A B", "Weg 1", "12345 Ort", "Hinterhaus Zimmer 12"])
@@ -1230,18 +1230,18 @@ def selftest():
           (a["ort"], any("Unerwartete" in h for h in a["hinweise"])), ("Ort", True))
 
     # Hausnummer mitten in der Zeile, Text dahinter (real 1706290)
-    a = analysiere_adresse(["Heitkämper Sandra Möller", "In Der Loh 1 Campingplatz", "DE 37170 Uslar"])
+    a = analysiere_adresse(["Heitmüller Sabine Möhler", "In Der Loh 1 Campingplatz", "DE 37170 Uslar"])
     check("adr real 1706290 (Hausnr mitten, Zusatz dahinter)",
           (a["strasse"], a["hausnr"], a["zusatz"], a["hinweise"], a["fehler"]),
           ("In Der Loh", "1", ["Campingplatz"], [], []))
     # Punkt direkt vor der Hausnummer, Notiz dahinter, weitere Zeile danach (real 1707369)
-    a = analysiere_adresse(["Marc Murphy", "Junckerstr.26 EKZ REIZ", "GRILLHÜTTE Aussenbereich",
+    a = analysiere_adresse(["Mark Murray", "Junckerstr.26 EKZ REIZ", "GRILLHÜTTE Aussenbereich",
                             "DE-16816 Neuruppin"])
     check("adr real 1707369 ('Junckerstr.26 EKZ REIZ' + Zusatzzeile)",
           (a["strasse"], a["hausnr"], a["zusatz"], a["hinweise"], a["fehler"]),
           ("Junckerstr.", "26", ["GRILLHÜTTE Aussenbereich", "EKZ REIZ"], [], []))
     # Auslandsadresse mit doppelter PLZ + Laendername im Ort und Echo hinter der Strasse (real 1707439)
-    a = analysiere_adresse(["Walter Wimmer", "Breitenfelderstr 4, 3380 Ornding",
+    a = analysiere_adresse(["Werner Wimmel", "Breitenfelderstr 4, 3380 Ornding",
                             "AT 3380 3380 Ornding - Austria"])
     check("adr real 1707439 (PLZ-Echo in Strasse, 'PLZ Ort - Austria')",
           (a["strasse"], a["hausnr"], a["plz"], a["ort"], a["land"], a["hinweise"], a["fehler"]),
@@ -1256,7 +1256,7 @@ def selftest():
     check("adr: Landname im Ort ohne Praefix -> Land AT, Ort bereinigt, kein Land-Hinweis",
           (a["ort"], a["land"], any("Länderkürzel" in h for h in a["hinweise"])),
           ("Waldneukirchen", "AT", False))
-    a = analysiere_adresse(["vanessa rutsatz", "unterm bodenberg 2.a", "38271 baddeckenstedt"])
+    a = analysiere_adresse(["vera beispiel", "unterm bodenberg 2.a", "38271 baddeckenstedt"])
     check("adr real 1707529 ('2.a' -> Hausnr 2a)",
           (a["strasse"], a["hausnr"], a["hinweise"], a["fehler"]),
           ("unterm bodenberg", "2a", [], []))
@@ -1264,7 +1264,7 @@ def selftest():
     check("adr: 'Hauptstr. 12.' (Schlusspunkt) unveraendert Hausnr 12",
           (a["strasse"], a["hausnr"]), ("Hauptstr.", "12"))
     # Notiz hinter Komma darf die Hausnummer nicht verfaelschen (real 1707377)
-    a = analysiere_adresse(["Raßmann Silke", "Ziegeleiberg 2, Tor an der B86,", "gegenüber Friedhof",
+    a = analysiere_adresse(["Raßberg Silvia", "Ziegeleiberg 2, Tor an der B86,", "gegenüber Friedhof",
                             "Ziegeleiberg", "DE 99634 Straußfurt"])
     check("adr real 1707377 (Notiz hinter Komma, doppelter Strassenname)",
           (a["strasse"], a["hausnr"], a["zusatz"], a["fehler"]),
@@ -1279,7 +1279,7 @@ def selftest():
     check("Pox1 0,25 kg + nur Postfach -> bleibt Grossbrief",
           bestimme_carrier(["pox1"], 0.2532, "DE", True, False)[0], GROSSBRIEF)
     r_ps = {"rnr": "1707360", "datei": "x.pdf", "sendungsgewicht": 0.2532,
-            "adresse_zeilen": ["Peter Kraplow", "Packstation 133", "1017254707",
+            "adresse_zeilen": ["Peter Krampe", "Packstation 133", "1017254707",
                                "DE-67065 Ludwigshafen am Rhein"],
             "positionen": [{"kennungen": ["pox1"], "lagerorte": ["F5"]}]}
     b_ps = bewerte_rechnung(r_ps)
@@ -1308,7 +1308,7 @@ def selftest():
         check("%s -> DPD nicht moeglich, DHL (mit Hinweis)" % n_,
               (b_x["carrier"], b_x["status"], any("bitte manuell prüfen" in h for h in b_x["hinweise"])),
               (DHL, "warn", True))
-    b_nm = _ab("wapo", 0.5, ["Peter Hermes", "Hauptstr. 5", "12345 Ort"])
+    b_nm = _ab("wapo", 0.5, ["Paul Hermes", "Hauptstr. 5", "12345 Ort"])
     check("Nachname Hermes in der Namenszeile: KEIN Abholstellen-Hinweis, bleibt DPD",
           (b_nm["carrier"], any("Abholstelle" in h for h in b_nm["hinweise"])), (DPD, False))
     b_pk = _ab("pox1", 0.3, ["A B", "Paketshop 4711", "Hauptstr. 5", "12345 Ort"])
@@ -1318,7 +1318,7 @@ def selftest():
     check("Grossbrief an DHL-Filiale -> DHL (Brief nicht moeglich)", b_bd["carrier"], DHL)
     # Postfiliale (real 1710104, 2026-10-21 faelschlich als DPD-Label raus): wie Packstation -> DHL
     r_pf = {"rnr": "1710104", "datei": "x.pdf", "sendungsgewicht": 0.2512,
-            "adresse_zeilen": ["Michal Wolek", "Postfiliale 511", "DE-26188 Edewecht"],
+            "adresse_zeilen": ["Michal Wolny", "Postfiliale 511", "DE-26188 Edewecht"],
             "positionen": [{"kennungen": ["wapo"], "lagerorte": ["Regal 8, E0", "Wapo"]}]}
     b_pf = bewerte_rechnung(r_pf)
     check("Postfiliale (1710104, ohne Postnummer): Wapo 0,25 kg -> DHL statt DPD, Fehler wegen fehlender Postnummer",
@@ -1335,28 +1335,28 @@ def selftest():
           [analysiere_adresse(["A B", s_, "12345 Ort"])["packstation"]
            for s_ in ("Postplatz 5", "Poststrasse 12", "Postfilialenweg 3", "Am Postamt 7")],
           [False, False, False, False])
-    a = analysiere_adresse(["Egzona Bllacaku", "12 tür 4", "Rechte Mürzzeile", "AT-8605 Kapfenberg"])
+    a = analysiere_adresse(["Erna Bllamuster", "12 tür 4", "Rechte Mürzzeile", "AT-8605 Kapfenberg"])
     check("adr real 1708130 (Tuer vor Strasse vertauscht -> Pruefhinweis 'Ziffer in Strasse')",
           any("enthält eine Ziffer" in h for h in a["hinweise"]), True)
-    a = analysiere_adresse(["Irenaeus Messie", "An der B5 nr. 2", "DE 19339 Plattenburg"])
+    a = analysiere_adresse(["Ignaz Messer", "An der B5 nr. 2", "DE 19339 Plattenburg"])
     check("adr real 1707665 ('Nr.' raus, B5 kein Ziffern-Hinweis)",
           (a["strasse"], a["hausnr"], a["hinweise"], a["fehler"]), ("An der B5", "2", [], []))
-    a = analysiere_adresse(["Kenfack Marie Paule Takou", "Poststraße 6 + 8", "DE-71093 Weil Im Schönbuch"])
+    a = analysiere_adresse(["Kemfack Marie Paule Tamou", "Poststraße 6 + 8", "DE-71093 Weil Im Schönbuch"])
     check("adr real 1707722 ('6 + 8' = eine Hausnummer-Angabe)",
           (a["strasse"], a["hausnr"], a["hinweise"], a["fehler"]), ("Poststraße", "6 + 8", [], []))
     a = analysiere_adresse(["A B", "Hauptstr. 5 & 7", "12345 Ort"])
     check("adr: 'Hauptstr. 5 & 7'", (a["strasse"], a["hausnr"]), ("Hauptstr.", "5 & 7"))
-    a = analysiere_adresse(["German Seredin", "Süderstraße, 27", "DE-25709 Marne"])
+    a = analysiere_adresse(["Gerd Seremuster", "Süderstraße, 27", "DE-25709 Marne"])
     check("adr real 1706159 ('Suederstrasse, 27' -> Komma weg)",
           (a["strasse"], a["hausnr"], a["hinweise"]), ("Süderstraße", "27", []))
     a = analysiere_adresse(["A B", "Hauptstr.: 5", "12345 Ort"])
     check("adr: 'Hauptstr.: 5' -> Doppelpunkt weg, Punkt der Abkuerzung bleibt",
           (a["strasse"], a["hausnr"]), ("Hauptstr.", "5"))
-    a = analysiere_adresse(["Florian Sodomka", "Schützenstraße 46g /Top 80", "AT-6020 Innsbruck"])
+    a = analysiere_adresse(["Franz Sodomuster", "Schützenstraße 46g /Top 80", "AT-6020 Innsbruck"])
     check("adr real 1708078 ('46g /Top 80' -> Hausnr 46g, Zusatz Top 80)",
           (a["strasse"], a["hausnr"], a["zusatz"], a["hinweise"], a["land"]),
           ("Schützenstraße", "46g", ["Top 80"], [], "AT"))
-    a = analysiere_adresse(["Wermeling Dirk", "Feldmark 2 Haus 40", "DE 48336 Sassenberg"])
+    a = analysiere_adresse(["Wermer Dirk", "Feldmark 2 Haus 40", "DE 48336 Sassenberg"])
     check("adr real 1707459 ('2 Haus 40' -> Hausnr 2, Zusatz Haus 40, kein Ziffern-Hinweis)",
           (a["strasse"], a["hausnr"], a["zusatz"], a["hinweise"]), ("Feldmark", "2", ["Haus 40"], []))
     def _sh(z):
@@ -1390,44 +1390,44 @@ def selftest():
     check("adr: ohne Hausnummer weiterhin Hinweis", any("Keine Hausnummer" in h for h in a["hinweise"]), True)
 
     # Mehrfache Hausnummer-Bestandteile (Oesterreich: Haus-Stiege/Tuer) - 1706384
-    a = analysiere_adresse(["Patricia Resch", "Canavesegasse 9-15 /3/12", "AT-1230 Wien"])
+    a = analysiere_adresse(["Paula Rasch", "Canavesegasse 9-15 /3/12", "AT-1230 Wien"])
     check("adr real 1706384 (Hausnr 9-15 /3/12)", (a["strasse"], a["hausnr"], a["fehler"], a["hinweise"]),
           ("Canavesegasse", "9-15 /3/12", [], []))
-    a = analysiere_adresse(["Karl Nummer", "Ring 36/6", "AT-9991 Kals"])
+    a = analysiere_adresse(["Kurt Nummer", "Ring 36/6", "AT-9991 Kals"])
     check("adr Hausnr 36/6 unveraendert", (a["strasse"], a["hausnr"]), ("Ring", "36/6"))
     # Fuellzeichen-Zeile "-" als Zusatz (1706360)
-    a = analysiere_adresse(["Muehlegg Michael", "-", "Radlkoferstr. 15", "DE 81373 München"])
+    a = analysiere_adresse(["Muehlberg Michael", "-", "Radlkoferstr. 15", "DE 81373 München"])
     check("adr real 1706360 (Zeile '-' entfaellt)", (a["zusatz"], a["strasse"], a["hausnr"]),
           ([], "Radlkoferstr.", "15"))
 
     # Adresse (Faelle aus echten Rechnungen)
-    a = analysiere_adresse(["Evi Schmid", "Jägerwirth 122", "DE-94081 Fürstenzell"])
+    a = analysiere_adresse(["Eva Schmitt", "Jägerwirth 122", "DE-94081 Fürstenzell"])
     check("adr1", (a["name"], a["strasse"], a["hausnr"], a["plz"], a["ort"], a["land"],
                    a["fehler"]),
-          ("Evi Schmid", "Jägerwirth", "122", "94081", "Fürstenzell", "DE", []))
-    a = analysiere_adresse(["Michael Höfler", "Mühldorf 414", "AT-8330 Feldbach"])
+          ("Eva Schmitt", "Jägerwirth", "122", "94081", "Fürstenzell", "DE", []))
+    a = analysiere_adresse(["Michael Höfner", "Mühldorf 414", "AT-8330 Feldbach"])
     check("adr AT", (a["plz"], a["ort"], a["land"], a["fehler"]),
           ("8330", "Feldbach", "AT", []))
-    a = analysiere_adresse(["Nomi Atelier", "Ebbelicher Weg 70", "45701 Herten"])
+    a = analysiere_adresse(["Lumi Atelier", "Ebbelicher Weg 70", "45701 Herten"])
     check("adr ohne Praefix", (a["land"], a["plz"], a["hausnr"]), ("DE", "45701", "70"))
-    a = analysiere_adresse(["Andreas Denteler", "Denteler Präzisionsteile GmbH",
+    a = analysiere_adresse(["Andreas Mustermann", "Mustermann Präzisionsteile GmbH",
                             "Feldstraße 16", "DE-86738 Deiningen"])
     check("adr Zusatz", (a["zusatz"], a["strasse"], a["hausnr"]),
-          (["Denteler Präzisionsteile GmbH"], "Feldstraße", "16"))
-    a = analysiere_adresse(["Jan Peeters", "Rue Haute 5", "1000 Bruxelles", "BELGIEN"])
+          (["Mustermann Präzisionsteile GmbH"], "Feldstraße", "16"))
+    a = analysiere_adresse(["Jan Pieters", "Rue Haute 5", "1000 Bruxelles", "BELGIEN"])
     check("adr Laenderzeile", (a["land"], a["plz"], a["ort"], a["fehler"]),
           ("BE", "1000", "Bruxelles", []))
-    a = analysiere_adresse(["Mirko Krämer", "Lärchenweg 7 15518 Rauen"])
+    a = analysiere_adresse(["Mirko Kremer", "Lärchenweg 7 15518 Rauen"])
     check("adr PLZ in Strassenzeile", (a["strasse"], a["hausnr"], a["plz"], a["ort"]),
           ("Lärchenweg", "7", "15518", "Rauen"))
-    a = analysiere_adresse(["Elke Meier", "Clara Zetkin Straße 358,", "06464 Nachterstedt"])
+    a = analysiere_adresse(["Erika Mustermeier", "Clara Zetkin Straße 358,", "06464 Nachterstedt"])
     check("adr Komma nach Hausnr", (a["strasse"], a["hausnr"]), ("Clara Zetkin Straße", "358"))
-    a = analysiere_adresse(["Karl Nummer", "Ring 36/6", "AT-9991 Kals"])
+    a = analysiere_adresse(["Kurt Nummer", "Ring 36/6", "AT-9991 Kals"])
     check("adr Hausnr 36/6", a["hausnr"], "36/6")
     # Hausnummer-Spanne OHNE Bindestrich, nur Leerzeichen (real 1706911: Firma
     # Dyckhoff GmbH, "131 bis 143" gemeint) - Leerzeichen zaehlt als weiterer
     # gueltiger Trenner zwischen den Zifferngruppen.
-    a = analysiere_adresse(["Viets Florian", "Dyckhoff Gmbh", "Hauenhorster Straße 131 143",
+    a = analysiere_adresse(["Vietz Felix", "Dyckhoff Gmbh", "Hauenhorster Straße 131 143",
                             "DE 48431 Rheine"])
     check("adr real 1706911 (Hausnr-Spanne ohne Bindestrich)",
           (a["strasse"], a["hausnr"], a["zusatz"], a["hinweise"]),
@@ -1435,7 +1435,7 @@ def selftest():
     a = analysiere_adresse(["X Y", "Hauptstr. 12 B", "12345 Ort"])
     check("adr Hausnr 12 B", a["hausnr"], "12 B")
     # Buchstaben-Zusatz per "/" statt Leerzeichen angehaengt (real 1707158)
-    a = analysiere_adresse(["max meckelburg", "Kaiserpfalzstr 26/a",
+    a = analysiere_adresse(["max mustermann", "Kaiserpfalzstr 26/a",
                             "DE 78351 Bodman-Ludwigshafen"])
     check("adr real 1707158 (Hausnr 26/a)", (a["strasse"], a["hausnr"], a["hinweise"]),
           ("Kaiserpfalzstr", "26/a", []))
@@ -1445,31 +1445,31 @@ def selftest():
     # Zusaetzliche Zeile NACH der echten Strassenzeile (anders als "adr Zusatz"
     # oben, wo die Zusatzzeile VOR der Strasse steht) - real beobachtet, siehe
     # _finde_strasse()-Docstring.
-    a = analysiere_adresse(["Vötsch Thomas", "Wilhelmstraße 100", "Wilhelmstraße",
+    a = analysiere_adresse(["Vötter Tobias", "Wilhelmstraße 100", "Wilhelmstraße",
                             "DE-72461 Albstadt"])
     check("adr real 1705605 (doppelte Strasse ohne Hausnr danach)",
           (a["strasse"], a["hausnr"], a["zusatz"], a["hinweise"]),
           ("Wilhelmstraße", "100", ["Wilhelmstraße"], []))
-    a = analysiere_adresse(["Roman Schönfeld", "Gerhart-Hauptmann-Str. 13", "Braumanufaktur",
+    a = analysiere_adresse(["Roland Schönfeldt", "Gerhart-Hauptmann-Str. 13", "Braumanufaktur",
                             "DE-35321 Laubach"])
     check("adr real 1705563 (Zusatzzeile NACH der Strasse)",
           (a["strasse"], a["hausnr"], a["zusatz"], a["hinweise"]),
           ("Gerhart-Hauptmann-Str.", "13", ["Braumanufaktur"], []))
     # Strasse und Hausnummer auf zwei eigenen Zeilen.
-    a = analysiere_adresse(["Kerekes Zoltan", "Wiesenweg", "4", "DE-85290 Geisenfeld"])
+    a = analysiere_adresse(["Keremes Zoran", "Wiesenweg", "4", "DE-85290 Geisenfeld"])
     check("adr real 1705611 (Strasse/Hausnr auf zwei Zeilen)",
           (a["strasse"], a["hausnr"], a["zusatz"], a["hinweise"]),
           ("Wiesenweg", "4", [], []))
     # Strasse + ZWEISTELLIGE Hausnr auf zwei Zeilen (1705798) - "19" darf
     # nicht selbst als Strasse "1" + Hausnr "9" gelten.
-    a = analysiere_adresse(["Gilbert Niemann", "Eickendorf", "19", "DE-48317 Drensteinfurt"])
+    a = analysiere_adresse(["Gerold Neumann", "Eickendorf", "19", "DE-48317 Drensteinfurt"])
     check("adr real 1705798 (zweistellige Hausnr auf eigener Zeile)",
           (a["strasse"], a["hausnr"], a["zusatz"]), ("Eickendorf", "19", []))
-    a = analysiere_adresse(["Rudolf Pieper", "Isingheim", "11a", "DE-59889 Eslohe"])
+    a = analysiere_adresse(["Rudi Pfeifer", "Isingheim", "11a", "DE-59889 Eslohe"])
     check("adr real 1705834 (Hausnr mit Buchstabe auf eigener Zeile)",
           (a["strasse"], a["hausnr"], a["zusatz"]), ("Isingheim", "11a", []))
     # Doppelte Strassen-/Namenszeile nicht in den Zusatz.
-    a = analysiere_adresse(["Marlenis Rodriguez", "Seegeritzer Weg 202",
+    a = analysiere_adresse(["Marlena Rodrigo", "Seegeritzer Weg 202",
                             "Seegeritzer Weg 202", "DE-04349 Leipzig"])
     check("adr real 1705811 (Strasse doppelt)", (a["strasse"], a["hausnr"], a["zusatz"]),
           ("Seegeritzer Weg", "202", []))
@@ -1477,7 +1477,7 @@ def selftest():
                             "DE-86971 Peiting"])
     check("adr real 1705916 (Name doppelt)", a["zusatz"], [])
     # Ortsteil hinter der Hausnummer -> an den Ort (Rechnung 1705888).
-    a = analysiere_adresse(["Scheffert Kornelia", "Dorf 17 OT Quitzerow", "17111 Kletzin"])
+    a = analysiere_adresse(["Schefferle Konstanze", "Dorf 17 OT Quitzerow", "17111 Kletzin"])
     check("adr real 1705888 (Ortsteil hinter Hausnr)",
           (a["strasse"], a["hausnr"], a["ort"], a["ortsteil"], a["zusatz"], a["hinweise"]),
           ("Dorf", "17", "Kletzin", "OT Quitzerow", [], []))
@@ -1491,14 +1491,14 @@ def selftest():
           (a["strasse"], a["hausnr"], a["ort"], a["ortsteil"]),
           ("Hauptstr.", "5a", "Ort", "Ortsteil Oberdorf"))
     # Hausnummer mit Doppelpunkt statt Leerzeichen angeklebt.
-    a = analysiere_adresse(["Johannes Wanke", "Peheimer Str :11", "DE-49699 Lindern"])
+    a = analysiere_adresse(["Jonas Wanker", "Peheimer Str :11", "DE-49699 Lindern"])
     check("adr real 1705571 (Hausnr mit Doppelpunkt angeklebt)",
           (a["strasse"], a["hausnr"], a["hinweise"]), ("Peheimer Str", "11", []))
     # Hausnummer OHNE jeden Trenner angeklebt.
-    a = analysiere_adresse(["Bahittin Doener", "Rohrwangstr.3", "DE-73430 AALEN"])
+    a = analysiere_adresse(["Bernd Doemer", "Rohrwangstr.3", "DE-73430 AALEN"])
     check("adr real 1705548 (Hausnr ohne Trenner angeklebt)",
           (a["strasse"], a["hausnr"], a["hinweise"]), ("Rohrwangstr.", "3", []))
-    a = analysiere_adresse(["Gregor Worringen", "Heidelstein str.21", "DE-36043 Fulda"])
+    a = analysiere_adresse(["Georg Woringer", "Heidelstein str.21", "DE-36043 Fulda"])
     check("adr real 1705551 (Hausnr ohne Trenner angeklebt, mit Leerzeichen im Strassennamen)",
           (a["strasse"], a["hausnr"], a["hinweise"]), ("Heidelstein str.", "21", []))
     a = analysiere_adresse(["X Y", "Hauptstr. 1"])
@@ -1506,7 +1506,7 @@ def selftest():
     a = analysiere_adresse(["X Y", "Hauptstr. 1", "8330 Feldbach"])
     check("adr 4-stellig ohne Land -> AT-Default mit Hinweis, kein Fehler",
           (a["land"], a["fehler"], bool(a["hinweise"])), ("AT", [], True))
-    a = analysiere_adresse(["Gegenleitner Johannes", "Bad Haller Straße 56",
+    a = analysiere_adresse(["Gegenmuster Johann", "Bad Haller Straße 56",
                             "4595 Waldneukirchen"])
     check("adr real 1705088 (AT ohne Länderzeile)",
           (a["land"], a["plz"], a["ort"], a["fehler"]), ("AT", "4595", "Waldneukirchen", []))
@@ -1519,7 +1519,7 @@ def selftest():
     check("bereinige Formel-Injection =", bereinige("=HYPERLINK(\"x\")"), "'=HYPERLINK(\"x\")")
     check("bereinige Formel-Injection @", bereinige("@SUM(1)"), "'@SUM(1)")
     check("bereinige normaler Name unveraendert", bereinige("Müller GmbH"), "Müller GmbH")
-    a = analysiere_adresse(["Christopher Beck", "867653498", "Packstation 105",
+    a = analysiere_adresse(["Christian Muster", "867653498", "Packstation 105",
                             "DE-68307 Mannheim"])
     check("adr real 1705540 (Packstation) -> packstation=True",
           (a["land"], a["plz"], a["ort"], a["packstation"], a["fehler"]),
@@ -1530,9 +1530,9 @@ def selftest():
     def _ps(z):
         a_ = analysiere_adresse(z)
         return (a_["name"], a_["zusatz"][:1], a_["strasse"], a_["hausnr"], bool([f for f in a_["fehler"] if "Postnummer" in f]))
-    check("Packstation Standard (Postnummer eigene Zeile)", _ps(["Alexej Kosenko", "981454528", "Packstation 158", "DE-90449 Nürnberg"]),
-          ("Alexej Kosenko", ["981454528"], "Packstation", "158", False))
-    check("Packstation OHNE Postnummer (real 1713997) -> Fehler", _ps(["Feyen Anja", "Packstation201", "40589 Düsseldorf"])[4], True)
+    check("Packstation Standard (Postnummer eigene Zeile)", _ps(["Alex Beispiel", "981454528", "Packstation 158", "DE-90449 Nürnberg"]),
+          ("Alex Beispiel", ["981454528"], "Packstation", "158", False))
+    check("Packstation OHNE Postnummer (real 1713997) -> Fehler", _ps(["Feldmann Anna", "Packstation201", "40589 Düsseldorf"])[4], True)
     check("Postnummer in der Namenszeile", _ps(["Max Muster 12345678", "Packstation 201", "40589 Düsseldorf"]),
           ("Max Muster", ["12345678"], "Packstation", "201", False))
     check("Postnummer hinter der Packstationsnummer", _ps(["Max Muster", "Packstation 201 12345678", "40589 Düsseldorf"]),
@@ -1544,14 +1544,14 @@ def selftest():
     check("Postfiliale ohne Postnummer -> Fehler", _ps(["Max Muster", "Postfiliale 511", "40589 Düsseldorf"])[4], True)
     check("Postfach braucht keine Postnummer", _ps(["Max Muster", "Postfach 1234", "40589 Düsseldorf"])[4], False)
     check("Postnummer + Packstation in der Zusatzzeile, Stations-Strasse (real 1707054) -> umgestellt",
-          _ps(["Riewald Nicole", "803583883 , Packstation 464", "Müllerstrasse 123", "DE 13349 Berlin"]),
-          ("Riewald Nicole", ["803583883"], "Packstation", "464", False))
+          _ps(["Rieberg Nina", "803583883 , Packstation 464", "Müllerstrasse 123", "DE 13349 Berlin"]),
+          ("Rieberg Nina", ["803583883"], "Packstation", "464", False))
     check("DHL Postfiliale in der Zusatzzeile ohne Postnummer (real 1707523) -> Postfiliale 479 + Fehler",
-          _ps(["Biester Manfred", "Dhl Postfiliale 479", "Sundweg 99", "DE 23774 Heiligenhafen"]),
-          ("Biester Manfred", [], "Postfiliale", "479", True))
+          _ps(["Beispiel Manfred", "Dhl Postfiliale 479", "Sundweg 99", "DE 23774 Heiligenhafen"]),
+          ("Beispiel Manfred", [], "Postfiliale", "479", True))
     check("Postnummer bei Strassenadresse ohne Station (real Ruecksendung 1713166) -> Fehler, nie DPD",
           (lambda a_: (a_["packstation"], any("keine Packstation-/Filialnummer" in f for f in a_["fehler"])))(
-              analysiere_adresse(["Heckmann Jessica", "Felix-wankel-straße 18, Post-nr.:", "106512", "69126 Heidelberg"])),
+              analysiere_adresse(["Hellmann Jana", "Felix-wankel-straße 18, Post-nr.:", "106512", "69126 Heidelberg"])),
           (True, True))
     check("Kundennummer o.ä. ohne 'Post' bleibt normale Adresse",
           analysiere_adresse(["Max Muster", "Kd-Nr 12345678", "Hauptstr. 5", "12345 Ort"])["fehler"], [])
@@ -1559,34 +1559,34 @@ def selftest():
         a_ = analysiere_adresse(z)
         return (a_["name"], a_["zusatz"], a_["strasse"], a_["hausnr"], a_["fehler"])
     check("Ruecksendung 1713166 (Etikett): Dhl Packstation 168 + Stations-Strasse in Name 3 -> nur Postnummer + Packstation",
-          _dhl(["Heckmann Jessica", "Felix-wankel-straße 18, Post-nr.:", "106512", "Dhl Packstation 168", "69126 Heidelberg"])[:4],
-          ("Heckmann Jessica", ["106512"], "Packstation", "168"))
+          _dhl(["Hellmann Jana", "Felix-wankel-straße 18, Post-nr.:", "106512", "Dhl Packstation 168", "69126 Heidelberg"])[:4],
+          ("Hellmann Jana", ["106512"], "Packstation", "168"))
     check("Packstation mit Firmenzeile: Firma faellt weg (Hinweis)",
           _dhl(["Max Muster", "Firma X GmbH", "12345678", "Packstation 201", "40589 Düsseldorf"])[1:4],
           (["12345678"], "Packstation", "201"))
     check("Abgeschnittene Postnummer (real 1713166, 40-Zeichen-Grenze) -> Fehler",
           any("abgeschnitten" in f for f in analysiere_adresse(
-              ["Heckmann Jessica", "Felix-wankel-straße 18, Post-nr.:", "106512", "Dhl Packstation 168", "69126 Heidelberg"])["fehler"]),
+              ["Hellmann Jana", "Felix-wankel-straße 18, Post-nr.:", "106512", "Dhl Packstation 168", "69126 Heidelberg"])["fehler"]),
           True)
     check("Kurze Zeile mit Postnummer (nicht an der Grenze) -> kein Abschneide-Fehler",
           any("abgeschnitten" in f for f in analysiere_adresse(
               ["Max Muster", "Postnr. 1278907", "Postfiliale 475", "DE-51069 Köln"])["fehler"]), False)
     check("Kurzform 'Postn.' (real 1712395) -> Postnummer erkannt, Stations-Strasse weg",
-          _dhl(["Rene Hühn", "Ascherslebener Str. 1", "Packstation 145 ,Postn.1166101950", "DE-06425 Alsleben (saale)"]),
-          ("Rene Hühn", ["1166101950"], "Packstation", "145", []))
+          _dhl(["Ralf Huhn", "Ascherslebener Str. 1", "Packstation 145 ,Postn.1166101950", "DE-06425 Alsleben (saale)"]),
+          ("Ralf Huhn", ["1166101950"], "Packstation", "145", []))
     check("Postnummer vor dem Namen (real 1713526)",
-          _dhl(["1466861 Kerstin Trampler", "Packstation 458", "80634 München"]),
-          ("Kerstin Trampler", ["1466861"], "Packstation", "458", []))
+          _dhl(["1466861 Karin Muster", "Packstation 458", "80634 München"]),
+          ("Karin Muster", ["1466861"], "Packstation", "458", []))
     check("Packstation im Namen", _ps(["Max Muster Packstation 201", "12345678", "Wegstr. 4", "40589 Düsseldorf"]),
           ("Max Muster", ["12345678"], "Packstation", "201", False))
     check("normale Strasse unberuehrt", _ps(["Max Muster 2", "Hauptstr. 5", "40589 Düsseldorf"]),
           ("Max Muster 2", [], "Hauptstr.", "5", False))
-    a = analysiere_adresse(["Evi Schmid", "Jägerwirth 122", "DE-94081 Fürstenzell"])
+    a = analysiere_adresse(["Eva Schmitt", "Jägerwirth 122", "DE-94081 Fürstenzell"])
     check("adr normale Strasse -> packstation=False", a["packstation"], False)
 
     # Rechnung komplett (wie parse_pdf sie liefert)
     r = {"rnr": "1705050", "datei": "x.pdf", "sendungsgewicht": 0.34,
-         "adresse_zeilen": ["Felix Cox", "Heidelberger Str. 80a", "DE-12435 Berlin"],
+         "adresse_zeilen": ["Fritz Fox", "Heidelberger Str. 80a", "DE-12435 Berlin"],
          "positionen": [{"kennungen": ["pax1"], "lagerorte": ["Regal 8, E1", "Topseller"]}],
          "zeilen_ok": True, "summe_ok": True, "vollstaendig_ok": True}
     b = bewerte_rechnung(r)
@@ -1605,7 +1605,7 @@ def selftest():
     check("DPD ohne Kundennummer -> warn, kdnr leer", (b5["status"], b5["kdnr"]), ("warn", ""))
 
     r6 = {"rnr": "1705540", "datei": "x.pdf", "sendungsgewicht": 0.2512,
-          "adresse_zeilen": ["Christopher Beck", "867653498", "Packstation 105",
+          "adresse_zeilen": ["Christian Muster", "867653498", "Packstation 105",
                              "DE-68307 Mannheim"],
           "positionen": [{"kennungen": ["wapo"], "lagerorte": ["Regal 8, E0"]}],
           "zeilen_ok": True, "summe_ok": True, "vollstaendig_ok": True}
@@ -1956,11 +1956,11 @@ def selftest():
           [_insel(["wapo"], 0.5, 17.5, z)["carrier"] for z in ("18528 Bergen", "17419 Ahlbeck", "23769 Fehmarn")],
           [DPD, DPD, DPD])
     # Ort in eigener Zeile nach "DE 92237" (Lieferadresse im neuen Amicron-Format, real 1709625/1709769)
-    a_o = analysiere_adresse(["HEISS ISABELLA", "VILLENSTR. 6A", "DE 92237", "SULZBACH-ROSENBERG"])
+    a_o = analysiere_adresse(["HEISE ISOLDE", "VILLENSTR. 6A", "DE 92237", "SULZBACH-ROSENBERG"])
     check("Ort in eigener Zeile (1709625): Ort/PLZ/Land/Fehler/Hinweise",
           (a_o["ort"], a_o["plz"], a_o["land"], a_o["fehler"], a_o["hinweise"], a_o["strasse"], a_o["hausnr"]),
           ("SULZBACH-ROSENBERG", "92237", "DE", [], [], "VILLENSTR.", "6A"))
-    a_o2 = analysiere_adresse(["Holterhoefer August", "Junkerweg 1", "DE 53809", "Ruppichteroth-Hambuchen"])
+    a_o2 = analysiere_adresse(["Holzhoefer August", "Junkerweg 1", "DE 53809", "Ruppichteroth-Hambuchen"])
     check("Ort in eigener Zeile (1709769)", (a_o2["ort"], a_o2["fehler"], a_o2["hinweise"]),
           ("Ruppichteroth-Hambuchen", [], []))
     a_o3 = analysiere_adresse(["Max Muster", "Weg 1", "DE 12345", "Bad", "Frankenhausen"])

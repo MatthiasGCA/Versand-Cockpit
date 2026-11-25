@@ -41,7 +41,11 @@ from datetime import datetime, timedelta
 from email.message import EmailMessage
 from email.utils import formatdate, make_msgid, formataddr
 
-VERSION = "2026-11-23b"
+VERSION = "2026-11-25a"
+# 2026-11-25a: eBay-Stornos werden in Amicron als Rechnung mit 0,00 EUR erfasst und zurueckdatiert (Matthias). Bisher
+#   haette der Versand sie verschickt (Auswahl nach Dateidatum, Betrag ungeprueft). Jetzt: Rechnungsbetrag 0,00 ->
+#   "ignoriert (Betrag 0,00 EUR)" (still, grau). Rechnungsdatum mehr als "max_rueckdatierung_tage" (Standard 3) vor dem
+#   Erstellungsdatum der PDF -> NICHT gesendet, offener Fall zum Pruefen (zurueckdatiert = bewusst nicht versenden?).
 # 2026-11-23b: Offene Faelle werden bei JEDEM Lauf (auch "Pruefen") ausgetragen, wenn die Rechnung in nie_senden.txt
 #   steht oder laut Protokoll gesendet ist - auch wenn sie aelter als max_alter_tage ist und gar nicht mehr gelesen
 #   wird (real 1714151 vom 19.11.: frueheres "Erledigt" wurde vom Lauf wieder aufgenommen, danach zu alt -> blieb stehen).
@@ -392,6 +396,30 @@ def rechnungsdatum_aus_text(text):
     return m.group(1) if m else ""
 
 
+RE_RECHNUNGSBETRAG = re.compile(r"Rechnungsbetrag\D{0,8}?(-?\d{1,3}(?:\.\d{3})*,\d{2})")
+
+
+def rechnungsbetrag_aus_text(text):
+    """Rechnungsbetrag als float oder None (nicht lesbar)."""
+    m = RE_RECHNUNGSBETRAG.search(text or "")
+    if not m:
+        return None
+    return float(m.group(1).replace(".", "").replace(",", "."))
+
+
+def rueckdatiert_tage(text, pdf_pfad):
+    """Tage, die das Rechnungsdatum VOR dem Erstellungsdatum (Aenderungsdatum) der PDF liegt; 0 wenn nicht/unlesbar."""
+    d = rechnungsdatum_aus_text(text)
+    if not d:
+        return 0
+    try:
+        rd = datetime.strptime(d, "%d.%m.%Y").date()
+        fd = datetime.fromtimestamp(os.path.getmtime(pdf_pfad)).date()
+    except (ValueError, OSError):
+        return 0
+    return max(0, (fd - rd).days)
+
+
 def platzhalter(rnr, kanal="", fremdbeleg="", rechnungsdatum=""):
     if kanal == KANAL_SHOP and fremdbeleg:
         best = "Ihre Bestellung Nr. %s in unserem Onlineshop" % fremdbeleg
@@ -627,6 +655,11 @@ def lauf(cfg, modus=None, jetzt=None, log=print):
             zeile.update(entscheidung="NICHT gesendet", grund="früherer Versuch ohne Bestätigung - bitte von Hand prüfen "
                                                               "(wurde die Mail evtl. schon verschickt?)")
             continue
+        betrag = rechnungsbetrag_aus_text(rtext)
+        if betrag is not None and abs(betrag) < 0.005:
+            zeile.update(entscheidung="ignoriert (Betrag 0,00 €)",
+                         grund="Rechnungsbetrag 0,00 € (z.B. eBay-Storno) - wird nicht versendet")
+            continue
         interne = INTERN_MARKER.search(rtext)
         packs = []
         for pp in pl_pfade.get(rnr, []):
@@ -659,6 +692,14 @@ def lauf(cfg, modus=None, jetzt=None, log=print):
         if interne:
             zeile.update(entscheidung="NICHT gesendet", grund="Rechnungs-PDF enthält interne Angaben (%s) - "
                                                               "falsches Formular?" % interne.group(0).strip())
+            continue
+        # erst HIER (wuerde sonst gesendet): Nachdrucke alter Amazon-/schon versendeter Rechnungen sind oben bereits
+        # aussortiert und erzeugen so keinen unnoetigen offenen Fall (real: 22 Nachdrucke in 12 Tagen)
+        rueck = rueckdatiert_tage(rtext, pdf)
+        if rueck > int(cfg.get("max_rueckdatierung_tage", 3)):
+            zeile.update(entscheidung="NICHT gesendet",
+                         grund="Rechnungsdatum %s liegt %d Tage vor der Erstellung - zurückdatiert? Bitte prüfen "
+                               "(\"Erledigt\" oder \"Trotzdem senden\")" % (zeile["rechnungsdatum"], rueck))
             continue
         if gesendet + entworfen >= maxmails:
             zeile.update(entscheidung="zurückgestellt", grund="Höchstzahl Mails je Lauf (%d) erreicht - kommt im nächsten Lauf dran" % maxmails)
@@ -1124,7 +1165,7 @@ def _selftest():
         def rechnung(rnr, fremd, name=None):
             mkpdf(os.path.join(rd, name or "Packliste Nr. %s 20261021080000.pdf" % rnr),
                   ["Gasecenter, Karlsruher Strasse 3", "Rechnung Nr. : %s" % rnr, "Kunden Nr. : 55",
-                   "Rechnungsdatum: 21.10.2026", fremd, "Rechnungsdatum = Lieferdatum falls", "Rechnung",
+                   "Rechnungsdatum: " + datetime.now().strftime("%d.%m.%Y"), fremd, "Rechnungsdatum = Lieferdatum falls", "Rechnung",
                    "Artikel 1 Stueck 5,00", "Vielen Dank fuer Ihre Bestellung"])
 
         def packl(rnr, fremd, mail):
@@ -1142,7 +1183,7 @@ def _selftest():
         rechnung("1710016", "25623")
         packl("1710016", "25623", "kunde@example.org")
         mkpdf(os.path.join(rd, "Gutschrift Nr. 1110001 2026.pdf"), ["Gutschrift", "Rechnung Nr. : 1110001"])
-        mkpdf(os.path.join(rd, "irrefuehrend.pdf"), ["Rechnung Nr. : 1710020", "Rechnungsdatum: 21.10.2026", "25623",
+        mkpdf(os.path.join(rd, "irrefuehrend.pdf"), ["Rechnung Nr. : 1710020", "Rechnungsdatum: " + datetime.now().strftime("%d.%m.%Y"), "25623",
                                                      "Lagerort: F5"])
         packl("1710020", "25623", "kunde@example.org")
         open(os.path.join(aus, "nie_senden.txt"), "w").write("1710015  # Testsperre\n")
@@ -1279,6 +1320,28 @@ def _selftest():
               ("1700001" in off_, "1700002" in off_), (False, True))
         off_.pop("1700002", None)
         speichere_offen(aus, off_)
+        # eBay-Storno: Rechnung 0,00 EUR, zurueckdatiert -> ignoriert; nur zurueckdatiert (Betrag > 0) -> offener Fall
+        check("Rechnungsbetrag lesen", (rechnungsbetrag_aus_text("Rechnungsbetrag \ufffd 1.031,87"),
+                                        rechnungsbetrag_aus_text("Rechnungsbetrag EUR 0,00"),
+                                        rechnungsbetrag_aus_text("Summe 3,00")), (1031.87, 0.0, None))
+        for rnr_, betr_, dat_ in (("1710060", "0,00", "02.11.2026"), ("1710061", "0,00", None),
+                                  ("1710062", "19,90", "02.11.2026"), ("1710063", "19,90", None)):
+            mkpdf(os.path.join(rd, "Packliste Nr. %s 20261125.pdf" % rnr_),
+                  ["Gasecenter, Karlsruher Strasse 3", "Rechnung Nr. : %s" % rnr_, "Kunden Nr. : 55",
+                   "Rechnungsdatum: " + (dat_ or datetime.now().strftime("%d.%m.%Y")), "clerprem_de", "Rechnung",
+                   "Artikel 1 Stueck " + betr_, "Rechnungsbetrag EUR " + betr_, "Vielen Dank fuer Ihre Bestellung"])
+            packl(rnr_, "clerprem_de", "a1@members.ebay.com")
+        res = lauf(cfg, "bericht")
+        je = {z["rnr"]: z for z in res["ergebnisse"]}
+        off_ = lade_offen(aus)
+        check("eBay-Storno 0,00 EUR (zurueckdatiert / heute) -> ignoriert, kein offener Fall",
+              (je["1710060"]["entscheidung"], je["1710061"]["entscheidung"], "1710060" in off_, "1710061" in off_),
+              ("ignoriert (Betrag 0,00 €)", "ignoriert (Betrag 0,00 €)", False, False))
+        check("Betrag > 0, aber zurueckdatiert -> NICHT gesendet + offener Fall; heute datiert -> wuerde senden",
+              (je["1710062"]["entscheidung"], "zurückdatiert" in je["1710062"]["grund"], "1710062" in off_,
+               je["1710063"]["entscheidung"]), ("NICHT gesendet", True, True, "würde senden"))
+        for rnr_ in ("1710060", "1710061", "1710062", "1710063"):
+            markiere_erledigt(cfg, rnr_, "Testende")
         # eigene Kundennummer (Ladengeschaeft/Theke, ohne Packliste) -> still ignorieren
         mkpdf(os.path.join(rd, "Packliste Nr. 1710050 20261116.pdf"),
               ["Gasecenter, Karlsruher Strasse 3", "Max Theke", "Rechnung Nr. : 1710050", "Kunden Nr. : 483911",

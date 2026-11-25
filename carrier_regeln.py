@@ -58,7 +58,11 @@ Siehe ist_auslands_kleinpaket() und die Konstanten KLEINPAKET_*.
 import html
 import re
 
-VERSION = "2026-11-18f"
+VERSION = "2026-11-25a"
+# 2026-11-25a: (1) Mehrere Wohnungsangaben hinter der Hausnummer ("Gersthofer Strasse 12 Stiege 1 Tuer 4", real 1715803
+#   AT) -> Hausnr 12, Zusatz "Stiege 1 Tuer 4" (vorher Strasse "... 12 Stiege", Nr "1"). (2) Hausnummer-Zeile mit
+#   Schraegstrich/Bindestrich ("Steinheimer Strasse" / "19/3", real 1715822) gilt als reine Hausnummer -> mit der
+#   Strassenzeile davor verbunden (vorher Strasse "1", Nr "9/3").
 # 2026-11-18f: Postnummer auch VOR dem Namen ("1466861 Kerstin Trampler", real 1713526).
 # 2026-11-18e: Postnummer auch mit Kurzform "Postn.1166101950" / "Post no." / "Postnum." erkannt (real 1712395
 #   "Packstation 145 ,Postn.1166101950" -> war faelschlich "ohne Postnummer").
@@ -368,7 +372,8 @@ _STRASSE_HNR = re.compile(
 # /Top" zur Strasse).
 _HNR_MIT_WOHNUNG = re.compile(
     r"^(?P<str>.*?\S)\s+(?P<nr>" + _NR_EINHEIT + r"(?:\s*[-/]\s*" + _NR_EINHEIT + r")*)\s*[,/]?\s*"
-    r"(?P<rest>(?:top|tür|tuer|stiege|stg|stock|whg|wohnung|haus|apt|app)\b\.?\s*[\w/.-]+)\s*$",
+    r"(?P<rest>(?:top|tür|tuer|stiege|stg|stock|whg|wohnung|haus|apt|app)\b\.?\s*[\w/.-]+"
+    r"(?:[\s,/]+(?:top|tür|tuer|stiege|stg|stock|whg|wohnung|haus|apt|app)\b\.?\s*[\w/.-]+)*)\s*$",
     re.I)
 # Hausnummer MITTEN in der Zeile, dahinter reiner Text ohne (weitere) Ziffern
 # ("In Der Loh 1 Campingplatz", Rechnung 1706290; "Rotterdamer Str. 49 / Im
@@ -385,7 +390,7 @@ _HNR_MIT_TEXT = re.compile(
 # Eine Zeile, die NUR aus der Hausnummer besteht (Strasse und Hausnummer auf
 # zwei eigenen Zeilen, real beobachtet an Rechnung 1705611/1705631: "Wiesenweg"
 # / "4", "lindenstrasse" / "8").
-_NUR_HAUSNUMMER = re.compile(r"^\d+\s*[A-Za-z]?$")
+_NUR_HAUSNUMMER = re.compile(r"^\d+\s*[A-Za-z]?(?:\s*[-/]\s*\d+\s*[A-Za-z]?)*$")   # auch "19/3", "12-14"
 # Ortsteil HINTER der Hausnummer ("Dorf 17 OT Quitzerow", Rechnung 1705888) -
 # wuerde sonst die Hausnummer-Erkennung verhindern. Landet im eigenen Feld
 # "ortsteil" -> DHL/DPD-CSV Name 3 (NICHT im Ort - damit hat DHL oft Probleme,
@@ -1354,6 +1359,19 @@ def selftest():
     a = analysiere_adresse(["Wermeling Dirk", "Feldmark 2 Haus 40", "DE 48336 Sassenberg"])
     check("adr real 1707459 ('2 Haus 40' -> Hausnr 2, Zusatz Haus 40, kein Ziffern-Hinweis)",
           (a["strasse"], a["hausnr"], a["zusatz"], a["hinweise"]), ("Feldmark", "2", ["Haus 40"], []))
+    def _sh(z):
+        a_ = analysiere_adresse(z)
+        return (a_["strasse"], a_["hausnr"], a_["zusatz"], a_["hinweise"])
+    check("AT: 'Gersthofer Straße 12 Stiege 1 Tür 4' (real 1715803) -> Nr 12, Zusatz Stiege/Tür",
+          _sh(["Max Muster", "Gersthofer Straße 12 Stiege 1 Tür 4", "AT-1180 Wien"]),
+          ("Gersthofer Straße", "12", ["Stiege 1 Tür 4"], []))
+    check("AT: 'Hauptstraße 5 Stiege 2 Top 7' -> Nr 5, Zusatz Stiege/Top",
+          _sh(["Max", "Hauptstraße 5 Stiege 2 Top 7", "AT-1010 Wien"]), ("Hauptstraße", "5", ["Stiege 2 Top 7"], []))
+    check("Hausnummer '19/3' in eigener Zeile (real 1715822) -> mit Strasse verbunden",
+          _sh(["Familie Muster", "Steinheimer Strasse", "19/3", "DE-71711 Murr"]),
+          ("Steinheimer Strasse", "19/3", [], []))
+    check("Hausnummer '12-14' in eigener Zeile",
+          _sh(["Max", "Lindenweg", "12-14", "12345 Ort"])[:2], ("Lindenweg", "12-14"))
     a = analysiere_adresse(["A B", "Hauptstr. 5, Tür 12", "12345 Ort"])
     check("adr: 'Hauptstr. 5, Tür 12' -> Hausnr 5, Zusatz Tür 12",
           (a["strasse"], a["hausnr"], a["zusatz"]), ("Hauptstr.", "5", ["Tür 12"]))

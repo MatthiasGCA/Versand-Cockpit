@@ -51,7 +51,12 @@ try:
 except Exception:
     _HAS_REPORTLAB = False
 # ============================ KONFIGURATION ============================
-VERSION = "2026-11-20a"          # im Fenstertitel sichtbar -> Deployment pruefbar
+VERSION = "2026-11-25a"          # im Fenstertitel sichtbar -> Deployment pruefbar
+# 2026-11-25a: (1) Blaues EAN-Fenster zeigt jetzt die ARTIKEL MIT BARCODE einzeln (je Zeile, Menge, Haken sobald gescannt,
+#   "noch n×") plus "Alle anderen Artikel: kein Barcode - nicht scannen" - der Packer weiss bei gemischten Bestellungen,
+#   was gescannt werden muss (Matthias 25.11.); auch im roten "Falscher Artikel"-Fenster. (2) Das Fenster lief bei langen
+#   Namen (Set mit zwei EANs, "Teil 1/2") links und rechts aus dem Bild: alle Texte brechen jetzt um (Breite aus dem
+#   Cockpit-Fenster), max. 6 Artikelzeilen, Fenster wird senkrecht im Bild gehalten; Meldezeile unten gekuerzt.
 # 2026-11-20a: DHL-KLEINPAKET im neuen Design (real SHIPMENT_LABEL_20261120_085212.pdf S. 49, Re 1715138 Langeoog):
 #   Kopf "DHL KLEINPAKET", weder "DHL PAKET" noch "Kostenstelle:" -> kein Profil erkannt, Label nicht zuordenbar.
 #   DHL-Erkennung jetzt zusaetzlich "KLEINPAKET" und "Sendungsref.:" (Anker des neuen DHL-Designs).
@@ -867,6 +872,21 @@ def lade_ean_zuordnung(pfad):
     for eintrag in lookup.values():
         eintrag["soll"] = min(MAX_SCANS, eintrag["soll"])
     EAN_LOOKUP, _EAN_CSV_SIG = lookup, sig
+def _kurz(text, n):
+    """Text fuer die einzeilige Meldezeile kuerzen (die volle Bezeichnung steht im Overlay)."""
+    text = (text or "").strip()
+    return text if len(text) <= n else text[:n - 1].rstrip() + "…"
+def ean_artikelliste(eans, namen, rest=None):
+    """Anzeige-Liste der Artikel MIT Barcode einer Bestellung (fuer das blaue EAN-Fenster):
+    [{"bez", "anzahl", "offen"}] in der Reihenfolge der EAN-Liste. offen = noch zu scannen
+    (ohne rest: alles offen). Gleiche Bezeichnung (z.B. zwei EANs desselben Artikels ohne
+    Teil-Kennung) bleibt als eigene Zeile stehen - jede EAN ist ein eigener Scan."""
+    out = []
+    for ean, n in (eans or {}).items():
+        offen = n if rest is None else max(0, rest.get(ean, 0))
+        bez = (namen or {}).get(ean, "").strip() or ("EAN " + ean)
+        out.append({"bez": bez, "anzahl": n, "offen": offen})
+    return out
 def hat_ean_pflicht(rn):
     """True, wenn fuer rn mindestens eine EAN-Position vorliegt (und EAN-Scan an)."""
     if not EAN_VERIFIKATION_AKTIV:
@@ -2005,16 +2025,18 @@ def verarbeite_scan(z, eingabe, ordner, erneut_callback=None):
                         f"({ctx['pakete']} Seite(n))  [EAN geprueft "
                         f"{ctx['soll']}/{ctx['soll']}]", info)
             info = {"modus": "ean_teil", "rn": rn_ctx, "ist": ctx["ist"],
-                    "soll": ctx["soll"], "versender": ctx["versender"], "bez": bez}
+                    "soll": ctx["soll"], "versender": ctx["versender"], "bez": bez,
+                    "liste": ean_artikelliste(ctx.get("eans"), ctx["namen"], ctx["rest"])}
             return ("ean_teil",
                     f"{_tag(station)}{rn_ctx}: {ctx['ist']}/{ctx['soll']} EAN geprueft "
-                    f"- {bez} ✓", info)
+                    f"- {_kurz(bez, 70)} ✓", info)
         # b) gehoert zur Bestellung, aber schon vollstaendig gescannt -> Hinweis
         if eingabe_digits in ctx["eans_all"]:
             bez = ctx["namen"].get(eingabe_digits, "")
             info = {"modus": "ean_falsch", "rn": rn_ctx, "ist": ctx["ist"],
                     "soll": ctx["soll"], "versender": ctx["versender"],
-                    "grund": "schon vollstaendig", "bez": bez}
+                    "grund": "schon vollstaendig", "bez": bez,
+                    "liste": ean_artikelliste(ctx.get("eans"), ctx["namen"], ctx["rest"])}
             return ("ean_falsch",
                     f"{_tag(station)}{rn_ctx}: {bez} bereits vollstaendig geprueft "
                     f"({ctx['ist']}/{ctx['soll']})", info)
@@ -2022,7 +2044,8 @@ def verarbeite_scan(z, eingabe, ordner, erneut_callback=None):
         if re.fullmatch(r"\d{8}|\d{12,14}", eingabe_digits):
             info = {"modus": "ean_falsch", "rn": rn_ctx, "ist": ctx["ist"],
                     "soll": ctx["soll"], "versender": ctx["versender"],
-                    "grund": "fremde EAN", "ean": eingabe_digits}
+                    "grund": "fremde EAN", "ean": eingabe_digits,
+                    "liste": ean_artikelliste(ctx.get("eans"), ctx["namen"], ctx["rest"])}
             return ("ean_falsch",
                     f"{_tag(station)}FALSCHER ARTIKEL: EAN {eingabe_digits} gehoert "
                     f"NICHT zu Rechnung {rn_ctx} ({ctx['ist']}/{ctx['soll']} geprueft)",
@@ -2031,7 +2054,8 @@ def verarbeite_scan(z, eingabe, ordner, erneut_callback=None):
         if eingabe_digits == rn_ctx:
             info = {"modus": "ean_start", "rn": rn_ctx, "ist": ctx["ist"],
                     "soll": ctx["soll"], "versender": ctx["versender"],
-                    "namen": list(ctx["namen"].values())}
+                    "namen": list(ctx["namen"].values()),
+                    "liste": ean_artikelliste(ctx.get("eans"), ctx["namen"], ctx["rest"])}
             return ("ean_teil",
                     f"{_tag(station)}{rn_ctx}: bitte ARTIKEL-EAN scannen "
                     f"({ctx['ist']}/{ctx['soll']})", info)
@@ -2097,6 +2121,7 @@ def verarbeite_scan(z, eingabe, ordner, erneut_callback=None):
                 "pakete": pakete, "station": station,
                 "soll": eintrag["soll"], "ist": 0,
                 "rest": dict(eintrag["eans"]),        # ean -> noch offene Scans
+                "eans": dict(eintrag["eans"]),        # ean -> Anzahl (fuer die Artikelliste)
                 "namen": dict(eintrag["namen"]),
                 "eans_all": set(eintrag["eans"].keys()),
             }
@@ -2107,10 +2132,11 @@ def verarbeite_scan(z, eingabe, ordner, erneut_callback=None):
             for e, n in eintrag["eans"].items())
         info = {"modus": "ean_start", "rn": rn, "ist": 0, "soll": eintrag["soll"],
                 "versender": versender, "artikel": artikel,
-                "namen": list(eintrag["namen"].values())}
+                "namen": list(eintrag["namen"].values()),
+                "liste": ean_artikelliste(eintrag["eans"], eintrag["namen"])}
         return ("ean_start",
                 f"{_tag(station)}{versender} {rn}: bitte {eintrag['soll']} Artikel-EAN(s) "
-                f"scannen – {artikel}", info)
+                f"scannen – {_kurz(artikel, 70)}", info)
     # --- Mehrfach-Scan-Sicherung: mehrteilige Bestellung muss mehrfach gescannt
     #     werden, bevor das Label kommt. menge = echte Stueckzahl, soll = noetige
     #     Scans (auf MAX_SCANS gedeckelt). Fehlt die Menge -> soll==1 -> sofort.
@@ -2385,8 +2411,62 @@ def starte_cockpit():
                          fg="#FFFFFF", bg=WARN_BG)
     warn_prog.pack(anchor="w", pady=(10, 0))
     warn_sub = tk.Label(warn_text, text="", font=f_warn_sub,
-                        fg="#C9C9C9", bg=WARN_BG)
+                        fg="#C9C9C9", bg=WARN_BG, justify="left", anchor="w")
     warn_sub.pack(anchor="w", pady=(4, 0))
+    # Artikelliste im blauen EAN-Fenster: NUR die Artikel MIT Barcode, je Zeile einer, mit Haken
+    # sobald gescannt - der Packer sieht so, welche Artikel gescannt werden muessen (alle anderen
+    # Artikel der Bestellung haben keinen Barcode). Wird je Anzeige neu befuellt.
+    f_warn_liste = tkfont.Font(family="Segoe UI", size=17, weight="bold")
+    f_warn_hint = tkfont.Font(family="Segoe UI", size=12, slant="italic")
+    warn_liste = tk.Frame(warn_text, bg=WARN_BG)
+    WARN_LISTE_MAX = 6                 # mehr Zeilen -> "+ n weitere" (Fenster bleibt im Bild)
+    def _wrap_breite():
+        """Maximale Textbreite im Overlay, damit es nie breiter als das Fenster wird (vorher lief
+        eine lange Artikelzeile - z.B. Set mit zwei EANs - links und rechts aus dem Bild)."""
+        try:
+            b = root.winfo_width()
+            if b < 200:
+                b = root.winfo_screenwidth()
+        except Exception:
+            b = 1200
+        # Rand 8+8, Dreieck 150 + Abstaende 28+18, rechter Abstand 34, Luft zum Fensterrand 60
+        return max(320, b - 306)
+    def _platziere_overlay():
+        """Overlay mittig (bei 40 % der Hoehe) - aber so verschoben, dass es oben und unten im Fenster
+        bleibt (lange Artikelliste auf niedrigem Bildschirm)."""
+        try:
+            root.update_idletasks()
+            h = warn_overlay.winfo_reqheight()
+            H = root.winfo_height()
+            if H < 200:
+                raise ValueError
+            y = min(max(int(H * 0.40), h // 2 + 4), max(h // 2 + 4, H - h // 2 - 4))
+            warn_overlay.place(relx=0.5, y=y, anchor="center")
+        except Exception:
+            warn_overlay.place(relx=0.5, rely=0.40, anchor="center")
+    def _setze_liste(liste, titel="Nur diese Artikel haben einen Barcode und müssen gescannt werden:"):
+        for w in warn_liste.winfo_children():
+            w.destroy()
+        if not liste:
+            warn_liste.pack_forget()
+            return
+        wl = _wrap_breite()
+        tk.Label(warn_liste, text=titel, font=f_warn_hint, fg="#9FD8F5", bg=WARN_BG,
+                 justify="left", anchor="w", wraplength=wl).pack(anchor="w", pady=(0, 2))
+        for e in liste[:WARN_LISTE_MAX]:
+            fertig = e["offen"] <= 0
+            menge = ("%d× " % e["anzahl"]) if e["anzahl"] > 1 else ""
+            rest = "" if fertig or e["offen"] == e["anzahl"] else "   (noch %d×)" % e["offen"]
+            tk.Label(warn_liste, text=("✓  " if fertig else "☐  ") + menge + e["bez"] + rest,
+                     font=f_warn_liste, fg=("#00E676" if fertig else "#FFFFFF"), bg=WARN_BG,
+                     justify="left", anchor="w", wraplength=wl).pack(anchor="w")
+        if len(liste) > WARN_LISTE_MAX:
+            tk.Label(warn_liste, text="+ %d weitere Artikel mit Barcode" % (len(liste) - WARN_LISTE_MAX),
+                     font=f_warn_sub, fg="#C9C9C9", bg=WARN_BG).pack(anchor="w")
+        tk.Label(warn_liste, text="Alle anderen Artikel der Bestellung: kein Barcode – nicht scannen",
+                 font=f_warn_hint, fg="#9E9E9E", bg=WARN_BG, justify="left", anchor="w",
+                 wraplength=wl).pack(anchor="w", pady=(6, 0))
+        warn_liste.pack(anchor="w", pady=(12, 0))
     def _zeichne_dreieck(farbe):
         warn_canvas.delete("all")
         # gleichseitiges Warndreieck mit dickem schwarzem Rand + grossem "!"
@@ -2421,6 +2501,13 @@ def starte_cockpit():
         rn = info.get("rn")
         soll = info.get("soll")
         menge = info.get("menge", soll)
+        # Umbruch statt Ueberbreite: kein Text darf breiter als das Cockpit-Fenster werden
+        wl = _wrap_breite()
+        for _l in (warn_titel, warn_prog, warn_sub):
+            _l.configure(wraplength=wl, justify="left")
+        _liste = info.get("liste") if info["modus"] in ("ean_start", "ean_teil", "ean_falsch") else None
+        _setze_liste(_liste, "Diese Artikel haben einen Barcode und müssen gescannt werden:"
+                     if info["modus"] != "ean_falsch" else "Zu dieser Bestellung gehören nur diese Barcodes:")
         if info["modus"] == "teil":
             ist = info["ist"]
             _zeichne_dreieck(WARN_GELB)
@@ -2433,7 +2520,7 @@ def starte_cockpit():
             if menge > soll:               # echte Menge > Deckel: deutlich machen
                 zusatz += f"      Bestellung: {menge} Stück  (max. {soll}× nötig)"
             warn_sub.configure(text=zusatz)
-            warn_overlay.place(relx=0.5, rely=0.40, anchor="center")
+            _platziere_overlay()
             ton(TON_STANDARD)
         elif info["modus"] == "fehlt":     # rot -> Mengeninfo fehlt, NICHT gedruckt
             _zeichne_dreieck("#FF5252")
@@ -2442,7 +2529,7 @@ def starte_cockpit():
             warn_prog.configure(text="NICHT gedruckt", fg="#FFFFFF")
             warn_sub.configure(text=f"Rechnung {rn} – Pickliste/mengen_zuordnung.csv "
                                     f"aktualisieren")
-            warn_overlay.place(relx=0.5, rely=0.40, anchor="center")
+            _platziere_overlay()
             ton(TON_STANDARD)
         elif info["modus"] in ("ean_start", "ean_teil"):
             # blau -> Bestellung offen, jetzt die ARTIKEL-EAN(s) scannen
@@ -2454,12 +2541,14 @@ def starte_cockpit():
             warn_prog.configure(
                 text=f"{ist} von {soll} geprüft   –   noch {soll - ist}× scannen",
                 fg="#FFFFFF")
-            if info["modus"] == "ean_teil" and info.get("bez"):
+            if _liste:                     # Artikel stehen einzeln (mit Haken) in der Liste darunter
+                warn_sub.configure(text=f"Rechnung {rn}")
+            elif info["modus"] == "ean_teil" and info.get("bez"):
                 warn_sub.configure(text=f"Rechnung {rn}      zuletzt: {info['bez']} ✓")
             else:
                 artikel = info.get("artikel") or ", ".join(info.get("namen", []))
                 warn_sub.configure(text=f"Rechnung {rn}      {artikel}")
-            warn_overlay.place(relx=0.5, rely=0.40, anchor="center")
+            _platziere_overlay()
             ton(TON_EAN)
         elif info["modus"] == "ean_falsch":   # rot -> falscher/fremder Artikel
             ist = info.get("ist", 0)
@@ -2474,7 +2563,7 @@ def starte_cockpit():
                 warn_titel.configure(text="FALSCHER ARTIKEL", fg="#FF5252")
                 warn_prog.configure(text="EAN passt NICHT zur Bestellung", fg="#FFFFFF")
                 warn_sub.configure(text=f"Rechnung {rn} – {ist} von {soll} geprüft")
-            warn_overlay.place(relx=0.5, rely=0.40, anchor="center")
+            _platziere_overlay()
             ton(TON_STANDARD)
         elif info["modus"] == "ean_fertig":   # gruen -> alle EANs geprueft, gedruckt
             _zeichne_dreieck("#00E676")
@@ -2482,7 +2571,7 @@ def starte_cockpit():
             warn_titel.configure(text="EAN GEPRÜFT – GEDRUCKT", fg="#00E676")
             warn_prog.configure(text=f"Alle {soll} Artikel bestätigt", fg="#00E676")
             warn_sub.configure(text=f"Rechnung {rn}")
-            warn_overlay.place(relx=0.5, rely=0.40, anchor="center")
+            _platziere_overlay()
             _warn_timer["job"] = root.after(2000, verstecke_warnung)
         elif info["modus"] == "sam_ean_start":  # blau -> Sammelcode offen, EAN scannen
             EAN_BLAU = "#29B6F6"
@@ -2491,7 +2580,7 @@ def starte_cockpit():
             warn_titel.configure(text="SAMMELDRUCK – EAN SCANNEN", fg=EAN_BLAU)
             warn_prog.configure(text=info.get("code", ""), fg="#FFFFFF")
             warn_sub.configure(text=info.get("bez", ""))
-            warn_overlay.place(relx=0.5, rely=0.40, anchor="center")
+            _platziere_overlay()
             ton(TON_EAN)
         elif info["modus"] == "sam_ean_falsch":  # rot -> falscher Artikel fuer Sammelcode
             _zeichne_dreieck("#FF5252")
@@ -2499,7 +2588,7 @@ def starte_cockpit():
             warn_titel.configure(text="FALSCHER ARTIKEL", fg="#FF5252")
             warn_prog.configure(text=f"passt nicht zu {info.get('code','')}", fg="#FFFFFF")
             warn_sub.configure(text=info.get("bez", ""))
-            warn_overlay.place(relx=0.5, rely=0.40, anchor="center")
+            _platziere_overlay()
             ton(TON_STANDARD)
         elif info["modus"] == "sam_ean_fertig":  # gruen -> EAN bestaetigt, Sammelblock gedruckt
             _zeichne_dreieck("#00E676")
@@ -2507,7 +2596,7 @@ def starte_cockpit():
             warn_titel.configure(text="EAN BESTÄTIGT – GEDRUCKT", fg="#00E676")
             warn_prog.configure(text=info.get("code", ""), fg="#00E676")
             warn_sub.configure(text=info.get("bez", ""))
-            warn_overlay.place(relx=0.5, rely=0.40, anchor="center")
+            _platziere_overlay()
             _warn_timer["job"] = root.after(2000, verstecke_warnung)
         else:                              # 'fertig' -> gruene Bestaetigung
             _zeichne_dreieck("#00E676")
@@ -2515,7 +2604,7 @@ def starte_cockpit():
             warn_titel.configure(text="VOLLSTÄNDIG – GEDRUCKT", fg="#00E676")
             warn_prog.configure(text=f"Alle {soll} Positionen bestätigt", fg="#00E676")
             warn_sub.configure(text=f"Rechnung {rn}")
-            warn_overlay.place(relx=0.5, rely=0.40, anchor="center")
+            _platziere_overlay()
             _warn_timer["job"] = root.after(2000, verstecke_warnung)
     # ---- Scan-Auswertung (Auto-Druck ohne Enter) ----
     _pending = {"job": None}
